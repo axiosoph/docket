@@ -11,6 +11,16 @@
 #   docket.contract  path to contracts/claim_apply.ncl    (default: contracts/claim_apply.ncl)
 #   docket.blast     true|false — print blast radius      (default: true)
 #
+# To TEST this hook without configuring anything, put the binary on PATH for
+# the one process:
+#
+#   PATH=./target/release:$PATH hooks/pre-commit
+#
+# Prefer that over setting docket.bin. Git config is shared state whose writes
+# bleed across worktrees, so a temporary set is a real change even when it is
+# reverted; the env var is scoped to the single process and leaves nothing to
+# undo.
+#
 # Exit 0 allows the commit; non-zero blocks it. Git's own --no-verify
 # bypasses this, as it does any hook; that is git's decision, not ours.
 set -uo pipefail
