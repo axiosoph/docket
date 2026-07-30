@@ -117,6 +117,20 @@ this tool targets, so numbers are the more stable anchor. The failure mode
 when a document is renumbered is loud — C4 fails immediately — rather than
 silent.
 
+#### [reference-syntax]
+
+A `cites` entry is a claim id or a `<doc-path>#<anchor>` document anchor;
+document identifiers are the corpus-relative path with `.md` removed, not
+a basename; a prose link normalizes to the same vocabulary by resolving
+against the citing file's directory before comparison; an anchor matches a
+heading by non-alphanumeric-bounded prefix, not exact text.
+
+```claim
+kind: constraint
+evaluator: test
+cites: []
+```
+
 ## 2. Configuration
 
 A repository declares its own genre hierarchy in `docket.ncl` at the
@@ -235,6 +249,18 @@ was not re-derived from it, so the document held its own rule and a violation
 of that rule simultaneously. Nothing in docket catches this, because `MVP.md`
 carries no claim blocks — which is a precise statement of the gap, and the
 argument for closing it.
+
+#### [index-shape]
+
+The index's `claims` map is keyed by claim id; its `documents` map is
+keyed by the document path identifier of
+[reference-syntax](reference-syntax), never by basename.
+
+```claim
+kind: constraint
+evaluator: test
+cites: [reference-syntax]
+```
 
 ### 4.2 Blast radius
 
