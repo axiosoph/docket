@@ -59,7 +59,26 @@ A `cites` entry is either:
   a corpus document: `composition-model#6`
 
 Document stems are file basenames without extension, and must be unique
-corpus-wide (checked; see §3).
+corpus-wide (checked; see §3). Stems are **not** constrained to
+kebab-case — `README`, `MVP` are valid stems.
+
+**Ref syntax is enforced by the contract, not by C4.** A `cites` entry
+whose *shape* is invalid — whitespace, a second `#`, an empty half — is a
+malformed block and fails **C1**. C4 therefore only ever operates on
+well-formed refs, and "does this resolve" presupposes "is this a ref."
+
+**Anchor derivation.** An anchor `A` matches a heading iff the heading's
+text — after stripping `#` markers and leading whitespace — begins with
+`A` followed by either end-of-string or a non-alphanumeric character. So
+`composition-model#6` matches `## 6. The fact-set: …` and
+`execution-model#2.4` matches `### 2.4 Something`, while `#6` does **not**
+match `## 60. …`.
+
+Section numbers rather than slugified heading text, deliberately: heading
+*wording* churns far more often than section *numbering* in the corpora
+this tool targets, so numbers are the more stable anchor. The failure mode
+when a document is renumbered is loud — C4 fails immediately — rather than
+silent.
 
 ## 2. Configuration
 
@@ -97,10 +116,22 @@ and the offending value.
 **C5, precisely.** For a claim, let `L` be the set of markdown link
 targets appearing in its prose body (from its id heading to the next
 heading of the same or higher level, excluding the claim block itself),
-restricted to targets that resolve to corpus documents or claim ids. Then
-`L` and `cites` must be equal as sets. A link to an external URL is
-ignored. Rationale: `cites` is authoritative for the graph, but a reader
-follows prose, so the two must not disagree.
+restricted to targets that are **ref-shaped** per §1.3 — a syntactic
+filter, *not* a resolution filter. Then `L` and `cites` must be equal as
+sets. A link to an external URL is ignored, since it is not ref-shaped.
+Rationale: `cites` is authoritative for the graph, but a reader follows
+prose, so the two must not disagree.
+
+> **Syntactic, not resolution — and the reason is not isolability.** An
+> earlier draft said *"targets that resolve."* Under that reading a
+> dangling `cites` entry with a matching prose link fails **both** C4 and
+> C5, because the unresolvable link would be excluded from `L`. Two errors
+> for one defect is the lesser problem. The real problem is that **C5's
+> message would lie**: prose and `cites` agree perfectly in that case —
+> both point at nothing — and reporting a prose/`cites` divergence
+> misdiagnoses it. C4 owns "this target does not exist"; C5 owns "the two
+> representations disagree." Keeping them syntactically separate keeps both
+> diagnoses true.
 
 Also checked, as a precondition rather than a numbered check: document
 stems are unique corpus-wide (`duplicate-stem`), since references depend
