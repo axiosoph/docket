@@ -143,6 +143,91 @@ This matters because *"the documentation is complete and the code
 conforms"* is the intuition worth chasing, and only its second half can
 ever be a number.
 
+## Tying claims to the evaluators that discharge them
+
+Line and branch coverage answer *"was this function exercised?"* They say
+nothing about whether a **declared claim** is checked, and the two are
+orthogonal: a corpus can have complete line coverage and zero claims
+verified. So the register needs the link from claim to the specific
+evaluators that discharge it — not merely "this claim names an evaluator
+kind."
+
+Corpora already do this by hand, in prose, unverifiably — annotations that
+name specific test functions beside a constraint, which then drift when
+tests are renamed. That is the practice to mechanize.
+
+**The link is declared at the evaluator, and coverage is generated.**
+Per principle 2: coverage is a fact about the corpus, so it must be
+discovered rather than asserted. A claim block keeps declaring which *kind*
+of evaluator it expects; which evaluators actually discharge it is a
+finding.
+
+It is declared in the evaluator rather than the document for a second
+reason: **tests churn far more than claims**, so the reference belongs in
+the artifact that moves. A renamed test cannot silently un-discharge a
+claim, because its marker travels with it.
+
+### The marker spans languages, because evaluators are heterogeneous
+
+```rust
+// docket: lock-groundness
+#[test]
+fn ground_values_only() { … }
+```
+
+A comment marker, not a language attribute. The reason is not
+convenience: a corpus's evaluators are **not all one language**. Proofs
+live in Lean, model checks in TLA+ and Alloy, property and unit tests in
+the implementation language, examples in CLI transcripts. A Rust attribute
+cannot mark a Lean theorem or a TLA+ module; a line comment can mark all of
+them.
+
+*This does not contradict "no regular expressions over prose."* A marker is
+**structure** — an exact token in a known position. The prohibition is on
+inferring structure from prose, which is a different thing.
+
+### The check nobody instruments: evaluators that discharge nothing
+
+The reverse direction is as informative as the forward one. **An evaluator
+declaring no claim is suspect** — either it exercises something the corpus
+never declared (a missing claim), or it tests an implementation detail
+(legitimate, but it should not count toward the metric).
+
+Reported, never failed on. But the ratio matters: a project where most
+evaluators discharge no claim has a verification surface disconnected from
+its documentation surface, and no aggregate number would reveal it.
+
+### The metric is per kind, and that is the whole point
+
+A single fraction hides precisely the gap worth finding. A corpus can have
+every *constraint* discharged and not one *requirement* demonstrated, and
+an aggregate would look healthy.
+
+So conformance is reported per kind:
+
+```
+requirement   2/3    ( 67%)
+invariant     5/7    ( 71%)
+constraint   14/14   (100%)
+```
+
+**Which is what distinguishes this from code coverage.** Coverage measures
+the low-level surface; this measures whether the *high-level declarations*
+are checked — and per-kind is the only shape in which that question has an
+answer.
+
+If the correspondence between kinds and the three axes of the verification
+ceiling holds (see this repository's ledger), then per-kind conformance
+reads as **which axis is under-closed**, which makes that correspondence
+actionable rather than decorative.
+
+### Out of MVP scope, but it disturbs nothing
+
+This needs the evaluator runner, so it lands after the index. It requires
+**no change to the claim block** — the block declares an expected evaluator
+kind; discharge is discovered separately. The MVP's format is
+forward-compatible as written.
+
 ## Generality
 
 Nothing here is specific to one project, and genre boundaries differ
