@@ -134,10 +134,57 @@ overstates the guarantee:
 
 - **Conformance is measurable.** It is a fraction over the register, with
   a named residue. It moves monotonically as work lands.
-- **Completeness is not.** You can count claims that have homes; you
-  cannot count claims nobody wrote. Exhaustiveness against reality is
-  undecidable, so completeness stays a judgment — bounded by a readiness
-  criterion, not proved.
+- **Completeness against *reality* is not.** You cannot count claims
+  nobody wrote about behaviour nobody built. Exhaustiveness against reality
+  is undecidable, so that half stays a judgment.
+- **But completeness against the *code* is measurable**, and that is the
+  half that matters for *"the code conforms."* See below.
+
+### Exhaustiveness is undecidable in general and bounded by the corpus in practice
+
+The undecidable question — *did we document everything?* — has a decidable
+neighbour: **what code is unaccounted for?** Public surface that no claim
+covers is a finite, enumerable set, and every member carries an action:
+
+| the unclaimed surface is | the action |
+|:---|:---|
+| load-bearing and undocumented | **write the claim** |
+| vestigial | **delete the code** |
+| legitimately internal | **mark it so** — and that mark is a vouch (below) |
+
+Either of the first two is progress. Which is the point: **an unclaimed
+public item is never merely untidy, it is always a signal with a
+disposition.**
+
+Note this is the mirror of the evaluator check above — *an evaluator
+discharging no claim* — generalized from evaluators to surface. Both
+directions of the same relation, and neither is instrumented by
+conventional tooling: coverage measures whether code ran, never whether
+code is *accounted for*.
+
+**Granularity is public surface, not every function.** Private helpers are
+implementation and requiring claims of them would be noise that erodes the
+signal. A *public* item is a contract, so a public item covered by no claim
+is either an undocumented contract or an over-exposed internal — and both
+of those are worth knowing.
+
+**The third case needs a suppression marker or the signal decays.** Some
+items are public for mechanical reasons and are genuinely not contracts.
+Marking one as internal is an explicit human assertion that it needs no
+claim — which is to say **it is a vouch**, attributable like any other, and
+counted as one rather than vanishing from the books. Consistent with the
+rest of this design: the residue is never hidden, only named.
+
+So the honest statement of the pair:
+
+> **Exhaustiveness against reality is undecidable. Exhaustiveness against
+> the code is not — it is the public surface no claim covers, and that set
+> is finite, enumerable, and actionable.**
+
+It is a bound rather than an equivalence: claims can exist about things no
+code implements yet, so unclaimed surface under-approximates the whole
+documentation gap. What it bounds exactly is the gap *over the implemented
+surface*, which is precisely the half *"the code conforms"* is about.
 
 This matters because *"the documentation is complete and the code
 conforms"* is the intuition worth chasing, and only its second half can
