@@ -1,6 +1,19 @@
-//! The five checks (MVP.md §3), plus `orphan-claim` (§1.1). No
-//! stem-uniqueness precondition exists: document identifiers are
-//! corpus-relative paths (§1.3) and are therefore unique by construction.
+//! The five checks (MVP.md §3), plus `orphan-claim` (§1.1) and
+//! `orphaned-because` (reference kinds R1, below). No stem-uniqueness
+//! precondition exists: document identifiers are corpus-relative paths
+//! (§1.3) and are therefore unique by construction.
+//!
+//! **Reference kinds** (`.ledger/2026-07-30-reference-kinds-and-document-resolution.md`,
+//! R1): a `depends`/`because` entry is no longer one undifferentiated
+//! `cites`. A dangling `depends` means the claim is broken — C4, `Fail`
+//! severity. A dangling `because` means the claim still stands but its
+//! stated reason is orphaned — a **distinct, lower-severity** result
+//! (`orphaned-because`, `Warn`), because the two remedies are different
+//! (R1) and collapsing them back into one severity would either block
+//! merges on a merely-thin justification or silently swallow real
+//! breakage. A **bare** reference (an undeclared prose link) is checked
+//! by neither: it is never a `CiteRef` in the first place
+//! ([`crate::model::Claim::refs`]), so there is nothing to resolve.
 
 use crate::config::Config;
 use crate::contract::{self, ContractError};
@@ -27,6 +40,12 @@ pub enum CheckId {
     /// Named descriptively rather than numbered, the same convention
     /// `orphan-claim` already set for a check beyond MVP.md's five.
     NormativeProse,
+    /// A dangling `because` target (reference kinds R1). Named and
+    /// numbered independently of C4 for the same reason `NormativeProse`
+    /// is independent of C3: C4's diagnostic ("this claim is broken")
+    /// would be a lie here — the claim still stands, only its stated
+    /// reason is gone. Always `Warn` severity; see [`Severity`].
+    OrphanedBecause,
 }
 
 impl CheckId {
@@ -39,15 +58,32 @@ impl CheckId {
             CheckId::C5 => "C5",
             CheckId::OrphanClaim => "orphan-claim",
             CheckId::NormativeProse => "normative-prose",
+            CheckId::OrphanedBecause => "orphaned-because",
         }
     }
 }
 
+/// R1's severity split, made structural rather than left to a message
+/// string a caller could ignore: `Fail` is what MVP.md §5's exit code 1
+/// means ("one or more checks failed"); `Warn` is reported the same way
+/// but never flips the exit code — the same "reported, never failed on"
+/// treatment README.md already gives an evaluator that discharges no
+/// claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Fail,
+    Warn,
+}
+
 /// MVP.md §3: "Each failure names the file, the line, and the offending
-/// value."
+/// value." Despite the name, a `Diagnostic` is not always a failure —
+/// `severity` says which; kept as one type (rather than two parallel
+/// vectors) so every check pushes into one place and `CheckReport`
+/// doesn't have to merge two collections back into report order.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Failure {
+pub struct Diagnostic {
     pub check: CheckId,
+    pub severity: Severity,
     pub file: String,
     pub line: usize,
     pub message: String,
@@ -55,12 +91,17 @@ pub struct Failure {
 
 #[derive(Debug, Clone, Default)]
 pub struct CheckReport {
-    pub failures: Vec<Failure>,
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 impl CheckReport {
+    /// True iff nothing at `Fail` severity fired — a report holding only
+    /// `Warn`-severity diagnostics still passes (MVP.md §5, exit 0).
     pub fn passed(&self) -> bool {
-        self.failures.is_empty()
+        !self
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Fail)
     }
 }
 
@@ -73,13 +114,14 @@ pub fn run_checks(
     contract_path: &Path,
 ) -> Result<CheckReport, ContractError> {
     let corpus = &loaded.corpus;
-    let mut failures = Vec::new();
+    let mut diagnostics = Vec::new();
 
     // orphan-claim (§1.1): a claim fence with no preceding bracket-kebab
     // heading. Extraction already found these; report them directly.
     for orphan in &loaded.orphan_claims {
-        failures.push(Failure {
+        diagnostics.push(Diagnostic {
             check: CheckId::OrphanClaim,
+            severity: Severity::Fail,
             file: orphan.file.clone(),
             line: orphan.line.0,
             message: "claim block has no preceding bracket-kebab id heading".to_string(),
@@ -90,8 +132,9 @@ pub fn run_checks(
     for claim in &corpus.claims {
         match contract::validate_claim_block(contract_path, &claim.raw.yaml)? {
             ContractCheck::Valid => {}
-            ContractCheck::Violated { diagnostic } => failures.push(Failure {
+            ContractCheck::Violated { diagnostic } => diagnostics.push(Diagnostic {
                 check: CheckId::C1,
+                severity: Severity::Fail,
                 file: claim.file.clone(),
                 line: claim.block_line.0,
                 message: diagnostic,
@@ -112,8 +155,9 @@ pub fn run_checks(
                     .filter(|c| c.file != claim.file || c.heading_line != claim.heading_line)
                     .map(|c| format!("{}:{}", c.file, c.heading_line))
                     .collect();
-                failures.push(Failure {
+                diagnostics.push(Diagnostic {
                     check: CheckId::C2,
+                    severity: Severity::Fail,
                     file: claim.file.clone(),
                     line: claim.heading_line.0,
                     message: format!("id {id:?} is also declared at {}", others.join(", ")),
@@ -135,8 +179,9 @@ pub fn run_checks(
             continue;
         };
         if !genre.kinds.contains(&kind) {
-            failures.push(Failure {
+            diagnostics.push(Diagnostic {
                 check: CheckId::C3,
+                severity: Severity::Fail,
                 file: claim.file.clone(),
                 line: claim.block_line.0,
                 message: format!(
@@ -151,28 +196,55 @@ pub fn run_checks(
 
     let claim_ids: HashSet<&str> = corpus.claims.iter().map(|c| c.id.as_str()).collect();
 
-    // C4: every cites target resolves.
+    // C4: every `depends` target resolves. Dangling ⇒ the claim is
+    // broken (reference kinds R1) — `Fail` severity, MVP.md §5 exit 1.
     for claim in &corpus.claims {
-        for cite in &claim.cites {
+        for cite in &claim.depends {
             if !resolves(cite, &claim_ids, &corpus.documents) {
-                failures.push(Failure {
+                diagnostics.push(Diagnostic {
                     check: CheckId::C4,
+                    severity: Severity::Fail,
                     file: claim.file.clone(),
                     line: claim.block_line.0,
-                    message: format!("cites target {cite} does not resolve"),
+                    message: format!(
+                        "depends target {cite} does not resolve — this claim is broken: rewire or remove the dependency"
+                    ),
                 });
             }
         }
     }
 
-    // C5: prose links and cites agree, per claim, restricted to targets
-    // that are ref-shaped per §1.3 — a SYNTACTIC filter, not a resolution
-    // filter (MVP.md §3's boxed note). Filtering by resolution instead
-    // would make a dangling `cites` entry with a matching prose link fail
-    // both C4 and C5 while lying in the C5 diagnostic: prose and cites
-    // agree perfectly there (both name the same nonexistent target), so
-    // reporting a divergence misdiagnoses it. C4 owns "does this exist";
-    // C5 owns "do the two representations agree."
+    // orphaned-because: every `because` target resolves, at `Warn`
+    // severity — the claim still stands, only its stated reason is gone
+    // (R1). Independent of C4 for the same reason `normative-prose` is
+    // independent of C3: C4's "this claim is broken" would misdescribe
+    // this case entirely, not merely under-report its severity.
+    for claim in &corpus.claims {
+        for cite in &claim.because {
+            if !resolves(cite, &claim_ids, &corpus.documents) {
+                diagnostics.push(Diagnostic {
+                    check: CheckId::OrphanedBecause,
+                    severity: Severity::Warn,
+                    file: claim.file.clone(),
+                    line: claim.block_line.0,
+                    message: format!(
+                        "because target {cite} does not resolve — the claim's stated reason is orphaned, not the claim itself: restate the reason, or confirm the claim was vestigial"
+                    ),
+                });
+            }
+        }
+    }
+
+    // C5 (replaced rule — reference kinds R3): every `depends` and
+    // `because` entry carries a prose link; a prose link that is not
+    // declared is a bare reference and asserts nothing, so it is not
+    // required to appear here at all. The requirement is one-directional
+    // — declared ⊆ prose, not the set equality the original C5 required
+    // — restricted to prose targets that are ref-shaped per §1.3, a
+    // SYNTACTIC filter, not a resolution filter (MVP.md §3's boxed note,
+    // preserved unchanged by this replacement): a dangling `depends`
+    // entry with a matching prose link still names the same nonexistent
+    // target either way, so it fails C4 alone, not C4 and C5 both.
     for claim in &corpus.claims {
         let prose_set: BTreeSet<String> = claim
             .prose_links
@@ -181,17 +253,21 @@ pub fn run_checks(
             .filter(is_ref_shaped)
             .map(|c| c.to_string())
             .collect();
-        let cites_set: BTreeSet<String> = claim.cites.iter().map(|c| c.to_string()).collect();
 
-        if prose_set != cites_set {
-            let only_prose: Vec<&String> = prose_set.difference(&cites_set).collect();
-            let only_cites: Vec<&String> = cites_set.difference(&prose_set).collect();
-            failures.push(Failure {
+        let undeclared: Vec<String> = claim
+            .refs()
+            .filter(|(_, cite)| !prose_set.contains(&cite.to_string()))
+            .map(|(kind, cite)| format!("{}:{}", kind.as_str(), cite))
+            .collect();
+
+        if !undeclared.is_empty() {
+            diagnostics.push(Diagnostic {
                 check: CheckId::C5,
+                severity: Severity::Fail,
                 file: claim.file.clone(),
                 line: claim.heading_line.0,
                 message: format!(
-                    "prose links and cites disagree for {:?}: only in prose {only_prose:?}, only in cites {only_cites:?}",
+                    "{:?} declares a dependence or reason with no matching prose link: {undeclared:?}",
                     claim.id
                 ),
             });
@@ -215,8 +291,9 @@ pub fn run_checks(
             continue;
         };
         if genre.kinds.is_empty() {
-            failures.push(Failure {
+            diagnostics.push(Diagnostic {
                 check: CheckId::NormativeProse,
+                severity: Severity::Fail,
                 file: occurrence.file.clone(),
                 line: occurrence.line.0,
                 message: format!(
@@ -227,7 +304,7 @@ pub fn run_checks(
         }
     }
 
-    Ok(CheckReport { failures })
+    Ok(CheckReport { diagnostics })
 }
 
 fn parse_kind(s: &str) -> Option<Kind> {
@@ -239,8 +316,9 @@ fn parse_kind(s: &str) -> Option<Kind> {
     }
 }
 
-/// Whether a (well-formed, per C1) `cites` or normalized-prose-link
-/// target resolves. Document identifiers are corpus-relative paths and
+/// Whether a (well-formed, per C1) `depends`/`because` or
+/// normalized-prose-link target resolves. Document identifiers are
+/// corpus-relative paths and
 /// therefore unique by construction (MVP.md §1.3), so — unlike the
 /// retired `duplicate-stem` era — a single `.find()` is enough; there is
 /// no ambiguity to guard against here.
@@ -258,8 +336,8 @@ fn resolves(cite: &CiteRef, claim_ids: &HashSet<&str>, documents: &[Document]) -
 /// C5's filter, syntactic only: no corpus lookup, so an entry with a
 /// dangling but well-formed target still counts toward `L`. Mirrors
 /// `contracts/claim.ncl`'s `Ref` predicate (`ClaimIdPattern` /
-/// `DocRefPattern`), which is the shape C1 already enforces on `cites`
-/// itself.
+/// `DocRefPattern`), which is the shape C1 already enforces on
+/// `depends`/`because` entries themselves.
 fn is_ref_shaped(cite: &CiteRef) -> bool {
     match cite {
         CiteRef::Claim(id) => is_kebab_case(id),
@@ -278,8 +356,9 @@ fn is_kebab_case(s: &str) -> bool {
 }
 
 /// Normalize a raw markdown link href (§3, C5's `L`) into the same
-/// `<doc-path>#<anchor>` / bare-claim-id vocabulary `cites` uses, so the
-/// two sets can be compared. Per MVP.md §1.3's "Prose-link normalization":
+/// `<doc-path>#<anchor>` / bare-claim-id vocabulary `depends`/`because`
+/// entries use, so a claim's declared refs can be checked against it. Per
+/// MVP.md §1.3's "Prose-link normalization":
 ///
 /// - A fragment-only href (`#6`) refers to the containing document —
 ///   normalized against the *citing claim's own file*, minus `.md`.
@@ -289,9 +368,9 @@ fn is_kebab_case(s: &str) -> bool {
 ///   corpus-relative path, which is then stripped of its `.md` extension.
 ///   A path that resolves above the corpus root is not ref-shaped and is
 ///   dropped (`resolve_relative` returns `None`).
-/// - A path with no anchor at all has no representation in `cites`'
-///   syntax (there is no "whole document, no anchor" ref form), so it's
-///   excluded from `L` rather than guessed at.
+/// - A path with no anchor at all has no representation in the ref
+///   syntax `depends`/`because` share (there is no "whole document, no
+///   anchor" ref form), so it's excluded from `L` rather than guessed at.
 /// - A bare token with no anchor, no `/`, and no `.md` suffix can only be
 ///   a claim-id reference: every corpus document has a `.md` extension
 ///   (§2), so a same-directory reference lacking both an anchor and that
@@ -407,7 +486,8 @@ mod tests {
 {
   kind | std.contract.from_predicate (fun v => std.array.elem v ["requirement", "invariant", "constraint"]),
   evaluator | std.contract.from_predicate (fun v => std.array.elem v ["proof", "model-check", "property-test", "test", "example", "none"]),
-  cites | Array String | default = [],
+  depends | Array String | default = [],
+  because | Array String | default = [],
 }
 "#;
 
@@ -423,9 +503,9 @@ mod tests {
         run_checks(&loaded, &config, &contract).unwrap()
     }
 
-    fn only(report: &CheckReport, check: CheckId) -> Vec<&Failure> {
+    fn only(report: &CheckReport, check: CheckId) -> Vec<&Diagnostic> {
         report
-            .failures
+            .diagnostics
             .iter()
             .filter(|f| f.check == check)
             .collect()
@@ -440,10 +520,10 @@ mod tests {
         );
         dir.write(
             "docs/specs/lock.md",
-            "### [lock-groundness]\n\nEvery lock value MUST be ground.\n\n```claim\nkind: constraint\nevaluator: test\ncites: []\n```\n",
+            "### [lock-groundness]\n\nEvery lock value MUST be ground.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
         );
         let report = run(&dir);
-        assert!(report.passed(), "{:#?}", report.failures);
+        assert!(report.passed(), "{:#?}", report.diagnostics);
     }
 
     #[test]
@@ -511,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn c4_fails_on_a_dangling_claim_id_cite() {
+    fn c4_fails_on_a_dangling_claim_id_depends() {
         let dir = tempdir();
         dir.write(
             "docket.ncl",
@@ -519,16 +599,27 @@ mod tests {
         );
         dir.write(
             "docs/specs/x.md",
-            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ncites: [does-not-exist]\n```\n",
+            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [does-not-exist]\n```\n",
         );
         let report = run(&dir);
-        assert_eq!(only(&report, CheckId::C4).len(), 1);
+        let failures = only(&report, CheckId::C4);
+        assert_eq!(failures.len(), 1);
+        // Criterion 2: the message says the claim is broken, not merely
+        // "does not resolve" — the severity split (R1) is only real if a
+        // reader can tell the two remedies apart from the text alone.
+        assert!(
+            failures[0].message.contains("broken"),
+            "{:?}",
+            failures[0].message
+        );
+        assert_eq!(failures[0].severity, Severity::Fail);
+        assert!(!report.passed());
     }
 
     #[test]
-    fn a_dangling_cite_with_a_matching_prose_link_fails_only_c4_not_c5() {
+    fn a_dangling_depends_with_a_matching_prose_link_fails_only_c4_not_c5() {
         // The exact case MVP.md §3's boxed note calls out: prose and
-        // cites AGREE (both name the same nonexistent target), so only
+        // depends AGREE (both name the same nonexistent target), so only
         // C4 ("this target does not exist") should fire — a resolution
         // filter on C5's L would incorrectly also fire C5 here, with a
         // diagnostic that lies about a divergence that doesn't exist.
@@ -539,14 +630,76 @@ mod tests {
         );
         dir.write(
             "docs/specs/x.md",
-            "### [x]\n\nSee [related work](does-not-exist).\n\n```claim\nkind: constraint\nevaluator: test\ncites: [does-not-exist]\n```\n",
+            "### [x]\n\nSee [related work](does-not-exist).\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [does-not-exist]\n```\n",
         );
         let report = run(&dir);
         assert_eq!(only(&report, CheckId::C4).len(), 1);
         assert!(
             only(&report, CheckId::C5).is_empty(),
             "{:#?}",
-            report.failures
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn orphaned_because_fails_with_warn_severity_and_a_distinct_message() {
+        // Criterion 3: a dangling `because` target is a DISTINCT,
+        // lower-severity result from C4 — the claim stands, only its
+        // stated reason is orphaned. `report.passed()` must stay true: a
+        // `Warn`-only report never flips MVP.md §5's exit code.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nSee [the old reason](does-not-exist).\n\n```claim\nkind: constraint\nevaluator: test\nbecause: [does-not-exist]\n```\n",
+        );
+        let report = run(&dir);
+        let warnings = only(&report, CheckId::OrphanedBecause);
+        assert_eq!(warnings.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(warnings[0].severity, Severity::Warn);
+        assert!(
+            warnings[0].message.contains("orphaned"),
+            "{:?}",
+            warnings[0].message
+        );
+        assert!(
+            !warnings[0].message.contains("broken"),
+            "must not use C4's wording — the claim itself still stands: {:?}",
+            warnings[0].message
+        );
+        assert!(only(&report, CheckId::C4).is_empty());
+        assert!(
+            report.passed(),
+            "a Warn-only report must still pass: {:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_bare_reference_to_a_nonexistent_target_produces_no_failure() {
+        // Criterion 4, the noise-suppression property (R1's core reason
+        // for the third kind): a prose link that is declared as neither
+        // `depends` nor `because` is bare — it asserts no dependence, so
+        // its target not resolving is not this tool's concern at all. No
+        // C4, no orphaned-because, no C5 (the new C5 only requires
+        // declared refs to have a prose link, never the reverse).
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nSee also [related, unrelated work](does-not-exist), mentioned in passing.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        let report = run(&dir);
+        assert!(
+            report.diagnostics.is_empty(),
+            "a bare reference must produce no diagnostic at all: {:#?}",
+            report.diagnostics
         );
     }
 
@@ -568,13 +721,13 @@ mod tests {
         );
         dir.write(
             "docs/specs/x.md",
-            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ncites: [docs/models/composition-model#6]\n```\n",
+            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/composition-model#6]\n```\n",
         );
         let report = run(&dir);
         assert!(
             only(&report, CheckId::C4).is_empty(),
             "{:#?}",
-            report.failures
+            report.diagnostics
         );
     }
 
@@ -593,7 +746,7 @@ mod tests {
         dir.write("docs/models/m.md", "## 60. Something else\n");
         dir.write(
             "docs/specs/x.md",
-            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ncites: [docs/models/m#6]\n```\n",
+            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/m#6]\n```\n",
         );
         let report = run(&dir);
         assert_eq!(only(&report, CheckId::C4).len(), 1);
@@ -618,18 +771,18 @@ mod tests {
         dir.write("docs/models/tla/README.md", "## 1. TLA notes\n");
         dir.write(
             "docs/specs/x.md",
-            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ncites: [docs/models/lean/README#1, docs/models/tla/README#1]\n```\n",
+            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/lean/README#1, docs/models/tla/README#1]\n```\n",
         );
         let report = run(&dir);
         assert!(
             only(&report, CheckId::C4).is_empty(),
             "{:#?}",
-            report.failures
+            report.diagnostics
         );
     }
 
     #[test]
-    fn c5_passes_when_prose_link_and_cites_agree() {
+    fn c5_passes_when_prose_link_covers_a_depends_entry() {
         let dir = tempdir();
         dir.write(
             "docket.ncl",
@@ -643,18 +796,21 @@ mod tests {
         dir.write("docs/models/composition-model.md", "## 6. The fact-set\n");
         dir.write(
             "docs/specs/x.md",
-            "### [x]\n\nSee [the fact-set](../models/composition-model.md#6).\n\n```claim\nkind: constraint\nevaluator: test\ncites: [docs/models/composition-model#6]\n```\n",
+            "### [x]\n\nSee [the fact-set](../models/composition-model.md#6).\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/composition-model#6]\n```\n",
         );
         let report = run(&dir);
         assert!(
             only(&report, CheckId::C5).is_empty(),
             "{:#?}",
-            report.failures
+            report.diagnostics
         );
     }
 
     #[test]
-    fn c5_fails_when_cites_has_an_entry_prose_never_links() {
+    fn c5_passes_when_prose_link_covers_a_because_entry() {
+        // R3's rule reads "every `depends` AND `because` entry carries a
+        // prose link" — this proves C5 actually enforces the `because`
+        // half too, not only `depends`.
         let dir = tempdir();
         dir.write(
             "docket.ncl",
@@ -668,10 +824,92 @@ mod tests {
         dir.write("docs/models/composition-model.md", "## 6. The fact-set\n");
         dir.write(
             "docs/specs/x.md",
-            "### [x]\n\nNo links here.\n\n```claim\nkind: constraint\nevaluator: test\ncites: [docs/models/composition-model#6]\n```\n",
+            "### [x]\n\nSee [the fact-set](../models/composition-model.md#6).\n\n```claim\nkind: constraint\nevaluator: test\nbecause: [docs/models/composition-model#6]\n```\n",
         );
         let report = run(&dir);
-        assert_eq!(only(&report, CheckId::C5).len(), 1);
+        assert!(
+            only(&report, CheckId::C5).is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn c5_fails_when_a_depends_entry_has_no_prose_link() {
+        // Criterion 5, first half: a `depends` entry with no matching
+        // prose link fails C5's replacement rule.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
+              ],
+            }"#,
+        );
+        dir.write("docs/models/composition-model.md", "## 6. The fact-set\n");
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nNo links here.\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/composition-model#6]\n```\n",
+        );
+        let report = run(&dir);
+        let failures = only(&report, CheckId::C5);
+        assert_eq!(failures.len(), 1);
+        assert!(
+            failures[0].message.contains("depends:"),
+            "{:?}",
+            failures[0].message
+        );
+    }
+
+    #[test]
+    fn c5_fails_when_a_because_entry_has_no_prose_link() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
+              ],
+            }"#,
+        );
+        dir.write("docs/models/composition-model.md", "## 6. The fact-set\n");
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nNo links here.\n\n```claim\nkind: constraint\nevaluator: test\nbecause: [docs/models/composition-model#6]\n```\n",
+        );
+        let report = run(&dir);
+        let failures = only(&report, CheckId::C5);
+        assert_eq!(failures.len(), 1);
+        assert!(
+            failures[0].message.contains("because:"),
+            "{:?}",
+            failures[0].message
+        );
+    }
+
+    #[test]
+    fn c5_does_not_require_an_undeclared_prose_link_to_be_declared() {
+        // Criterion 5, second half: a prose link with no declaration does
+        // NOT fail C5 — it is a bare reference (R3), and C5's new rule is
+        // one-directional (declared ⊆ prose), not the old set equality.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nSee [context, not a dependency](https://example.com/context).\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, CheckId::C5).is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
     }
 
     #[test]
@@ -683,13 +921,13 @@ mod tests {
         );
         dir.write(
             "docs/specs/x.md",
-            "### [x]\n\nSee [the web](https://example.com) and [escaping the root](../../outside.md).\n\n```claim\nkind: constraint\nevaluator: test\ncites: []\n```\n",
+            "### [x]\n\nSee [the web](https://example.com) and [escaping the root](../../outside.md).\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
         );
         let report = run(&dir);
         assert!(
             only(&report, CheckId::C5).is_empty(),
             "{:#?}",
-            report.failures
+            report.diagnostics
         );
     }
 
@@ -713,7 +951,7 @@ mod tests {
             only(&report, CheckId::NormativeProse).len(),
             1,
             "{:#?}",
-            report.failures
+            report.diagnostics
         );
     }
 
@@ -735,7 +973,7 @@ mod tests {
         assert!(
             only(&report, CheckId::NormativeProse).is_empty(),
             "{:#?}",
-            report.failures
+            report.diagnostics
         );
     }
 
@@ -756,7 +994,7 @@ mod tests {
         assert!(
             only(&report, CheckId::NormativeProse).is_empty(),
             "{:#?}",
-            report.failures
+            report.diagnostics
         );
     }
 

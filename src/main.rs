@@ -20,7 +20,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the five checks (+ orphan-claim) and emit the index.
+    /// Run the checks (C1-C5, orphan-claim, normative-prose,
+    /// orphaned-because) and emit the index.
     Check {
         /// Corpus root.
         #[arg(long, default_value = ".")]
@@ -90,13 +91,17 @@ fn run_check(corpus_root: &Path, out: Option<&Path>, contract_path: &Path) -> Ex
         None => println!("{json}"),
     }
 
-    for failure in &report.failures {
+    for diagnostic in &report.diagnostics {
+        let severity = match diagnostic.severity {
+            checks::Severity::Fail => "error",
+            checks::Severity::Warn => "warning",
+        };
         eprintln!(
-            "{}: {}:{}: {}",
-            failure.check.as_str(),
-            failure.file,
-            failure.line,
-            failure.message
+            "{severity}: {}: {}:{}: {}",
+            diagnostic.check.as_str(),
+            diagnostic.file,
+            diagnostic.line,
+            diagnostic.message
         );
     }
 
@@ -118,9 +123,10 @@ fn run_blast(corpus_root: &Path, target: &str) -> ExitCode {
         Err(e) => return usage_error(&e),
     };
 
-    // Dispatch on the argument's shape via the same ref grammar `cites`
-    // entries use (model::CiteRef) — not a second notion of what a ref
-    // is. An argument that does not resolve in the corpus is a usage
+    // Dispatch on the argument's shape via the same ref grammar
+    // `depends`/`because` entries use (model::CiteRef) — not a second
+    // notion of what a ref is. An argument that does not resolve in the
+    // corpus is a usage
     // error (exit 2), the same treatment already given an unknown claim
     // id; a ref that resolves but has no citers is a legitimate empty
     // answer (exit 0), so the two must not be conflated.

@@ -18,11 +18,13 @@ called out below.
 | fixture | fails | why |
 |:---|:---|:---|
 | `c1-unknown-field/` | `C1` | `docs/specs/example.md`'s claim block has `extra: nope`, a field the contract does not declare. MVP.md §1.2: "Unknown fields are an error, not ignored." The `[example-claim]` heading is present (not omitted) so the block is *not* also orphaned — omitting it would swap the failure to `orphan-claim` rather than removing it, which is why it stays. |
-| `c2-duplicate-claim-id/` | `C2` | `docs/specs/a.md` and `docs/specs/b.md` both head a claim `[dup-id]`. Each claim block is independently well-formed, in a genre that permits its kind, with no `cites` — so nothing but the id collision fails. |
+| `c2-duplicate-claim-id/` | `C2` | `docs/specs/a.md` and `docs/specs/b.md` both head a claim `[dup-id]`. Each claim block is independently well-formed, in a genre that permits its kind, with no `depends`/`because` — so nothing but the id collision fails. |
 | `c3-genre-forbids-kind/` | `C3` | `docket.ncl` declares `docs/adr/**` with `kinds = []` (MVP.md §2's "no claims permitted" form). `docs/adr/0001-decision.md` declares a `requirement` claim there anyway. |
-| `c4-dangling-cite/` | `C4` | `docs/specs/a.md`'s claim cites `nonexistent-claim`, which resolves to nothing in the corpus. A prose link `[related work](nonexistent-claim)` with the identical target is present so `C5` (link/cites agreement) still passes — see the C5-vs-C4 judgment call below. |
-| `c5-prose-cites-mismatch/` | `C5` | `docs/specs/a.md` declares `[target-claim]` (cited, and it resolves — so `C4` passes) and `[mismatched-claim]`, which cites `[target-claim]` but whose prose body carries no matching link. `L = {}`, `cites = {target-claim}`, sets disagree. `[target-claim]` exists specifically so the citation resolves and `C4` cannot also fire. |
+| `c4-dangling-cite/` | `C4` | `docs/specs/a.md`'s claim `depends: [nonexistent-claim]`, which resolves to nothing in the corpus. A prose link `[related work](nonexistent-claim)` with the identical target is present so `C5` (every `depends`/`because` entry has a matching prose link) still passes — see the C5-vs-C4 judgment call below. |
+| `c5-prose-cites-mismatch/` | `C5` | `docs/specs/a.md` declares `[target-claim]` (cited, and it resolves — so `C4` passes) and `[mismatched-claim]`, which declares `depends: [target-claim]` but whose prose body carries no matching link. `[target-claim]` exists specifically so the citation resolves and `C4` cannot also fire. |
 | `orphan-claim/` | `orphan-claim` | `docs/specs/a.md` is a claim block with no preceding heading in the file at all — the minimal case of "no `[id]`-shaped heading precedes it" (MVP.md §1.1). |
+| `orphaned-because/` | `orphaned-because` | `docs/specs/a.md`'s claim declares `because: [nonexistent-claim]`, which resolves to nothing. A matching prose link is present so `C5` still passes. Exits **0** — `orphaned-because` is `Warn` severity, distinct from `C4`'s `Fail`; see below. |
+| `bare-reference-no-failure/` | — (all pass) | Not a check fixture — see below. `docs/specs/a.md`'s claim declares neither `depends` nor `because`, but its prose links to a target that does not exist in the corpus. Proves the noise-suppression property: an undeclared (bare) reference is never resolved against the corpus at all. |
 | `explanation-forbids-kinds/` | — (config error) | Not a `C`-check fixture — see below. Isolates the `quadrant`/`kinds` derived rule (MVP.md §2), a `docket.ncl` config error, not a corpus-content check. |
 | `normative-prose-unclaimed/` | `normative-prose` | `docs/adr/0001-decision.md` (genre `docs/adr/**`, `kinds = []`) carries a bare `MUST` in its own prose, with no claim block anywhere in the file. See below. |
 | `normative-prose-quoted/` | — (all pass) | Not a check fixture — see below. The identical keyword, present only inside a block quote and inside an inline code span, in the same `kinds = []` genre. |
@@ -105,11 +107,39 @@ either corpus is capable of failing.
   and this corpus is built to make exactly that distinction load-bearing.
   `docket check --corpus fixtures/normative-prose-quoted` exits **0**.
 
+## `orphaned-because/` and `bare-reference-no-failure/`
+
+Isolate the reference-kinds severity split (MVP.md §1.2, §3): a `depends`
+target and a `because` target carry different remedies when dangling, and
+a reference declared as neither is not this tool's concern at all.
+
+- **`orphaned-because/`** — `docs/specs/a.md`'s claim
+  `[orphaned-because-claim]` declares `because: [nonexistent-claim]`, with
+  a matching prose link (`[the old reason](nonexistent-claim)`, so C5
+  cannot also fire). `docket check --corpus fixtures/orphaned-because`
+  exits **0** — a `Warn`-severity diagnostic never flips the exit code —
+  while still printing exactly one `orphaned-because` diagnostic on
+  stderr, whose message says the *reason* is orphaned, not the claim.
+  This is the fixture that would have exited 1 under a design that gave
+  `depends` and `because` the same severity, which is exactly the design
+  R1 (the reference-kinds requirements) rejects.
+- **`bare-reference-no-failure/`** — `docs/specs/a.md`'s claim
+  `[bare-ref-claim]` declares neither `depends` nor `because` at all; its
+  prose links to `nonexistent-target`, which resolves to nothing in the
+  corpus. `docket check --corpus fixtures/bare-reference-no-failure` exits
+  **0** with **zero** diagnostics — not a warning, not a failure. This is
+  the noise-suppression property: an undeclared prose link is a bare
+  reference by construction (nothing marks it as one; the absence of a
+  `depends`/`because` entry *is* the marking), so it is never resolved
+  against the corpus, and a target's deletion produces no signal at all.
+  Also proves C5's replaced rule is one-directional: an undeclared prose
+  link is never required to correspond to a declared entry.
+
 ## `blast-doc-anchor/`
 
-Isolates the defect fixed alongside `blast-semantics`: a `cites` entry
-that is a document anchor (§1.3) must create a reverse edge, the same as
-a claim-id `cites` entry does. Under the pre-fix implementation, this
+Isolates the defect fixed alongside `blast-semantics`: a `depends`/`because`
+entry that is a document anchor (§1.3) must create a reverse edge, the
+same as a claim-id entry does. Under the pre-fix implementation, this
 corpus's blast query returned nothing; a maintainer relying on it would
 have missed exactly the class of dependency §4.1's own worked example
 depends on.
@@ -117,11 +147,12 @@ depends on.
 - `docs/models/rule.md` — hosts `## 3. The rule`, a section with no
   claim block of its own: the fixture isolates a citation *targeting a
   section*, not a claim living in one.
-- `docs/specs/a.md` — claim `[depends-on-rule]` cites
-  `docs/models/rule#3`, the **doc-path#anchor** form, with a matching
-  prose link.
-- `docs/specs/b.md` — claim `[depends-transitively]` cites
-  `depends-on-rule` by claim id, with a matching prose link. This proves
+- `docs/specs/a.md` — claim `[depends-on-rule]` declares
+  `depends: [docs/models/rule#3]`, the **doc-path#anchor** form, with a
+  matching prose link.
+- `docs/specs/b.md` — claim `[depends-transitively]` declares
+  `depends: [depends-on-rule]` by claim id, with a matching prose link.
+  This proves
   the walk does not dead-end at a document-anchor citer: `x` (found via
   the anchor) is still citable by its own claim id, exactly like any
   other claim.
@@ -138,30 +169,37 @@ One document per MVP.md §2's example genre (`docs/specs`, `docs/models`,
 MVP.md §4.1 / README.md's claim-block sample almost verbatim:
 
 - `docs/specs/lock-file-schema.md` — claim `[lock-groundness]`
-  (`kind: constraint`), citing `docs/models/composition-model#6` and
-  `docs/models/execution-model#2.4` — the **doc-path#anchor** reference
+  (`kind: constraint`), declaring `depends: [docs/models/composition-model#6,
+  docs/models/execution-model#2.4]` — the **doc-path#anchor** reference
   form, both instances also given matching prose links written as real
   relative markdown paths (`../models/composition-model.md#6`), which
   `checks::normalize_prose_link` resolves against this file's own
-  directory to the same path-based ref the `cites` entry carries.
+  directory to the same path-based ref the `depends` entry carries. Both
+  are `depends`, not `because`: the claim's own text ("names bound to
+  content identities and exact version strings") states what those two
+  model sections *define*, so the claim's meaning requires them to exist.
 - `docs/models/composition-model.md` — hosts the `## 6` heading
-  `lock-groundness` cites, plus its own claim `[atom-identity]`
-  (`kind: invariant`, `evaluator: proof`, no `cites`) to exercise a second
-  kind/evaluator pair.
+  `lock-groundness` depends on, plus its own claim `[atom-identity]`
+  (`kind: invariant`, `evaluator: proof`, no `depends`/`because`) to
+  exercise a second kind/evaluator pair.
 - `docs/models/execution-model.md` — hosts the `## 2.4` heading
-  `lock-groundness` cites. No claim block of its own.
+  `lock-groundness` depends on. No claim block of its own.
 - `docs/architecture/system-overview.md` — claim `[system-boundary]`
-  (`kind: requirement`, `evaluator: none`), citing `lock-groundness` — the
-  **claim id** reference form (unaffected by the path-refs change: claim
-  ids are bare kebab-case tokens, never paths), with a matching prose
-  link.
+  (`kind: requirement`, `evaluator: none`), declaring `because:
+  [lock-groundness]` — the **claim id** reference form (unaffected by the
+  path-refs change: claim ids are bare kebab-case tokens, never paths),
+  with a matching prose link. `because`, not `depends`: deleting
+  `lock-groundness` would not make the architectural fact ("the boundary
+  sits between the atom store and the build graph") false, only
+  under-justified — the reverse of `lock-groundness`'s own citations,
+  deliberately, so `golden/` exercises both kinds.
 - `docs/adr/0001-use-nickel.md` — a decision record. `kinds = []` for this
   genre, so it carries no claim block, which is the compliant state for
   that genre rather than an exception to it.
 
 All five document paths are distinct, all three claim ids are distinct,
-every `cites` entry matches a corresponding prose link, and every
-citation resolves.
+every `depends`/`because` entry matches a corresponding prose link, and
+every citation resolves.
 
 ## Judgment calls made while writing these fixtures
 
@@ -209,6 +247,21 @@ removed, since the resolution is part of the record.
    anchor `6`), with the rationale that section numbering churns less
    than heading wording. `golden/`'s headings needed no changes for this.
 
+5. **Reference kinds (`depends`/`because`) retired `cites` corpus-wide.**
+   Every fixture that declared `cites` (`blast-doc-anchor/`,
+   `c4-dangling-cite/`, `c5-prose-cites-mismatch/`, `golden/`) was
+   retyped rather than left on the old field, since `cites` is now an
+   unknown field and would fail C1 in every one of them — leaving even
+   one on the old name would have been a silent regression the migration
+   itself was supposed to prevent. `golden/`'s two citations were
+   deliberately typed to different kinds (`depends` in
+   `lock-file-schema.md`, `because` in `system-overview.md`, both argued
+   inline) so the fixture set exercises both, not just one by default.
+   Two new fixtures (`orphaned-because/`, `bare-reference-no-failure/`)
+   isolate the properties no existing fixture could: the `Warn`-severity
+   split, and the noise-suppression guarantee that a bare reference is
+   never resolved against the corpus at all.
+
 ## Execution status
 
 **Executed now**, via `nickel export <extracted-block>.yaml --apply-contract
@@ -231,16 +284,19 @@ observed, one block per line, `<fixture>_<file>_<block-index-within-file>`:
 | `golden_lock-file-schema_0` | 0 |
 | `golden_system-overview_0` | 0 |
 | `orphan-claim_a_0` | 0 |
+| `orphaned-because_a_0` | 0 |
+| `bare-reference-no-failure_a_0` | 0 |
 
 `explanation-forbids-kinds`'s own claim block validates cleanly at C1 —
 the fixture's failure is entirely in `docket.ncl`, before any block is
 ever extracted; see its own section below.
 
-Every `docket.ncl` (all eleven fixtures, `normative-prose-unclaimed/` and
-`normative-prose-quoted/` included) validated against
-`contracts/docket.ncl` with exit code 0 — `explanation-forbids-kinds/`
-included, since the Nickel contract does not enforce the derived rule
-(see its own section below for why).
+Every `docket.ncl` across all thirteen fixture directories (reference
+kinds' `orphaned-because/` and `bare-reference-no-failure/` included, and
+`normative-prose-unclaimed/`/`normative-prose-quoted/` from before them)
+validated against `contracts/docket.ncl` with exit code 0 —
+`explanation-forbids-kinds/` included, since the Nickel contract does not
+enforce the derived rule (see its own section below for why).
 
 This confirms exactly the intended shape: **only** `c1-unknown-field`'s
 block fails schema validation; every other fixture's claim blocks —

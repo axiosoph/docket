@@ -183,6 +183,18 @@ fn is_external(dest: &str) -> bool {
     dest.contains("://") || dest.starts_with("mailto:") || dest.starts_with("tel:")
 }
 
+fn string_array_field(mapping: Option<&serde_norway::Mapping>, field: &str) -> Vec<String> {
+    mapping
+        .and_then(|m| m.get(field))
+        .and_then(|v| v.as_sequence())
+        .map(|seq| {
+            seq.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn parse_raw_claim_block(yaml: &str) -> RawClaimBlock {
     let value: Option<serde_norway::Value> = serde_norway::from_str(yaml).ok();
     let mapping = value.as_ref().and_then(|v| v.as_mapping());
@@ -194,20 +206,14 @@ fn parse_raw_claim_block(yaml: &str) -> RawClaimBlock {
         .and_then(|m| m.get("evaluator"))
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    let cites = mapping
-        .and_then(|m| m.get("cites"))
-        .and_then(|v| v.as_sequence())
-        .map(|seq| {
-            seq.iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
+    let depends = string_array_field(mapping, "depends");
+    let because = string_array_field(mapping, "because");
     RawClaimBlock {
         yaml: yaml.to_string(),
         kind,
         evaluator,
-        cites,
+        depends,
+        because,
     }
 }
 
@@ -393,7 +399,8 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
             .collect();
 
         let raw = parse_raw_claim_block(&block.yaml);
-        let cites = raw.cites.iter().map(|c| CiteRef::parse(c)).collect();
+        let depends = raw.depends.iter().map(|c| CiteRef::parse(c)).collect();
+        let because = raw.because.iter().map(|c| CiteRef::parse(c)).collect();
 
         claims.push(Claim {
             id,
@@ -401,7 +408,8 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
             heading_line,
             block_line,
             raw,
-            cites,
+            depends,
+            because,
             prose_links,
         });
     }
@@ -424,20 +432,42 @@ mod tests {
 
     #[test]
     fn extracts_a_simple_claim() {
-        let src = "### [lock-groundness]\n\nEvery lock value MUST be ground.\n\n```claim\nkind: constraint\nevaluator: property-test\ncites: [docs/models/composition-model#6]\n```\n";
+        let src = "### [lock-groundness]\n\nEvery lock value MUST be ground.\n\n```claim\nkind: constraint\nevaluator: property-test\ndepends: [docs/models/composition-model#6]\n```\n";
         let res = extract_document("docs/specs/lock.md", src);
         assert_eq!(ids(&res), vec!["lock-groundness"]);
         let claim = &res.claims[0];
         assert_eq!(claim.raw.kind.as_deref(), Some("constraint"));
         assert_eq!(claim.raw.evaluator.as_deref(), Some("property-test"));
         assert_eq!(
-            claim.cites,
+            claim.depends,
             vec![CiteRef::DocAnchor {
                 path: "docs/models/composition-model".into(),
                 anchor: "6".into()
             }]
         );
+        assert!(claim.because.is_empty());
         assert!(res.orphan_claims.is_empty());
+    }
+
+    #[test]
+    fn extracts_a_because_entry_separately_from_depends() {
+        let src = "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [d#1]\nbecause: [b#2]\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        let claim = &res.claims[0];
+        assert_eq!(
+            claim.depends,
+            vec![CiteRef::DocAnchor {
+                path: "d".into(),
+                anchor: "1".into()
+            }]
+        );
+        assert_eq!(
+            claim.because,
+            vec![CiteRef::DocAnchor {
+                path: "b".into(),
+                anchor: "2".into()
+            }]
+        );
     }
 
     #[test]
@@ -494,7 +524,7 @@ mod tests {
         // C4/C5 decide corpus-membership later (checks.rs); the
         // extractor's only job is to drop links that are unambiguously
         // external (a URL scheme) and pass everything else through.
-        let src = "### [x]\n\nSee [unrelated](../not-in-corpus.md) and [the web](https://example.com).\n\n```claim\nkind: constraint\ncites: []\n```\n";
+        let src = "### [x]\n\nSee [unrelated](../not-in-corpus.md) and [the web](https://example.com).\n\n```claim\nkind: constraint\n```\n";
         let res = extract_document("docs/specs/x.md", src);
         assert_eq!(res.claims[0].prose_links, vec!["../not-in-corpus.md"]);
     }
