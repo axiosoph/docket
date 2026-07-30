@@ -159,6 +159,8 @@ exists to prevent.
 
 `kinds = []` means the genre may hold **no** claim blocks — the mechanism
 by which a decision record is prevented from carrying normative content.
+(§3's `normative-prose` check extends this from claim blocks to
+unregistered RFC-2119 prose in the same genre.)
 
 **`quadrant` names which of Divio's four documentation quadrants the
 genre serves** — one of `tutorial`, `how-to`, `reference`, `explanation`.
@@ -248,6 +250,43 @@ prose, so the two must not disagree.
 > misdiagnoses it. C4 owns "this target does not exist"; C5 owns "the two
 > representations disagree." Keeping them syntactically separate keeps both
 > diagnoses true.
+
+**`normative-prose`, derived from `kinds = []`, not a sixth numbered
+check.** §2's `kinds = []` already means a genre may hold no claim
+blocks — which already means nothing normatively binding lives in it.
+An RFC-2119 keyword (`MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, `SHALL`,
+`SHALL NOT`, `REQUIRED`, `RECOMMENDED`, `MAY`, `OPTIONAL` — all-caps and
+whole-word, since capitalisation is the only signal that distinguishes
+the keyword from the ordinary English word) appearing in such a genre's
+own voice is a binding assertion that happens to carry no block, which
+is exactly how it evades C3: C3 only ever judges a claim that exists.
+No new config field — the rule derives from `kinds` the same way
+`explanation-forbids-kinds` derives from `quadrant`, and a genre that
+permits at least one kind is unaffected, since its job is to say `MUST`.
+
+Scope is the document's **own voice**. A decision record must be able to
+quote a normative keyword in order to discuss or refute it, so a keyword
+is exempt inside a block quote (any nesting depth), an inline code span,
+or a fenced code block — including a claim block's own YAML, exempted
+the same way any other code sample is, not as a special case. A heading
+is own voice like any other text; nothing exempts it. This is why the
+check belongs here rather than in a text-matching tool outside the
+corpus: a regular expression over raw markdown cannot tell a quoted
+`MUST` from an asserted one, but a parsed document tree already marks a
+block quote and a code span as distinct nodes.
+
+#### [normative-prose-own-voice]
+
+A genre whose `kinds` is empty permits no RFC-2119 keyword in a scanned
+document's own-voice text — text outside a block quote at any depth, an
+inline code span, and a fenced code block. A genre that permits at least
+one kind is unaffected.
+
+```claim
+kind: constraint
+evaluator: test
+cites: []
+```
 
 No stem-uniqueness precondition exists: document identifiers are
 corpus-relative paths (§1.3) and are therefore unique by construction.
