@@ -12,18 +12,21 @@ pub enum ContractError {
 }
 
 /// Where the claim-block contract is expected to live, relative to the
-/// corpus root.
+/// current directory (the contract is a project-level artifact shared
+/// across every corpus root under the project — confirmed once the
+/// sibling `contracts/` deliverable landed: there is exactly one
+/// `contracts/claim.ncl`, not one per corpus — so this does **not**
+/// resolve relative to `--corpus`).
 ///
-/// **This is a documented assumption, not a spec fact.** Neither
-/// README.md ("validated by a committed Nickel contract") nor MVP.md §7
-/// ("Nickel is required for the contract") names a path or export shape —
-/// that file is a sibling deliverable (`contracts/claim.ncl`, owned by a
-/// parallel worker, per this crate's own dispatch), and this crate can't
-/// pin the integration seam down unilaterally. It's a single constant,
-/// trivially overridden via `docket check --contract <path>`; flagged in
-/// the implementation report as needing confirmation once the contract
-/// lands.
-pub const DEFAULT_CONTRACT_RELATIVE_PATH: &str = "contracts/claim.ncl";
+/// Points at the apply-contract shim, not the raw contract file:
+/// `contracts/claim.ncl` is a *record* of several named contracts
+/// (`Kind`, `Evaluator`, `Ref`, `Claim`, …), not itself a contract —
+/// applying it directly would validate a claim block against the whole
+/// record rather than against `.Claim`. `contracts/claim_apply.ncl` is
+/// the sibling-authored shim that does `(import "claim.ncl").Claim`;
+/// its own header names this exact usage (`nickel export <file>.yaml
+/// --apply-contract contracts/claim_apply.ncl`).
+pub const DEFAULT_CONTRACT_RELATIVE_PATH: &str = "contracts/claim_apply.ncl";
 
 /// Validate one claim block's raw YAML (everything it declared, unknown
 /// fields included — that's the point of C1) against the Nickel contract

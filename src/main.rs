@@ -27,9 +27,9 @@ enum Command {
         /// Write the index JSON here instead of stdout.
         #[arg(long)]
         out: Option<PathBuf>,
-        /// Path to the claim-block Nickel contract, resolved relative to
-        /// `--corpus`. See docket::contract for why this default is a
-        /// documented assumption rather than a spec fact.
+        /// Path to the claim-block Nickel contract's apply shim, resolved
+        /// relative to the current directory (it's a project-level
+        /// artifact, not per-corpus — see docket::contract).
         #[arg(long, default_value = contract::DEFAULT_CONTRACT_RELATIVE_PATH)]
         contract: PathBuf,
     },
@@ -56,7 +56,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_check(corpus_root: &Path, out: Option<&Path>, contract_relative: &Path) -> ExitCode {
+fn run_check(corpus_root: &Path, out: Option<&Path>, contract_path: &Path) -> ExitCode {
     let cfg = match config::load_config(corpus_root) {
         Ok(cfg) => cfg,
         Err(e) => return usage_error(&e),
@@ -67,8 +67,10 @@ fn run_check(corpus_root: &Path, out: Option<&Path>, contract_relative: &Path) -
         Err(e) => return usage_error(&e),
     };
 
-    let contract_path = corpus_root.join(contract_relative);
-    let report = match checks::run_checks(&loaded, &cfg, &contract_path) {
+    // Resolved relative to the current directory, not --corpus: the
+    // contract is a project-level artifact shared across every corpus
+    // root (see docket::contract::DEFAULT_CONTRACT_RELATIVE_PATH).
+    let report = match checks::run_checks(&loaded, &cfg, contract_path) {
         Ok(report) => report,
         Err(e) => return usage_error(&e),
     };

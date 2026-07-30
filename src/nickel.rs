@@ -68,10 +68,15 @@ pub fn check_contract(
 ) -> Result<ContractCheck, NickelError> {
     let data_path = write_temp_json(value_json).map_err(NickelError::Io)?;
     let result = (|| {
+        // Absolute paths only: the driver expression arrives over stdin,
+        // not as a file, so Nickel has no directory to resolve a
+        // relative `import` against ("looked in []" is the diagnostic
+        // when this is gotten wrong).
+        let contract_abs = std::path::absolute(contract_path).map_err(NickelError::Io)?;
         let driver = format!(
             "(import \"{data}\") | (import \"{contract}\")",
             data = escape_nickel_string_literal(&data_path.to_string_lossy()),
-            contract = escape_nickel_string_literal(&contract_path.to_string_lossy()),
+            contract = escape_nickel_string_literal(&contract_abs.to_string_lossy()),
         );
 
         let mut child = Command::new("nickel")

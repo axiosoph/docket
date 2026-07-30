@@ -185,13 +185,19 @@ pub fn run_checks(
     }
 
     // C5: prose links and cites agree, per claim, restricted to targets
-    // that resolve (MVP.md §3).
+    // that are ref-shaped per §1.3 — a SYNTACTIC filter, not a resolution
+    // filter (MVP.md §3's boxed note). Filtering by resolution instead
+    // would make a dangling `cites` entry with a matching prose link fail
+    // both C4 and C5 while lying in the C5 diagnostic: prose and cites
+    // agree perfectly there (both name the same nonexistent target), so
+    // reporting a divergence misdiagnoses it. C4 owns "does this exist";
+    // C5 owns "do the two representations agree."
     for claim in &corpus.claims {
         let prose_set: BTreeSet<String> = claim
             .prose_links
             .iter()
             .filter_map(|href| normalize_prose_link(href, &claim.file))
-            .filter(|cite| resolves(cite, &claim_ids, &corpus.documents, &ambiguous_stems))
+            .filter(is_ref_shaped)
             .map(|c| c.to_string())
             .collect();
         let cites_set: BTreeSet<String> = claim.cites.iter().map(|c| c.to_string()).collect();
@@ -247,6 +253,29 @@ fn resolves(
                 .any(|d| d.headings.iter().any(|h| anchor_matches(&h.text, anchor)))
         }
     }
+}
+
+/// Whether a normalized prose-link target is **ref-shaped** per §1.3 —
+/// C5's filter, syntactic only: no corpus lookup, so an entry with a
+/// dangling but well-formed target still counts toward `L`. Mirrors
+/// `contracts/claim.ncl`'s `Ref` predicate (`ClaimIdPattern` /
+/// `DocRefPattern`), which is the shape C1 already enforces on `cites`
+/// itself.
+fn is_ref_shaped(cite: &CiteRef) -> bool {
+    match cite {
+        CiteRef::Claim(id) => is_kebab_case(id),
+        CiteRef::DocAnchor { stem, anchor } => !stem.is_empty() && !anchor.is_empty(),
+    }
+}
+
+fn is_kebab_case(s: &str) -> bool {
+    !s.is_empty()
+        && s.split('-').all(|seg| {
+            !seg.is_empty()
+                && seg
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        })
 }
 
 /// Normalize a raw markdown link href (§3, C5's `L`) into the same
@@ -464,6 +493,31 @@ mod tests {
         );
         let report = run(&dir);
         assert_eq!(only(&report, CheckId::C4).len(), 1);
+    }
+
+    #[test]
+    fn a_dangling_cite_with_a_matching_prose_link_fails_only_c4_not_c5() {
+        // The exact case MVP.md §3's boxed note calls out: prose and
+        // cites AGREE (both name the same nonexistent target), so only
+        // C4 ("this target does not exist") should fire — a resolution
+        // filter on C5's L would incorrectly also fire C5 here, with a
+        // diagnostic that lies about a divergence that doesn't exist.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"] } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nSee [related work](does-not-exist).\n\n```claim\nkind: constraint\nevaluator: test\ncites: [does-not-exist]\n```\n",
+        );
+        let report = run(&dir);
+        assert_eq!(only(&report, CheckId::C4).len(), 1);
+        assert!(
+            only(&report, CheckId::C5).is_empty(),
+            "{:#?}",
+            report.failures
+        );
     }
 
     #[test]
