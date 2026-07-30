@@ -105,7 +105,13 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
 /// this tool targets are small, and the traversal rules are simple
 /// (skip dotfiles/dotdirs — `.git`, `.ledger`, `.scratch` and friends —
 /// don't follow symlinks to avoid cycles).
-fn walk_files(root: &Path) -> Result<Vec<PathBuf>, CorpusError> {
+///
+/// `pub(crate)` rather than private: this walk is not specific to
+/// documents. `marker.rs` reuses it unchanged to scan the *whole* corpus
+/// tree for evaluator markers (source files, not just `.md` — the
+/// extension filter below is this function's caller's decision, not
+/// this function's).
+pub(crate) fn walk_files(root: &Path) -> Result<Vec<PathBuf>, CorpusError> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
 

@@ -4,7 +4,8 @@
 
 use clap::{Parser, Subcommand};
 use docket::model::{CiteRef, anchor_matches};
-use docket::{blast, checks, config, contract, corpus, index};
+use docket::run::{Outcome, RunError, RunResult};
+use docket::{blast, checks, config, contract, corpus, index, marker, run};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -44,6 +45,17 @@ enum Command {
         #[arg(long, default_value = ".")]
         corpus: PathBuf,
     },
+    /// Execute a claim's evaluator (a `docket: <id> :: <command>` marker
+    /// found anywhere in the corpus tree) and report pass / fail /
+    /// absent (see docket::run).
+    Run {
+        /// The claim id to run the evaluator for.
+        claim: String,
+        /// Corpus root — also the marker scan root and each marker
+        /// command's working directory.
+        #[arg(long, default_value = ".")]
+        corpus: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -57,6 +69,10 @@ fn main() -> ExitCode {
             target,
             corpus: corpus_root,
         } => run_blast(&corpus_root, &target),
+        Command::Run {
+            claim,
+            corpus: corpus_root,
+        } => run_run(&corpus_root, &claim),
     }
 }
 
@@ -163,6 +179,93 @@ fn run_blast(corpus_root: &Path, target: &str) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+fn run_run(corpus_root: &Path, claim_id: &str) -> ExitCode {
+    let cfg = match config::load_config(corpus_root) {
+        Ok(cfg) => cfg,
+        Err(e) => return usage_error(&e),
+    };
+
+    let loaded = match corpus::load_corpus(corpus_root, &cfg) {
+        Ok(loaded) => loaded,
+        Err(e) => return usage_error(&e),
+    };
+
+    let markers = match marker::scan_markers(corpus_root) {
+        Ok(markers) => markers,
+        Err(e) => return usage_error(&e),
+    };
+
+    let result = match run::run_claim(&loaded.corpus, claim_id, corpus_root, &markers) {
+        Ok(result) => result,
+        Err(RunError::UnknownClaim(id)) => {
+            eprintln!("error: no claim with id {id:?} in this corpus");
+            return ExitCode::from(2);
+        }
+        Err(e @ RunError::Spawn(_)) => return usage_error(&e),
+    };
+
+    print_run_result(&result);
+
+    // 0 pass/none, 1 fail, 2 usage error (above), 3 absent — see run.rs's
+    // module docs for why absent gets its own code rather than sharing
+    // fail's: a reader gating CI on this exit code can tell "write the
+    // marker" from "the evaluator regressed" without parsing stdout.
+    match result.outcome {
+        Outcome::Pass | Outcome::None => ExitCode::SUCCESS,
+        Outcome::Fail => ExitCode::FAILURE,
+        Outcome::Absent => ExitCode::from(3),
+    }
+}
+
+fn print_run_result(result: &RunResult) {
+    println!(
+        "{}\t{}\t{}",
+        result.outcome.as_str(),
+        result.claim_id,
+        result.evaluator
+    );
+
+    if result.outcome == Outcome::Absent {
+        println!(
+            "  no `docket: {} :: <command>` marker found under the corpus",
+            result.claim_id
+        );
+        return;
+    }
+
+    for m in &result.markers {
+        let status = if m.success {
+            "ok".to_string()
+        } else {
+            match m.exit_code {
+                Some(code) => format!("FAIL (exit {code})"),
+                None => "FAIL (killed by signal)".to_string(),
+            }
+        };
+        println!(
+            "  {status}\t{}:{}\t{}",
+            m.marker.file, m.marker.line, m.marker.command
+        );
+        // Terse on success — the command and its exit status already
+        // say everything a passing marker needs to; captured output
+        // earns its keep only when there's a failure to diagnose.
+        if !m.success {
+            if !m.stdout.is_empty() {
+                println!("  --- stdout ---");
+                for line in m.stdout.lines() {
+                    println!("  {line}");
+                }
+            }
+            if !m.stderr.is_empty() {
+                println!("  --- stderr ---");
+                for line in m.stderr.lines() {
+                    println!("  {line}");
+                }
+            }
+        }
+    }
 }
 
 fn usage_error(e: &dyn std::error::Error) -> ExitCode {

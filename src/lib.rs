@@ -5,5 +5,7 @@ pub mod contract;
 pub mod corpus;
 pub mod extract;
 pub mod index;
+pub mod marker;
 pub mod model;
 pub mod nickel;
+pub mod run;
