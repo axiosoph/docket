@@ -46,10 +46,11 @@
     || v == 'none          || v == "none"
   ),
 
-  # A `cites` entry is a claim id or a `<doc-stem>#<anchor>` document
-  # reference (MVP.md §1.3). Resolving the target against the corpus is
-  # C4's job (needs the whole corpus in view), not this contract's — this
-  # only checks the two syntactic shapes:
+  # A `depends`/`because` entry is a claim id or a `<doc-stem>#<anchor>`
+  # document reference (MVP.md §1.3). Resolving the target against the
+  # corpus is C4's/`orphaned-because`'s job (needs the whole corpus in
+  # view), not this contract's — this only checks the two syntactic
+  # shapes:
   #
   #   - a bare kebab-case claim id, matching the heading-token grammar
   #     MVP.md §1.1 defines for `[id]` headings.
@@ -69,12 +70,26 @@
   # C1) — achieved for free by Nickel's closed-by-default record
   # contracts; no `, ..` appears anywhere in this file.
   #
-  # `cites` defaults to `[]` when absent (MVP.md §1.2's stated default),
-  # applied here so every validated instance carries the field.
+  # Reference kinds (`.ledger/2026-07-30-reference-kinds-and-document-resolution.md`,
+  # R1): the single `cites` field is retired in favour of two, because the
+  # two kinds carry different consequences when their target is deleted —
+  # `depends` means the claim breaks; `because` means only its stated
+  # reason is orphaned. There is deliberately no third field for a bare
+  # reference: R3 defines bare as "a prose link that is not declared", so
+  # it has no declaration to validate — adding a field for it would let an
+  # author assert bareness, which contradicts what bareness means.
+  #
+  # Both default to `[]` (MVP.md §1.2's stated default for the field they
+  # replace), applied here so every validated instance carries them.
   Claim = {
     kind      | Kind,
     evaluator | Evaluator,
-    cites
+    depends
+      | Array Ref
+      | optional
+      | default
+      = [],
+    because
       | Array Ref
       | optional
       | default

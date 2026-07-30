@@ -73,7 +73,8 @@ mod tests {
 {
   kind | std.contract.from_predicate (fun v => std.array.elem v ["requirement", "invariant", "constraint"]),
   evaluator | std.contract.from_predicate (fun v => std.array.elem v ["proof", "model-check", "property-test", "test", "example", "none"]),
-  cites | Array String | default = [],
+  depends | Array String | default = [],
+  because | Array String | default = [],
 }
 "#;
 
@@ -94,14 +95,14 @@ mod tests {
     #[test]
     fn a_well_formed_claim_block_validates() {
         let contract = write_test_contract();
-        let yaml = "kind: constraint\nevaluator: property-test\ncites: [composition-model#6]\n";
+        let yaml = "kind: constraint\nevaluator: property-test\ndepends: [composition-model#6]\n";
         let result = validate_claim_block(&contract, yaml).unwrap();
         assert!(matches!(result, ContractCheck::Valid));
         let _ = std::fs::remove_file(contract);
     }
 
     #[test]
-    fn missing_cites_defaults_to_empty_and_still_validates() {
+    fn missing_depends_and_because_default_to_empty_and_still_validate() {
         let contract = write_test_contract();
         let yaml = "kind: invariant\nevaluator: none\n";
         let result = validate_claim_block(&contract, yaml).unwrap();

@@ -7,5 +7,5 @@ through a document-anchor citer that is not a graph dead end.
 ```claim
 kind: constraint
 evaluator: test
-cites: [depends-on-rule]
+depends: [depends-on-rule]
 ```

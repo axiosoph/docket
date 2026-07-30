@@ -1,16 +1,28 @@
 //! Blast radius (MVP.md §4.2): given a ref — a claim id or a
 //! `<doc-path>#<anchor>` document anchor (§1.3) — every claim (and the
 //! document it lives in) that transitively cites it — "the set a
-//! reviewer must re-check if it changes." Computed purely over `cites`
-//! (README.md, "Links are data": "never by pattern-matching prose").
+//! reviewer must re-check if it changes." Computed purely over the
+//! citation graph (README.md, "Links are data": "never by
+//! pattern-matching prose").
 //!
-//! Both `cites` forms create reverse edges, keyed by the cited ref's
+//! **Both `depends` and `because` create edges here, undistinguished.**
+//! R2 (`.ledger/2026-07-30-reference-kinds-and-document-resolution.md`)
+//! separates them into two different *searches* — forward for what
+//! consumes a target, backward for what is justified by it — but blast
+//! radius answers a third question, "what must a reviewer re-check", and
+//! both kinds answer it identically: a claim that depends on a changed
+//! target may now be wrong, and a claim justified by it may now need a
+//! new reason. A **bare** reference never enters this graph at all — it
+//! is not a value [`crate::model::Claim::refs`] ever yields.
+//!
+//! Every ref form creates a reverse edge, keyed by the cited ref's
 //! canonical string (`CiteRef::to_string()` — a bare id for a claim, or
 //! `path#anchor` for a document anchor). A document anchor is never
-//! itself a *citer* (only a claim has a `cites` list), so once a claim
-//! citing a document anchor is found, the walk continues from that
+//! itself a *citer* (only a claim has `depends`/`because`), so once a
+//! claim citing a document anchor is found, the walk continues from that
 //! claim's own id exactly as it would from any other claim-id node —
-//! the recursion is agnostic to which ref form found it.
+//! the recursion is agnostic to which ref form found it, and to which
+//! kind carried it.
 
 use crate::model::{Claim, Corpus};
 use std::collections::{HashMap, HashSet};
@@ -44,7 +56,7 @@ pub fn blast_radius(corpus: &Corpus, start: &str) -> BlastResult {
     // anchor's string always contains `#` (CiteRef::Display).
     let mut citers: HashMap<String, Vec<&Claim>> = HashMap::new();
     for claim in &corpus.claims {
-        for cite in &claim.cites {
+        for (_kind, cite) in claim.refs() {
             citers.entry(cite.to_string()).or_default().push(claim);
         }
     }
@@ -106,11 +118,19 @@ mod tests {
             .collect()
     }
 
-    fn claim_src(id: &str, cites: &[&str]) -> String {
+    fn claim_src_kind(id: &str, field: &str, refs: &[&str]) -> String {
         format!(
-            "### [{id}]\n\n```claim\nkind: constraint\nevaluator: test\ncites: [{}]\n```\n",
-            cites.join(", ")
+            "### [{id}]\n\n```claim\nkind: constraint\nevaluator: test\n{field}: [{}]\n```\n",
+            refs.join(", ")
         )
+    }
+
+    /// Every existing blast test only needs to prove the graph walk, not
+    /// which kind carries each edge — `depends` is the arbitrary but
+    /// representative choice; `finds_citers_via_because_edges_too` below
+    /// is what actually proves `because` edges are walked identically.
+    fn claim_src(id: &str, depends: &[&str]) -> String {
+        claim_src_kind(id, "depends", depends)
     }
 
     fn corpus_with_claims(claims: Vec<Claim>) -> Corpus {
@@ -203,7 +223,7 @@ mod tests {
         // change fixes: MVP.md's motivating example (§4.1's worked-example
         // dependency) is exactly this shape.
         let src =
-            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ncites: [some-doc#3]\n```\n";
+            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [some-doc#3]\n```\n";
         let corpus = corpus_with_claims(extract_document("f.md", src).claims);
 
         let result = blast_radius(&corpus, "some-doc#3");
@@ -217,7 +237,7 @@ mod tests {
         // document-anchor key "some-doc#3" — the two ref forms occupy
         // disjoint string spaces, so this must stay empty.
         let src =
-            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ncites: [some-doc#3]\n```\n";
+            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [some-doc#3]\n```\n";
         let corpus = corpus_with_claims(extract_document("f.md", src).claims);
         let result = blast_radius(&corpus, "some-doc");
         assert!(result.entries.is_empty());
@@ -230,7 +250,7 @@ mod tests {
         // document-anchor citer is not a graph dead end, since other
         // claims can still cite that citer by its own claim id.
         let x =
-            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ncites: [some-doc#3]\n```\n";
+            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [some-doc#3]\n```\n";
         let y = claim_src("y", &["x"]);
         let corpus = corpus_with_claims(claims_from(&[("f-x.md", x), ("f-y.md", &y)]));
 
@@ -238,5 +258,20 @@ mod tests {
         let ids: Vec<&str> = result.entries.iter().map(|e| e.claim.as_str()).collect();
         assert_eq!(ids, vec!["x", "y"]);
         assert!(result.cycles.is_empty());
+    }
+
+    #[test]
+    fn finds_citers_via_because_edges_too() {
+        // Blast radius answers "what must a reviewer re-check", which a
+        // `because` edge answers exactly as a `depends` edge does — the
+        // kind distinction is about severity on deletion (checks.rs), not
+        // about whether the edge belongs in this graph at all.
+        let a = claim_src("a", &[]);
+        let b = claim_src_kind("b", "because", &["a"]);
+        let corpus = corpus_with_claims(claims_from(&[("f-a.md", &a), ("f-b.md", &b)]));
+
+        let result = blast_radius(&corpus, "a");
+        let ids: Vec<&str> = result.entries.iter().map(|e| e.claim.as_str()).collect();
+        assert_eq!(ids, vec!["b"]);
     }
 }

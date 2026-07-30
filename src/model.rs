@@ -72,7 +72,8 @@ pub enum Evaluator {
     None,
 }
 
-/// MVP.md §1.3: a `cites` entry is either a claim id or a document anchor.
+/// MVP.md §1.3: a `depends`/`because` entry is either a claim id or a
+/// document anchor.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CiteRef {
     /// A bare kebab-case claim id, e.g. `lock-groundness`.
@@ -83,8 +84,8 @@ pub enum CiteRef {
 
 impl CiteRef {
     /// Parse the `<doc-path>#<anchor>` / bare-id surface syntax shared by
-    /// `cites` entries (MVP.md §1.3) and normalized prose link targets
-    /// (§3, C5). This is a pure split, not a resolution — a raw `cites`
+    /// `depends`/`because` entries (MVP.md §1.3) and normalized prose link
+    /// targets (§3, C5). This is a pure split, not a resolution — a raw
     /// entry is already in final path form by the time it reaches this
     /// crate (C1 enforces the shape), and a prose href is resolved to the
     /// same form beforehand (see `checks::normalize_prose_link`).
@@ -104,6 +105,33 @@ impl std::fmt::Display for CiteRef {
         match self {
             CiteRef::Claim(id) => write!(f, "{id}"),
             CiteRef::DocAnchor { path, anchor } => write!(f, "{path}#{anchor}"),
+        }
+    }
+}
+
+/// The three reference kinds (`.ledger/2026-07-30-reference-kinds-and-document-resolution.md`,
+/// R1). Only `depends` and `because` are represented here — a **bare**
+/// reference is, by design, not a value of this type at all: R3 defines it
+/// as "a prose link that is not declared", so it has no field to populate
+/// and no edge in the citation graph. Adding a third variant would let an
+/// author *assert* bareness, which is meaningless — bareness is the
+/// absence of a declaration, not a declaration of absence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RefKind {
+    /// The claim's truth or meaning requires the target. Dangling ⇒ the
+    /// claim is broken (C4).
+    Depends,
+    /// The claim's justification is the target. Dangling ⇒ the claim still
+    /// stands, but its stated reason is orphaned (`orphaned-because`).
+    Because,
+}
+
+impl RefKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RefKind::Depends => "depends",
+            RefKind::Because => "because",
         }
     }
 }
@@ -131,7 +159,8 @@ pub struct RawClaimBlock {
     /// it only means this checker didn't reimplement contract validation.
     pub kind: Option<String>,
     pub evaluator: Option<String>,
-    pub cites: Vec<String>,
+    pub depends: Vec<String>,
+    pub because: Vec<String>,
 }
 
 /// A claim as extracted from the corpus, before any check has run.
@@ -144,8 +173,13 @@ pub struct Claim {
     /// Line of the opening ` ```claim ` fence.
     pub block_line: Line,
     pub raw: RawClaimBlock,
-    /// `cites` entries parsed via [`CiteRef::parse`], best-effort.
-    pub cites: Vec<CiteRef>,
+    /// `depends` entries parsed via [`CiteRef::parse`], best-effort. A
+    /// dangling `depends` target means this claim is broken (C4).
+    pub depends: Vec<CiteRef>,
+    /// `because` entries parsed via [`CiteRef::parse`], best-effort. A
+    /// dangling `because` target means this claim's stated reason is
+    /// orphaned, not that the claim is false (`orphaned-because`).
+    pub because: Vec<CiteRef>,
     /// Raw, un-normalized link targets found in the claim's prose body
     /// (§3, C5's `L`, before restriction to resolving targets). External
     /// URLs are dropped at extraction time since C5 ignores them
@@ -153,6 +187,22 @@ pub struct Claim {
     /// relative path, possibly with a `#fragment`) that checks.rs
     /// resolves against the corpus's documents and claim ids.
     pub prose_links: Vec<String>,
+}
+
+impl Claim {
+    /// Every reference this claim declares, kind attached — the union
+    /// `depends ∪ because` that forms real edges in the citation graph
+    /// (blast, C4/`orphaned-because`, C5's subset check). A **bare**
+    /// reference is, by design, absent from this iterator entirely: R3
+    /// (`.ledger/2026-07-30-reference-kinds-and-document-resolution.md`)
+    /// defines it as an undeclared prose link, so it never became a
+    /// `CiteRef` in the first place.
+    pub fn refs(&self) -> impl Iterator<Item = (RefKind, &CiteRef)> {
+        self.depends
+            .iter()
+            .map(|c| (RefKind::Depends, c))
+            .chain(self.because.iter().map(|c| (RefKind::Because, c)))
+    }
 }
 
 /// A heading found anywhere in a scanned document, kept for anchor
@@ -205,7 +255,8 @@ pub struct IndexClaim {
     pub line: usize,
     pub kind: String,
     pub evaluator: String,
-    pub cites: Vec<String>,
+    pub depends: Vec<String>,
+    pub because: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

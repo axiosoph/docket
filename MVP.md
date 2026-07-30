@@ -20,7 +20,7 @@ A claim block is a fenced code block whose info string is exactly
 ```claim
 kind: constraint
 evaluator: property-test
-cites: [docs/models/composition-model#6, docs/models/execution-model#2.4]
+depends: [docs/models/composition-model#6, docs/models/execution-model#2.4]
 ```
 ````
 
@@ -44,14 +44,53 @@ error (`orphan-claim`).
 |:---|:--|:---|
 | `kind` | yes | one of `requirement`, `invariant`, `constraint` |
 | `evaluator` | yes | one of `proof`, `model-check`, `type`, `property-test`, `test`, `example`, `none` |
-| `cites` | no (default `[]`) | array of refs |
+| `depends` | no (default `[]`) | array of refs |
+| `because` | no (default `[]`) | array of refs |
 
 Unknown fields are an error, not ignored. Tolerating them would let a
 typo'd field name silently carry no meaning.
 
+#### Reference kinds
+
+A reference entry is not one undifferentiated `cites`. It names *why* a
+claim points somewhere, because deleting the target means something
+different depending on which:
+
+| kind | meaning | on deletion of the target |
+|:---|:---|:---|
+| `depends` | the claim's truth or meaning requires the target | the claim is **broken** — rewire or remove |
+| `because` | the claim's justification is the target | the claim **still stands**, under-justified — restate the reason, or discover it was vestigial |
+| bare reference | context; asserts no dependence | nothing |
+
+Only `depends` and `because` are fields on the block. A **bare** reference
+has no field of its own — it is a prose link declared as neither, the
+complement rather than a third array to populate. A field for it would let
+an author *assert* bareness, which is incoherent: bareness is the absence
+of a declaration, not a declaration of absence.
+
+**The third kind is not optional.** Without it, authors overload one field
+for both context and dependence, and every deletion either manufactures
+false breakage (an incidental mention treated as load-bearing) or, worse,
+teaches authors to under-declare to avoid the noise — and a register
+nobody trusts is worse than none, because its silence reads as safety.
+
+The closest analogue is a runtime versus a build dependency: a missing
+runtime dependency means the artifact doesn't work; a missing build
+dependency means it still works but can no longer be *derived*. That maps
+the remedies exactly — the test of an analogy is that the consequences
+match, not merely the words.
+
+**These declarations are not verifiable.** Nobody can prove a claim really
+depends on a target rather than merely mentioning it; a `depends` written
+where a `because` belongs, or the reverse, is a review finding, not
+something this tool can catch. The register exists to **bound the review
+surface, not eliminate it** — which is the argument for keeping the
+vocabulary exactly this small (two declared kinds, not a weighted or
+graded dependence) rather than trying to be clever about intent.
+
 ### 1.3 Reference syntax
 
-A `cites` entry is either:
+A `depends`/`because` entry is either:
 
 - **a claim id** — kebab-case, resolving to a claim elsewhere in the
   corpus: `lock-groundness`
@@ -75,9 +114,9 @@ The cost is longer citations. The compensation is that a ref now shows its
 genre, so `docs/models/composition-model#6` states on its face that it
 points at a model.
 
-**Ref syntax is enforced by the contract, not by C4.** A `cites` entry
-whose *shape* is invalid — whitespace, a second `#`, an empty half — is a
-malformed block and fails **C1**. C4 therefore only ever operates on
+**Ref syntax is enforced by the contract, not by C4.** A `depends`/`because`
+entry whose *shape* is invalid — whitespace, a second `#`, an empty half —
+is a malformed block and fails **C1**. C4 therefore only ever operates on
 well-formed refs, and "does this resolve" presupposes "is this a ref."
 
 **Prose-link normalization.** A markdown href in prose is normalized to a
@@ -89,7 +128,8 @@ a file under `docs/specs/`, normalizes to `docs/models/composition-model#6`.
 
 This is load-bearing rather than cosmetic: **real corpora link by relative
 path with an extension**, and without normalization those links would never
-match a `cites` entry, making C5 fire on every correctly-linked claim.
+match a `depends`/`because` entry, making C5 fire on every correctly-linked
+claim.
 
 **A leading `/` is corpus-root-relative**, not joined onto the citing file's
 directory. So `[…](/docs/models/composition-model.md#6)` normalizes to
@@ -101,8 +141,8 @@ produces a path that names nothing.
 Note the normalization *resolves* the path rather than discarding it, which
 is what makes it agree with §1.3's path-based refs — and it means an
 ordinary relative markdown link, written the way an author would write it
-anyway, normalizes to exactly the ref a `cites` entry carries. A link that
-escapes the corpus root is not ref-shaped and is ignored.
+anyway, normalizes to exactly the ref a `depends`/`because` entry carries.
+A link that escapes the corpus root is not ref-shaped and is ignored.
 
 **Anchor derivation.** An anchor `A` matches a heading iff the heading's
 text — after stripping `#` markers and leading whitespace — begins with
@@ -119,16 +159,16 @@ silent.
 
 #### [reference-syntax]
 
-A `cites` entry is a claim id or a `<doc-path>#<anchor>` document anchor;
-document identifiers are the corpus-relative path with `.md` removed, not
-a basename; a prose link normalizes to the same vocabulary by resolving
-against the citing file's directory before comparison; an anchor matches a
-heading by non-alphanumeric-bounded prefix, not exact text.
+A `depends`/`because` entry is a claim id or a `<doc-path>#<anchor>`
+document anchor; document identifiers are the corpus-relative path with
+`.md` removed, not a basename; a prose link normalizes to the same
+vocabulary by resolving against the citing file's directory before
+comparison; an anchor matches a heading by non-alphanumeric-bounded
+prefix, not exact text.
 
 ```claim
 kind: constraint
 evaluator: test
-cites: []
 ```
 
 ## 2. Configuration
@@ -199,7 +239,6 @@ matter of convention.
 ```claim
 kind: constraint
 evaluator: test
-cites: []
 ```
 
 **Only files with a `.md` extension are scanned.** Non-markdown files
@@ -228,28 +267,73 @@ and the offending value.
 | `C1` | every claim block validates against the contract | malformed or unknown field |
 | `C2` | claim ids are unique corpus-wide | two homes for one id |
 | `C3` | **`kind` ∈ the genre's permitted kinds for that path** | **a genre violation — a fact in the wrong home** |
-| `C4` | every `cites` target resolves | dangling reference |
-| `C5` | prose links and `cites` agree, per claim | the graph and the prose have diverged |
+| `C4` | every `depends` target resolves | **the claim is broken** — rewire or remove |
+| `C5` | every `depends`/`because` entry has a matching prose link | a declared reference with no prose trail |
 
-**C5, precisely.** For a claim, let `L` be the set of markdown link
-targets appearing in its prose body (from its id heading to the next
-heading of the same or higher level, excluding the claim block itself),
-restricted to targets that are **ref-shaped** per §1.3 — a syntactic
-filter, *not* a resolution filter. Then `L` and `cites` must be equal as
-sets. A link to an external URL is ignored, since it is not ref-shaped.
-Rationale: `cites` is authoritative for the graph, but a reader follows
-prose, so the two must not disagree.
+**`depends` and `because` are checked separately, at different severity**
+(§1.2's reference kinds). C4 above covers only `depends`: a dangling
+target means the claim itself is broken. A dangling `because` target is
+`orphaned-because`, below — a distinct check at a strictly lower severity,
+because the diagnosis is different in *kind*, not merely in degree: the
+claim still holds, only its stated reason no longer resolves.
+
+**C5, precisely — replaced.** The original rule required `L` — the set of
+markdown link targets in a claim's prose body (from its id heading to the
+next heading of the same or higher level, excluding the claim block
+itself), restricted to targets that are **ref-shaped** per §1.3, a
+syntactic filter, *not* a resolution filter — and `cites` to be equal as
+sets. Reference kinds retire that equality: a bare reference is
+legitimate and undeclared *by design* (§1.2), so requiring every prose
+link to appear in a declared field would force every incidental mention
+to be declared, collapsing context back into dependence — the exact
+failure the third kind (§1.2) exists to prevent.
+
+The replacement:
+
+> **Every `depends` and `because` entry carries a prose link. A prose
+> link that is not declared is a bare reference.**
+
+Formally: let `D` be a claim's `depends` ∪ `because` entries (compared to
+`L` by target string; which array an entry came from does not matter
+here). The rule is `D ⊆ L`, not `D = L`. Everything declared must be
+linked, so a reader following prose reaches what the graph says matters;
+nothing requires the reverse, so an incidental mention costs nothing to
+leave undeclared, and nothing is hidden — undeclared *means* bare, and
+bare asserts nothing.
+
+**This also relocates a job C5 was never able to do.** No formulation of
+set equality — old or new — can catch *undeclared dependence*: an author
+can simply not link at all, and nothing here objects. The equality only
+ever caught the harmless half, *linked but undeclared*. Finding a claim
+discussed without being cited is a search problem — keyword and semantic
+search over the register, precision from the claim's own subject terms,
+recall from semantic search over its text — not a link-check problem, and
+C5 should stop pretending to be one.
 
 > **Syntactic, not resolution — and the reason is not isolability.** An
 > earlier draft said *"targets that resolve."* Under that reading a
-> dangling `cites` entry with a matching prose link fails **both** C4 and
-> C5, because the unresolvable link would be excluded from `L`. Two errors
-> for one defect is the lesser problem. The real problem is that **C5's
-> message would lie**: prose and `cites` agree perfectly in that case —
-> both point at nothing — and reporting a prose/`cites` divergence
-> misdiagnoses it. C4 owns "this target does not exist"; C5 owns "the two
-> representations disagree." Keeping them syntactically separate keeps both
-> diagnoses true.
+> dangling `depends`/`because` entry with a matching prose link fails
+> **both** C4 (or `orphaned-because`) and C5, because the unresolvable
+> link would be excluded from `L`. Two errors for one defect is the
+> lesser problem. The real problem is that **C5's message would lie**:
+> the declared entry and its prose link agree perfectly in that case —
+> both point at nothing — and reporting a divergence misdiagnoses it.
+> C4/`orphaned-because` own "this target does not exist"; C5 owns "is
+> every declaration linked." Keeping them syntactically separate keeps
+> both diagnoses true.
+
+**`orphaned-because`, the severity split C4 cannot express.** A dangling
+`because` target gets its own check rather than a relaxed C4, because the
+two diagnoses differ in kind: C4's "this claim is broken" would be a lie
+here — the claim still holds, only its stated reason is gone.
+`orphaned-because` runs at a strictly lower severity than every
+C-numbered check: it is *reported*, and its presence alone never moves a
+run from exit 0 to exit 1 (§5) — the same "reported, never failed on"
+treatment README.md already gives an evaluator that discharges no claim.
+Sharing C4's severity was considered and rejected: it would either block
+a merge on a merely-thin justification, or, softened to match, silently
+swallow real breakage — the severity split is the entire reason §1.2
+distinguishes the two kinds at all.
 
 **`normative-prose`, derived from `kinds = []`, not a sixth numbered
 check.** §2's `kinds = []` already means a genre may hold no claim
@@ -285,7 +369,6 @@ one kind is unaffected.
 ```claim
 kind: constraint
 evaluator: test
-cites: []
 ```
 
 No stem-uniqueness precondition exists: document identifiers are
@@ -306,7 +389,8 @@ it is a pure projection of the source.
       "line": 88,
       "kind": "constraint",
       "evaluator": "property-test",
-      "cites": ["docs/models/composition-model#6", "docs/models/execution-model#2.4"]
+      "depends": ["docs/models/composition-model#6", "docs/models/execution-model#2.4"],
+      "because": []
     }
   },
   "documents": {
@@ -338,7 +422,7 @@ keyed by the document path identifier of
 ```claim
 kind: constraint
 evaluator: test
-cites: [reference-syntax]
+depends: [reference-syntax]
 ```
 
 ### 4.2 Blast radius
@@ -347,19 +431,29 @@ cites: [reference-syntax]
 docket blast <ref>
 ```
 
-`<ref>` is a `cites` entry per §1.3: a claim id or a `<doc-path>#<anchor>`
-document anchor. Prints, transitively, every claim (and the document it
-lives in) that cites the given ref — the set a reviewer must re-check if
-the cited claim or document section changes. Cycles are reported, not
-followed twice.
+`<ref>` is a `depends`/`because` entry per §1.3: a claim id or a
+`<doc-path>#<anchor>` document anchor. Prints, transitively, every claim
+(and the document it lives in) that cites the given ref — the set a
+reviewer must re-check if the cited claim or document section changes.
+Cycles are reported, not followed twice.
 
-**Both reference forms feed one graph.** A document-anchor `cites` entry
-creates a reverse edge exactly as a claim-id entry does — there is no
-second, lesser notion of citation for the anchor form. A document anchor
-is never itself a *citer* (only a claim carries a `cites` list), so once
-a claim citing an anchor is found, the walk continues from that claim's
-own id exactly as it would from any other claim-id node: an anchor is a
-valid starting point, never a graph dead end partway through.
+**Both reference forms feed one graph, and so do both kinds.** A
+document-anchor entry creates a reverse edge exactly as a claim-id entry
+does — there is no second, lesser notion of citation for the anchor form.
+A `depends` edge and a `because` edge are walked identically: §1.2 splits
+the two by *severity on deletion* (C4 vs `orphaned-because`), not by
+whether a reviewer must re-check the citer — a claim justified by a
+changed target needs a new reason exactly as urgently as a reviewer needs
+to know a dependent claim might now be false, so both belong in the same
+blast radius. **Reporting *which* kind each edge in the result carries is
+deliberately out of this MVP** — it is a pure computation over data
+already in the index (which of `depends`/`because` an edge came from), so
+it is fully derivable later without touching the schema; only the schema
+was urgent (§1.2). A document anchor is never itself a *citer* (only a claim
+carries `depends`/`because`), so once a claim citing an anchor is found,
+the walk continues from that claim's own id exactly as it would from any
+other claim-id node: an anchor is a valid starting point, never a graph
+dead end partway through.
 
 **A `<ref>` that does not resolve in the corpus is a usage error** (exit
 2, §5) — the same treatment already given an unknown claim id, extended
@@ -371,18 +465,19 @@ nothing in the corpus."
 #### [blast-semantics]
 
 `docket blast <ref>` accepts either [reference-syntax](reference-syntax)
-form as its argument. A document-anchor `cites` entry creates a reverse
-edge the same way a claim-id entry does, and the transitive walk
-continues from a citing claim's own id afterward — a document anchor is
-a valid starting point but never itself further citable, since only a
-claim carries a `cites` list. An argument that does not resolve in the
-corpus is a usage error (exit 2); one that resolves but has no citers
-prints nothing (exit 0).
+form as its argument. A document-anchor entry creates a reverse edge the
+same way a claim-id entry does, and the transitive walk continues from a
+citing claim's own id afterward — a document anchor is a valid starting
+point but never itself further citable, since only a claim carries
+`depends`/`because`. A `depends` edge and a `because` edge are walked
+identically, undistinguished in this MVP's output. An argument that does
+not resolve in the corpus is a usage error (exit 2); one that resolves
+but has no citers prints nothing (exit 0).
 
 ```claim
 kind: constraint
 evaluator: test
-cites: [reference-syntax]
+depends: [reference-syntax]
 ```
 
 ## 5. Exit codes

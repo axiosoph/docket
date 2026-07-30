@@ -10,5 +10,5 @@ evaluator: test
 ```claim
 kind: constraint
 evaluator: test
-cites: [target-claim]
+depends: [target-claim]
 ```
