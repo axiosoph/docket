@@ -177,7 +177,7 @@ mod tests {
         let dir = tempdir();
         dir.write(
             "docket.ncl",
-            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"] } ] }"#,
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
         );
         dir.write(
             "docs/specs/lock.md",
@@ -206,7 +206,7 @@ mod tests {
         let dir = tempdir();
         dir.write(
             "docket.ncl",
-            r#"{ genres = [ { path = "docs/models/**", kinds = ["invariant"] } ] }"#,
+            r#"{ genres = [ { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" } ] }"#,
         );
         dir.write("docs/models/lean/README.md", "# Lean\n");
         dir.write("docs/models/tla/README.md", "# TLA\n");
@@ -234,8 +234,8 @@ mod tests {
             "docket.ncl",
             r#"{
               genres = [
-                { path = "docs/**", kinds = ["requirement"] },
-                { path = "docs/specs/**", kinds = ["constraint"] },
+                { path = "docs/**", kinds = ["requirement"], quadrant = "reference" },
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
               ],
             }"#,
         );
@@ -251,7 +251,7 @@ mod tests {
         let dir = tempdir();
         dir.write(
             "docket.ncl",
-            r#"{ genres = [ { path = "docs/**", kinds = ["constraint"] } ] }"#,
+            r#"{ genres = [ { path = "docs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
         );
         dir.write(
             "docs/.hidden/should-not-be-seen.md",
@@ -278,7 +278,7 @@ mod tests {
         let dir = tempdir();
         dir.write(
             "docket.ncl",
-            r#"{ genres = [ { path = "docs/**", kinds = ["constraint"] } ] }"#,
+            r#"{ genres = [ { path = "docs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
         );
         dir.write(
             "docs/orphan.md",
@@ -302,7 +302,7 @@ mod tests {
         let dir = tempdir();
         dir.write(
             "docket.ncl",
-            r#"{ genres = [ { path = "docs/models/**", kinds = ["invariant"] } ] }"#,
+            r#"{ genres = [ { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" } ] }"#,
         );
         dir.write(
             "docs/models/claim.md",

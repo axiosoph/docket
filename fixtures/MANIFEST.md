@@ -23,6 +23,7 @@ called out below.
 | `c4-dangling-cite/` | `C4` | `docs/specs/a.md`'s claim cites `nonexistent-claim`, which resolves to nothing in the corpus. A prose link `[related work](nonexistent-claim)` with the identical target is present so `C5` (link/cites agreement) still passes — see the C5-vs-C4 judgment call below. |
 | `c5-prose-cites-mismatch/` | `C5` | `docs/specs/a.md` declares `[target-claim]` (cited, and it resolves — so `C4` passes) and `[mismatched-claim]`, which cites `[target-claim]` but whose prose body carries no matching link. `L = {}`, `cites = {target-claim}`, sets disagree. `[target-claim]` exists specifically so the citation resolves and `C4` cannot also fire. |
 | `orphan-claim/` | `orphan-claim` | `docs/specs/a.md` is a claim block with no preceding heading in the file at all — the minimal case of "no `[id]`-shaped heading precedes it" (MVP.md §1.1). |
+| `explanation-forbids-kinds/` | — (config error) | Not a `C`-check fixture — see below. Isolates the `quadrant`/`kinds` derived rule (MVP.md §2), a `docket.ncl` config error, not a corpus-content check. |
 | `blast-doc-anchor/` | — (all pass) | Not a check fixture — see below. Isolates a `blast` behaviour rather than a check. |
 | `golden/` | — (all pass) | See below. |
 
@@ -32,6 +33,45 @@ genre (`docs/models/{lean,lean-surety,tla}/README.md`), indistinguishable
 by basename: document identifiers are now corpus-relative paths, unique
 by construction, so there is nothing left for a stem-collision check to
 detect. The fixture directory and its two empty files are deleted.
+
+**Every fixture's `docket.ncl` carries the required `quadrant` field**
+(MVP.md §2), added to every genre without changing which check the
+fixture isolates: `docs/specs/**`/`docs/models/**`/`docs/architecture/**`
+genres are `quadrant = "reference"`, and `docs/adr/**` (`kinds = []`)
+genres are `quadrant = "explanation"` — the same mapping MVP.md §2's own
+worked example uses. Neither value interacts with any `C`-check or
+`orphan-claim`, so no fixture's isolated failure changed.
+
+## `explanation-forbids-kinds/`
+
+Isolates the derived rule (MVP.md §2): a genre whose `quadrant` is
+`explanation` and whose `kinds` is non-empty is a configuration error.
+`docket.ncl` declares `docs/adr/**` with `kinds = ["requirement"]` and
+`quadrant = "explanation"` — the exact contradiction the rule forbids.
+
+This is **not** one of the five corpus checks (C1–C5) or `orphan-claim`:
+it is caught at config-load time, before the corpus is ever scanned, the
+same way an ambiguous genre pattern or an unknown `kind` value already
+are. `docket check --corpus fixtures/explanation-forbids-kinds` exits
+**2** (usage/configuration error, MVP.md §5), with a message naming the
+offending genre and its `kinds`, rather than exiting 1 with a `Failure`
+entry in the index.
+
+**The rule is enforced only in Rust (`config::load_config`), not in
+`contracts/docket.ncl`.** `nickel export --apply-contract
+contracts/docket.ncl` on this fixture's `docket.ncl` exits **0** — the
+Nickel contract validates the *shape* of `quadrant` and `kinds`
+independently but does not cross-check them against each other, by
+design (see `contracts/docket.ncl`'s comment on `Genre`). Only
+`docket check` (or a direct call to `config::load_config`) observes the
+failure. This fixture's row above is marked "config error" rather than
+"all pass" for exactly that reason: the corpus content is fine, and would
+pass every `C`-check if the config ever let it load.
+
+`docs/adr/0001-decision.md` mirrors `c3-genre-forbids-kind/`'s decision
+document — a `requirement` claim under an ADR-shaped path — kept for
+realism as a self-contained corpus root, even though `docket check` never
+reaches it: the config error is returned before any file is scanned.
 
 ## `blast-doc-anchor/`
 
@@ -154,13 +194,20 @@ observed, one block per line, `<fixture>_<file>_<block-index-within-file>`:
 | `c4-dangling-cite_a_0` | 0 |
 | `c5-prose-cites-mismatch_a_0` (`target-claim`) | 0 |
 | `c5-prose-cites-mismatch_a_1` (`mismatched-claim`) | 0 |
+| `explanation-forbids-kinds_0001-decision_0` | 0 |
 | `golden_composition-model_0` | 0 |
 | `golden_lock-file-schema_0` | 0 |
 | `golden_system-overview_0` | 0 |
 | `orphan-claim_a_0` | 0 |
 
-Every `docket.ncl` (all eight fixtures) validated against
-`contracts/docket.ncl` with exit code 0.
+`explanation-forbids-kinds`'s own claim block validates cleanly at C1 —
+the fixture's failure is entirely in `docket.ncl`, before any block is
+ever extracted; see its own section below.
+
+Every `docket.ncl` (all nine fixtures) validated against
+`contracts/docket.ncl` with exit code 0 — `explanation-forbids-kinds/`
+included, since the Nickel contract does not enforce the derived rule
+(see its own section below for why).
 
 This confirms exactly the intended shape: **only** `c1-unknown-field`'s
 block fails schema validation; every other fixture's claim blocks —

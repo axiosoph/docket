@@ -1,6 +1,6 @@
 {
   genres = [
-    { path = "docs/specs/**", kinds = ["constraint"] },
-    { path = "docs/models/**", kinds = ["invariant"] },
+    { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+    { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
   ],
 }

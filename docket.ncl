@@ -7,14 +7,18 @@
 {
   genres = [
     # MVP.md is the specification genre (README.md's genre table): it
-    # states what must be true, so its claim kind is `constraint`.
-    { path = "MVP.md", kinds = ["constraint"] },
+    # states what must be true, so its claim kind is `constraint`, and it
+    # answers a "what is accurately true" question — Divio's reference.
+    { path = "MVP.md", kinds = ["constraint"], quadrant = "reference" },
 
     # README.md is explanation and holds no claims — explicit `kinds = []`
     # rather than leaving it unmatched, so a future claim block added here
     # is a loud C3 genre violation instead of silently unscanned. That is
     # the same choice this corpus's own design principle makes: "anything
-    # an agent could get wrong must be checked by a gate."
-    { path = "README.md", kinds = [] },
+    # an agent could get wrong must be checked by a gate." Its
+    # `quadrant = "explanation"` is not just a label here — under the
+    # derived rule (MVP.md §2), it is *why* `kinds = []` is required
+    # rather than merely conventional.
+    { path = "README.md", kinds = [], quadrant = "explanation" },
   ],
 }

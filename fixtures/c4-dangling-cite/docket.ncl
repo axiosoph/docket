@@ -1,5 +1,5 @@
 {
   genres = [
-    { path = "docs/specs/**", kinds = ["constraint"] },
+    { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
   ],
 }

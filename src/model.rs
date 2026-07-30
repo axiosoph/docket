@@ -35,6 +35,31 @@ impl Kind {
     }
 }
 
+/// MVP.md §2: Divio's four documentation quadrants — which question a
+/// genre's documents answer. Orthogonal to `kind`: `kind` says what a
+/// single claim asserts; `quadrant` says what job the genre as a whole
+/// does, and is what makes the genre taxonomy comparable across corpora
+/// (a project's own genre names, e.g. `docs/specs/**`, do not travel).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Quadrant {
+    Tutorial,
+    HowTo,
+    Reference,
+    Explanation,
+}
+
+impl Quadrant {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Quadrant::Tutorial => "tutorial",
+            Quadrant::HowTo => "how-to",
+            Quadrant::Reference => "reference",
+            Quadrant::Explanation => "explanation",
+        }
+    }
+}
+
 /// MVP.md §1.2: the six permitted evaluator names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

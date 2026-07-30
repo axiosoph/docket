@@ -1,6 +1,6 @@
 //! `docket.ncl` loading and genre path matching (MVP.md §2).
 
-use crate::model::Kind;
+use crate::model::{Kind, Quadrant};
 use crate::nickel::{self, NickelError};
 use std::path::Path;
 
@@ -18,11 +18,30 @@ pub enum ConfigError {
     Shape { path: String, detail: String },
     #[error("{path}: genre kind {kind:?} is not one of requirement, invariant, constraint")]
     UnknownKind { path: String, kind: String },
+    #[error(
+        "{path}: genre quadrant {quadrant:?} is not one of tutorial, how-to, reference, explanation"
+    )]
+    UnknownQuadrant { path: String, quadrant: String },
     #[error("{path}: genre path pattern {pattern:?} is not a valid glob: {detail}")]
     InvalidPattern {
         path: String,
         pattern: String,
         detail: String,
+    },
+    /// The derived rule (MVP.md §2): explanation carries rationale, not
+    /// checkable claims — a claim is a checkable assertion, so a genre
+    /// declaring `quadrant = "explanation"` and a non-empty `kinds` is a
+    /// contradiction in the config itself, not a corpus-content failure.
+    /// Raised at config-load time (exit 2), alongside `UnknownKind` and
+    /// `InvalidPattern` — like them, it needs nothing but `docket.ncl`'s
+    /// own fields to detect.
+    #[error(
+        "{path}: genre {pattern:?} has quadrant \"explanation\" but permits kinds {kinds:?} — explanation carries rationale, not checkable claims"
+    )]
+    ExplanationForbidsKinds {
+        path: String,
+        pattern: String,
+        kinds: Vec<String>,
     },
 }
 
@@ -45,6 +64,10 @@ pub struct Genre {
     /// not a synthesized name).
     pub path: String,
     pub kinds: Vec<Kind>,
+    /// Which of Divio's four quadrants this genre's documents serve
+    /// (MVP.md §2) — required and closed, so a corpus's genre taxonomy is
+    /// always comparable to another corpus's.
+    pub quadrant: Quadrant,
     compiled: glob::Pattern,
 }
 
@@ -135,6 +158,32 @@ pub fn load_config(corpus_root: &Path) -> Result<Config, ConfigError> {
             })?);
         }
 
+        let quadrant_str = entry
+            .get("quadrant")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ConfigError::Shape {
+                path: path_str.clone(),
+                detail: format!("genre {genre_path:?} is missing a string `quadrant`"),
+            })?;
+        let quadrant =
+            parse_quadrant(quadrant_str).ok_or_else(|| ConfigError::UnknownQuadrant {
+                path: path_str.clone(),
+                quadrant: quadrant_str.to_string(),
+            })?;
+
+        // Derived rule (MVP.md §2): a claim is a checkable assertion, and
+        // explanation's job is rationale — so a genre that is explanation
+        // and still permits claims is a contradiction in its own config,
+        // not a matter of style. Checked here, at config-load time,
+        // because both fields it needs live on this one genre entry.
+        if quadrant == Quadrant::Explanation && !kinds.is_empty() {
+            return Err(ConfigError::ExplanationForbidsKinds {
+                path: path_str.clone(),
+                pattern: genre_path.clone(),
+                kinds: kinds.iter().map(|k| k.as_str().to_string()).collect(),
+            });
+        }
+
         let compiled =
             glob::Pattern::new(&genre_path).map_err(|e| ConfigError::InvalidPattern {
                 path: path_str.clone(),
@@ -145,6 +194,7 @@ pub fn load_config(corpus_root: &Path) -> Result<Config, ConfigError> {
         genres.push(Genre {
             path: genre_path,
             kinds,
+            quadrant,
             compiled,
         });
     }
@@ -157,6 +207,16 @@ fn parse_kind(s: &str) -> Option<Kind> {
         "requirement" => Some(Kind::Requirement),
         "invariant" => Some(Kind::Invariant),
         "constraint" => Some(Kind::Constraint),
+        _ => None,
+    }
+}
+
+fn parse_quadrant(s: &str) -> Option<Quadrant> {
+    match s {
+        "tutorial" => Some(Quadrant::Tutorial),
+        "how-to" => Some(Quadrant::HowTo),
+        "reference" => Some(Quadrant::Reference),
+        "explanation" => Some(Quadrant::Explanation),
         _ => None,
     }
 }
@@ -178,10 +238,10 @@ mod tests {
             dir.path(),
             r#"{
               genres = [
-                { path = "docs/specs/**", kinds = ["constraint"] },
-                { path = "docs/models/**", kinds = ["invariant"] },
-                { path = "docs/architecture/**", kinds = ["requirement"] },
-                { path = "docs/adr/**", kinds = [] },
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
+                { path = "docs/architecture/**", kinds = ["requirement"], quadrant = "reference" },
+                { path = "docs/adr/**", kinds = [], quadrant = "explanation" },
               ],
             }"#,
         );
@@ -189,7 +249,9 @@ mod tests {
         assert_eq!(config.genres.len(), 4);
         assert_eq!(config.genres[0].path, "docs/specs/**");
         assert_eq!(config.genres[0].kinds, vec![Kind::Constraint]);
+        assert_eq!(config.genres[0].quadrant, Quadrant::Reference);
         assert!(config.genres[3].kinds.is_empty());
+        assert_eq!(config.genres[3].quadrant, Quadrant::Explanation);
     }
 
     #[test]
@@ -211,11 +273,59 @@ mod tests {
     }
 
     #[test]
+    fn unknown_quadrant_is_a_config_error() {
+        let dir = tempdir();
+        write_docket_ncl(
+            dir.path(),
+            r#"{ genres = [ { path = "docs/**", kinds = ["constraint"], quadrant = "opinion" } ] }"#,
+        );
+        let err = load_config(dir.path()).unwrap_err();
+        assert!(matches!(err, ConfigError::UnknownQuadrant { .. }));
+    }
+
+    #[test]
+    fn missing_quadrant_is_a_config_error() {
+        let dir = tempdir();
+        write_docket_ncl(
+            dir.path(),
+            r#"{ genres = [ { path = "docs/**", kinds = ["constraint"] } ] }"#,
+        );
+        let err = load_config(dir.path()).unwrap_err();
+        assert!(matches!(err, ConfigError::Shape { .. }));
+    }
+
+    #[test]
+    fn explanation_with_nonempty_kinds_is_a_config_error() {
+        // The derived rule (MVP.md §2): explanation carries rationale, not
+        // checkable claims — a genre claiming both is a contradiction in
+        // docket.ncl itself, caught at config-load time rather than
+        // treated as a corpus-content check.
+        let dir = tempdir();
+        write_docket_ncl(
+            dir.path(),
+            r#"{ genres = [ { path = "docs/adr/**", kinds = ["requirement"], quadrant = "explanation" } ] }"#,
+        );
+        let err = load_config(dir.path()).unwrap_err();
+        assert!(matches!(err, ConfigError::ExplanationForbidsKinds { .. }));
+    }
+
+    #[test]
+    fn explanation_with_empty_kinds_loads_cleanly() {
+        let dir = tempdir();
+        write_docket_ncl(
+            dir.path(),
+            r#"{ genres = [ { path = "docs/adr/**", kinds = [], quadrant = "explanation" } ] }"#,
+        );
+        let config = load_config(dir.path()).expect("kinds = [] under explanation is legal");
+        assert_eq!(config.genres[0].quadrant, Quadrant::Explanation);
+    }
+
+    #[test]
     fn match_genre_matches_a_glob_recursive_pattern() {
         let dir = tempdir();
         write_docket_ncl(
             dir.path(),
-            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"] } ] }"#,
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
         );
         let config = load_config(dir.path()).unwrap();
         assert!(
@@ -241,8 +351,8 @@ mod tests {
             dir.path(),
             r#"{
               genres = [
-                { path = "docs/**", kinds = ["requirement"] },
-                { path = "docs/specs/**", kinds = ["constraint"] },
+                { path = "docs/**", kinds = ["requirement"], quadrant = "reference" },
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
               ],
             }"#,
         );

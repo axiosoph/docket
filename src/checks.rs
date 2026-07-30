@@ -397,7 +397,7 @@ mod tests {
         let dir = tempdir();
         dir.write(
             "docket.ncl",
-            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"] } ] }"#,
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
         );
         dir.write(
             "docs/specs/lock.md",
@@ -412,7 +412,7 @@ mod tests {
         let dir = tempdir();
         dir.write(
             "docket.ncl",
-            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"] } ] }"#,
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
         );
         dir.write(
             "docs/specs/x.md",
@@ -427,7 +427,7 @@ mod tests {
         let dir = tempdir();
         dir.write(
             "docket.ncl",
-            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"] } ] }"#,
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
         );
         dir.write(
             "docs/specs/a.md",
@@ -446,7 +446,7 @@ mod tests {
         let dir = tempdir();
         dir.write(
             "docket.ncl",
-            r#"{ genres = [ { path = "docs/adr/**", kinds = [] } ] }"#,
+            r#"{ genres = [ { path = "docs/adr/**", kinds = [], quadrant = "explanation" } ] }"#,
         );
         dir.write(
             "docs/adr/decision.md",
@@ -461,7 +461,7 @@ mod tests {
         let dir = tempdir();
         dir.write(
             "docket.ncl",
-            r#"{ genres = [ { path = "docs/models/**", kinds = ["invariant"] } ] }"#,
+            r#"{ genres = [ { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" } ] }"#,
         );
         dir.write(
             "docs/models/m.md",
@@ -476,7 +476,7 @@ mod tests {
         let dir = tempdir();
         dir.write(
             "docket.ncl",
-            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"] } ] }"#,
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
         );
         dir.write(
             "docs/specs/x.md",
@@ -496,7 +496,7 @@ mod tests {
         let dir = tempdir();
         dir.write(
             "docket.ncl",
-            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"] } ] }"#,
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
         );
         dir.write(
             "docs/specs/x.md",
@@ -518,8 +518,8 @@ mod tests {
             "docket.ncl",
             r#"{
               genres = [
-                { path = "docs/specs/**", kinds = ["constraint"] },
-                { path = "docs/models/**", kinds = ["invariant"] },
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
               ],
             }"#,
         );
@@ -546,8 +546,8 @@ mod tests {
             "docket.ncl",
             r#"{
               genres = [
-                { path = "docs/specs/**", kinds = ["constraint"] },
-                { path = "docs/models/**", kinds = ["invariant"] },
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
               ],
             }"#,
         );
@@ -570,8 +570,8 @@ mod tests {
             "docket.ncl",
             r#"{
               genres = [
-                { path = "docs/specs/**", kinds = ["constraint"] },
-                { path = "docs/models/**", kinds = ["invariant"] },
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
               ],
             }"#,
         );
@@ -596,8 +596,8 @@ mod tests {
             "docket.ncl",
             r#"{
               genres = [
-                { path = "docs/specs/**", kinds = ["constraint"] },
-                { path = "docs/models/**", kinds = ["invariant"] },
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
               ],
             }"#,
         );
@@ -621,8 +621,8 @@ mod tests {
             "docket.ncl",
             r#"{
               genres = [
-                { path = "docs/specs/**", kinds = ["constraint"] },
-                { path = "docs/models/**", kinds = ["invariant"] },
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
               ],
             }"#,
         );
@@ -640,7 +640,7 @@ mod tests {
         let dir = tempdir();
         dir.write(
             "docket.ncl",
-            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"] } ] }"#,
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
         );
         dir.write(
             "docs/specs/x.md",
@@ -659,7 +659,7 @@ mod tests {
         let dir = tempdir();
         dir.write(
             "docket.ncl",
-            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"] } ] }"#,
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
         );
         dir.write(
             "docs/specs/x.md",

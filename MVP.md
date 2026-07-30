@@ -148,10 +148,10 @@ exists to prevent.
 ```nickel
 {
   genres = [
-    { path = "docs/specs/**",        kinds = ["constraint"] },
-    { path = "docs/models/**",       kinds = ["invariant"] },
-    { path = "docs/architecture/**", kinds = ["requirement"] },
-    { path = "docs/adr/**",          kinds = [] },   # no claims permitted
+    { path = "docs/specs/**",        kinds = ["constraint"],  quadrant = "reference" },
+    { path = "docs/models/**",       kinds = ["invariant"],   quadrant = "reference" },
+    { path = "docs/architecture/**", kinds = ["requirement"], quadrant = "reference" },
+    { path = "docs/adr/**",          kinds = [],              quadrant = "explanation" },  # no claims permitted
   ],
   # Files matching no genre are not scanned.
 }
@@ -159,6 +159,46 @@ exists to prevent.
 
 `kinds = []` means the genre may hold **no** claim blocks — the mechanism
 by which a decision record is prevented from carrying normative content.
+
+**`quadrant` names which of Divio's four documentation quadrants the
+genre serves** — one of `tutorial`, `how-to`, `reference`, `explanation`.
+It is a third, required field on every genre, closed over exactly those
+four values.
+
+A repository's own genre names do not travel: `docs/specs/**` means
+nothing outside the repository that chose it. `quadrant` does, because
+it names what job the genre does rather than where its files live — so it
+is what makes "which quadrant has no claims?" a question comparable
+across corpora, rather than one only answerable from inside a single
+project's own conventions.
+
+`quadrant` is **required**, not optional. An optional field would make
+the gap analysis silently incomplete: a corpus with three unlabelled
+genres would report three empty quadrants and read as a documentation
+gap, when the actual gap is in the config.
+
+**The derived rule: a genre whose `quadrant` is `explanation` and whose
+`kinds` is non-empty is a configuration error (exit 2).** A claim is a
+checkable assertion; explanation's job is rationale, not assertions to
+check — so the two are a contradiction in the genre's own declaration,
+not a corpus-content failure to discover by scanning documents. This
+makes an existing convention a consequence instead of a rule argued case
+by case: today a decision-record genre gets `kinds = []` because everyone
+agrees a decision is terminal justification (README.md's genre table);
+under quadrants, that follows from decision records being explanation.
+
+#### [explanation-forbids-kinds]
+
+A genre whose `quadrant` is `explanation` and whose `kinds` is non-empty
+is a configuration error (exit 2): explanation carries rationale, and a
+checkable assertion inside it is a genre violation by construction, not a
+matter of convention.
+
+```claim
+kind: constraint
+evaluator: test
+cites: []
+```
 
 **Only files with a `.md` extension are scanned.** Non-markdown files
 inside a matched genre are skipped silently — not an error, not a warning.

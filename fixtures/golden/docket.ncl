@@ -1,8 +1,8 @@
 {
   genres = [
-    { path = "docs/specs/**",        kinds = ["constraint"] },
-    { path = "docs/models/**",       kinds = ["invariant"] },
-    { path = "docs/architecture/**", kinds = ["requirement"] },
-    { path = "docs/adr/**",          kinds = [] },
+    { path = "docs/specs/**",        kinds = ["constraint"], quadrant = "reference" },
+    { path = "docs/models/**",       kinds = ["invariant"], quadrant = "reference" },
+    { path = "docs/architecture/**", kinds = ["requirement"], quadrant = "reference" },
+    { path = "docs/adr/**",          kinds = [], quadrant = "explanation" },
   ],
 }
