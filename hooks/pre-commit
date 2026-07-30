@@ -52,8 +52,14 @@ contract="${contract:-contracts/claim_apply.ncl}"
 index="$(mktemp)"
 trap 'rm -f "$index"' EXIT
 
-if ! "$bin" check --corpus . --contract "$contract" >"$index" 2>/tmp/docket-hook-err; then
-  code=$?
+# Run first, capture second. `code=$?` inside `if ! cmd; then` captures the
+# NEGATION's status, not the command's — so it was always 0, and a hardcoded
+# `exit 1` masked that for as long as nobody read the variable. Same defect
+# class as reading a status through a pipe: a construct between the command and
+# `$?` silently substitutes its own result.
+"$bin" check --corpus . --contract "$contract" >"$index" 2>/tmp/docket-hook-err
+code=$?
+if [ "$code" -ne 0 ]; then
   echo >&2
   echo "docket: check failed — commit blocked" >&2
   echo >&2
@@ -62,7 +68,11 @@ if ! "$bin" check --corpus . --contract "$contract" >"$index" 2>/tmp/docket-hook
   if [ "$code" -eq 2 ]; then
     echo "  (exit 2 — configuration error, not a claim defect: see docket.ncl)" >&2
   fi
-  exit 1
+  # Propagate docket's own code rather than flattening to 1. A caller that
+  # wraps this hook — a project gate runner, say — needs to tell a claim defect
+  # (1) from a config error (2), and it cannot recover a distinction the hook
+  # has already discarded. Both still block the commit; only the reason survives.
+  exit "$code"
 fi
 
 # ---------------------------------------------------------------------------
