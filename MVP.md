@@ -20,7 +20,7 @@ A claim block is a fenced code block whose info string is exactly
 ```claim
 kind: constraint
 evaluator: property-test
-cites: [composition-model#6, execution-model#2.4]
+cites: [docs/models/composition-model#6, docs/models/execution-model#2.4]
 ```
 ````
 
@@ -55,12 +55,25 @@ A `cites` entry is either:
 
 - **a claim id** — kebab-case, resolving to a claim elsewhere in the
   corpus: `lock-groundness`
-- **a document anchor** — `<doc-stem>#<anchor>`, resolving to a heading in
-  a corpus document: `composition-model#6`
+- **a document anchor** — `<doc-path>#<anchor>`, resolving to a heading in
+  a corpus document, where `<doc-path>` is the **corpus-relative path with
+  the `.md` extension removed**: `docs/models/composition-model#6`
 
-Document stems are file basenames without extension, and must be unique
-corpus-wide (checked; see §3). Stems are **not** constrained to
-kebab-case — `README`, `MVP` are valid stems.
+**Paths, not basenames — and this retires a check.** An earlier draft used
+the file basename, which the second real-corpus run refuted immediately: a
+corpus had three `README.md` files inside one genre
+(`docs/models/{lean,lean-surety,tla}/README.md`), indistinguishable by
+basename. Requiring a corpus not to put `README.md` in subdirectories is
+not a rule anyone can follow.
+
+Using the path instead makes document identifiers **unique by
+construction**, which means the `duplicate-stem` check has nothing left to
+detect and is **retired**, along with its fixture. Paths contain `/`, which
+the ref contract already accepts — no contract change is needed.
+
+The cost is longer citations. The compensation is that a ref now shows its
+genre, so `docs/models/composition-model#6` states on its face that it
+points at a model.
 
 **Ref syntax is enforced by the contract, not by C4.** A `cites` entry
 whose *shape* is invalid — whitespace, a second `#`, an empty half — is a
@@ -68,23 +81,27 @@ malformed block and fails **C1**. C4 therefore only ever operates on
 well-formed refs, and "does this resolve" presupposes "is this a ref."
 
 **Prose-link normalization.** A markdown href in prose is normalized to a
-ref before comparison (C5): strip any directory prefix and the `.md`
-extension to leave the document stem, retain any `#fragment`, and treat a
-fragment-only href as referring to the containing document. So
-`[…](../models/composition-model.md#6)` normalizes to
-`composition-model#6`.
+ref before comparison (C5): **resolve it against the containing file's
+directory** to get a corpus-relative path, strip the `.md` extension, retain
+any `#fragment`, and treat a fragment-only href as referring to the
+containing document. So `[…](../models/composition-model.md#6)`, written in
+a file under `docs/specs/`, normalizes to `docs/models/composition-model#6`.
 
 This is load-bearing rather than cosmetic: **real corpora link by relative
 path with an extension**, and without normalization those links would never
-match a `cites` entry, making C5 fire on every correctly-linked claim. The
-bare-literal form used in `fixtures/` is the degenerate case of the same
-rule.
+match a `cites` entry, making C5 fire on every correctly-linked claim.
+
+Note the normalization *resolves* the path rather than discarding it, which
+is what makes it agree with §1.3's path-based refs — and it means an
+ordinary relative markdown link, written the way an author would write it
+anyway, normalizes to exactly the ref a `cites` entry carries. A link that
+escapes the corpus root is not ref-shaped and is ignored.
 
 **Anchor derivation.** An anchor `A` matches a heading iff the heading's
 text — after stripping `#` markers and leading whitespace — begins with
 `A` followed by either end-of-string or a non-alphanumeric character. So
-`composition-model#6` matches `## 6. The fact-set: …` and
-`execution-model#2.4` matches `### 2.4 Something`, while `#6` does **not**
+`docs/models/composition-model#6` matches `## 6. The fact-set: …` and
+`…/execution-model#2.4` matches `### 2.4 Something`, while `#6` does **not**
 match `## 60. …`.
 
 Section numbers rather than slugified heading text, deliberately: heading
@@ -171,9 +188,8 @@ prose, so the two must not disagree.
 > representations disagree." Keeping them syntactically separate keeps both
 > diagnoses true.
 
-Also checked, as a precondition rather than a numbered check: document
-stems are unique corpus-wide (`duplicate-stem`), since references depend
-on it.
+No stem-uniqueness precondition exists: document identifiers are
+corpus-relative paths (§1.3) and are therefore unique by construction.
 
 ## 4. Outputs
 
@@ -190,7 +206,7 @@ it is a pure projection of the source.
       "line": 88,
       "kind": "constraint",
       "evaluator": "property-test",
-      "cites": ["composition-model#6", "execution-model#2.4"]
+      "cites": ["docs/models/composition-model#6", "docs/models/execution-model#2.4"]
     }
   },
   "documents": {
