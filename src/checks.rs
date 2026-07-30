@@ -246,17 +246,16 @@ pub fn run_checks(
     // entry with a matching prose link still names the same nonexistent
     // target either way, so it fails C4 alone, not C4 and C5 both.
     for claim in &corpus.claims {
-        let prose_set: BTreeSet<String> = claim
+        let prose_set: BTreeSet<CiteRef> = claim
             .prose_links
             .iter()
             .filter_map(|href| normalize_prose_link(href, &claim.file))
             .filter(is_ref_shaped)
-            .map(|c| c.to_string())
             .collect();
 
         let undeclared: Vec<String> = claim
             .refs()
-            .filter(|(_, cite)| !prose_set.contains(&cite.to_string()))
+            .filter(|(_, cite)| !prose_link_declares(cite, &prose_set))
             .map(|(kind, cite)| format!("{}:{}", kind.as_str(), cite))
             .collect();
 
@@ -329,6 +328,31 @@ fn resolves(cite: &CiteRef, claim_ids: &HashSet<&str>, documents: &[Document]) -
             .iter()
             .find(|d| d.doc_path == *path)
             .is_some_and(|d| d.headings.iter().any(|h| anchor_matches(&h.text, anchor))),
+    }
+}
+
+/// Whether a declared `depends`/`because` target is covered by some
+/// entry in the claim's normalized prose-link set (C5's `D ⊆ L`).
+///
+/// A doc-anchor declaration requires an exact match — it already carries
+/// its own path and anchor, so nothing else could represent it. A
+/// claim-id declaration is satisfied two ways: an exact bare-id match
+/// (`[…](spine-chain-complete)`), or any doc-anchor prose link whose
+/// **anchor component** equals the id (`[…](#spine-chain-complete)` or
+/// `[…](docs/x.md#spine-chain-complete)`) — the form every markdown
+/// renderer and link checker already understands, and what an author
+/// writes unprompted. The bare form stays accepted rather than retired:
+/// it costs nothing to keep, and this repository's own MVP.md claims
+/// (§1.3, §4.1) already use it (`.ledger/2026-07-30-claim-id-prose-link-breaks-link-checkers.md`).
+fn prose_link_declares(cite: &CiteRef, prose: &BTreeSet<CiteRef>) -> bool {
+    if prose.contains(cite) {
+        return true;
+    }
+    match cite {
+        CiteRef::Claim(id) => prose
+            .iter()
+            .any(|p| matches!(p, CiteRef::DocAnchor { anchor, .. } if anchor == id)),
+        CiteRef::DocAnchor { .. } => false,
     }
 }
 
@@ -928,6 +952,91 @@ mod tests {
             only(&report, CheckId::C5).is_empty(),
             "{:#?}",
             report.diagnostics
+        );
+    }
+
+    #[test]
+    fn c5_accepts_an_anchor_form_prose_link_for_a_claim_id_declaration() {
+        // .ledger/2026-07-30-claim-id-prose-link-breaks-link-checkers.md:
+        // the anchor form (`#id`) is what an ordinary link checker and an
+        // author both understand for a same-file link. A claim-id
+        // `depends` entry must be satisfiable by it, not only by the bare
+        // form (`[…](target-claim)`, unlinkable outside this tool).
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "### [target-claim]\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n\
+             ### [depends-on-target]\n\nSee [the target](#target-claim).\n\n\
+             ```claim\nkind: constraint\nevaluator: test\ndepends: [target-claim]\n```\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, CheckId::C5).is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn c5_accepts_a_cross_file_anchor_form_prose_link_for_a_claim_id_declaration() {
+        // The anchor doesn't have to be same-file: a doc-anchor prose
+        // link whose *anchor component* is the claim id satisfies the
+        // declaration regardless of which document it points at.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
+              ],
+            }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "### [target-claim]\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        dir.write(
+            "docs/models/b.md",
+            "### [depends-on-target]\n\nSee [the target](../specs/a.md#target-claim).\n\n\
+             ```claim\nkind: invariant\nevaluator: test\ndepends: [target-claim]\n```\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, CheckId::C5).is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn c5_still_fails_a_claim_id_depends_entry_with_no_prose_link_at_all() {
+        // The property most easily lost by this fix: accepting the
+        // anchor form must not turn into accepting *no* link. A
+        // claim-id `depends` entry with zero prose links anywhere in the
+        // claim's body still fails C5.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "### [target-claim]\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n\
+             ### [depends-on-target]\n\nNo links here.\n\n\
+             ```claim\nkind: constraint\nevaluator: test\ndepends: [target-claim]\n```\n",
+        );
+        let report = run(&dir);
+        let failures = only(&report, CheckId::C5);
+        assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
+        assert!(
+            failures[0].message.contains("depends:target-claim"),
+            "{:?}",
+            failures[0].message
         );
     }
 

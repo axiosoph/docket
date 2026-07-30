@@ -157,6 +157,29 @@ this tool targets, so numbers are the more stable anchor. The failure mode
 when a document is renumbered is loud — C4 fails immediately — rather than
 silent.
 
+**Which link forms satisfy a declaration (C5).** A `depends`/`because`
+entry naming a **document anchor** is satisfied only by an exact match —
+its normalized path and anchor must equal the entry's. An entry naming a
+**claim id**, though, is satisfied by either of two prose-link forms:
+
+- the **bare id** as the href, `[…](spine-chain-complete)` — resolved only
+  by this tool's normalization, since it is neither a path nor a fragment;
+- the **anchor form**, `[…](#spine-chain-complete)` or
+  `[…](docs/x.md#spine-chain-complete)` — any normalized document anchor
+  whose anchor component equals the id, independent of which document it
+  names.
+
+Both are accepted, non-exclusively: a documentation corpus must stay
+readable by ordinary tooling, and the bare form is not that — no
+markdown renderer resolves it to anything and no link checker accepts an
+href that names no file, so a corpus that used it exclusively would ship
+links this tool alone can follow. The anchor form is what a renderer
+resolves and a link checker accepts, and what an author writes
+unprompted, so it is required to work. The bare form stays *accepted*
+rather than retired: retiring it would be a breaking migration for no
+correctness gain, and this document's own claims (§4.1, §4.2 below) use
+it already.
+
 #### [reference-syntax]
 
 A `depends`/`because` entry is a claim id or a `<doc-path>#<anchor>`
@@ -293,13 +316,18 @@ The replacement:
 > **Every `depends` and `because` entry carries a prose link. A prose
 > link that is not declared is a bare reference.**
 
-Formally: let `D` be a claim's `depends` ∪ `because` entries (compared to
-`L` by target string; which array an entry came from does not matter
-here). The rule is `D ⊆ L`, not `D = L`. Everything declared must be
-linked, so a reader following prose reaches what the graph says matters;
-nothing requires the reverse, so an incidental mention costs nothing to
-leave undeclared, and nothing is hidden — undeclared *means* bare, and
-bare asserts nothing.
+Formally: let `D` be a claim's `depends` ∪ `because` entries and `L` its
+normalized prose-link targets (which array an entry came from does not
+matter here). A document-anchor entry in `D` matches `L` by exact target
+equality; a claim-id entry matches by target equality **or** by any `L`
+entry whose anchor component equals the id (§1.3, "Which link forms
+satisfy a declaration") — the anchor form has no other representation,
+since a claim id carries no anchor of its own. The rule is `D ⊆ L` under
+that matching, not `D = L`. Everything declared must be linked, so a
+reader following prose reaches what the graph says matters; nothing
+requires the reverse, so an incidental mention costs nothing to leave
+undeclared, and nothing is hidden — undeclared *means* bare, and bare
+asserts nothing.
 
 **This also relocates a job C5 was never able to do.** No formulation of
 set equality — old or new — can catch *undeclared dependence*: an author

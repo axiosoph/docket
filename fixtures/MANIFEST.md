@@ -29,6 +29,7 @@ called out below.
 | `normative-prose-unclaimed/` | `normative-prose` | `docs/adr/0001-decision.md` (genre `docs/adr/**`, `kinds = []`) carries a bare `MUST` in its own prose, with no claim block anywhere in the file. See below. |
 | `normative-prose-quoted/` | — (all pass) | Not a check fixture — see below. The identical keyword, present only inside a block quote and inside an inline code span, in the same `kinds = []` genre. |
 | `blast-doc-anchor/` | — (all pass) | Not a check fixture — see below. Isolates a `blast` behaviour rather than a check. |
+| `anchor-link-satisfies-claim-id/` | — (all pass) | Not a check fixture — see below. Isolates C5's anchor-form acceptance for a claim-id declaration. |
 | `golden/` | — (all pass) | See below. |
 
 **`duplicate-stem/` is retired**, not just its row here. MVP.md §1.3 was
@@ -161,6 +162,32 @@ depends on.
 must report both `depends-on-rule` and `depends-transitively`, in that
 order. The corpus passes `docket check` cleanly — this fixture
 demonstrates a `blast` behaviour, not a check failure.
+
+## `anchor-link-satisfies-claim-id/`
+
+Isolates C5's anchor-form acceptance (MVP.md §1.3, "Which link forms
+satisfy a declaration"): a prose link in the **anchor form** —
+`[…](#target-claim)` — must satisfy a `depends`/`because` entry naming a
+claim id, not only the bare-href form (`[…](target-claim)`, unlinkable
+by any tool but this one). Before that rule existed, this exact corpus
+failed C5: the anchor form normalized to a doc-anchor
+(`docs/specs/a#target-claim`), which never matched the bare claim id
+`target-claim` the `depends` entry carries.
+
+- `docs/specs/a.md` — claim `[target-claim]`, no `depends`/`because` of
+  its own, present only so the second claim's citation resolves (C4
+  passes) — so nothing but the anchor-form C5 question is live.
+- Same file, claim `[depends-on-target]` — declares
+  `depends: [target-claim]` and links it as `[the target](#target-claim)`,
+  the same-file anchor form (MVP.md §1.3, "Which link forms satisfy a
+  declaration").
+
+`docket check --corpus fixtures/anchor-link-satisfies-claim-id` exits
+**0** with zero diagnostics. Removing the prose link (leaving the
+`depends` entry undeclared-by-link) flips this to a C5 failure — see
+`checks::tests::c5_still_fails_a_claim_id_depends_entry_with_no_prose_link_at_all`,
+which covers that same-shape negative case directly rather than as a
+second fixture.
 
 ## `golden/`
 
