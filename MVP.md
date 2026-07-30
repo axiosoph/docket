@@ -91,6 +91,13 @@ This is load-bearing rather than cosmetic: **real corpora link by relative
 path with an extension**, and without normalization those links would never
 match a `cites` entry, making C5 fire on every correctly-linked claim.
 
+**A leading `/` is corpus-root-relative**, not joined onto the citing file's
+directory. So `[…](/docs/models/composition-model.md#6)` normalizes to
+`docs/models/composition-model#6` from any file in the corpus. This follows
+rendered-markdown convention, where a leading slash is site-root-relative, and
+the alternative is incoherent: joining `/docs/...` onto a containing directory
+produces a path that names nothing.
+
 Note the normalization *resolves* the path rather than discarding it, which
 is what makes it agree with §1.3's path-based refs — and it means an
 ordinary relative markdown link, written the way an author would write it
@@ -210,10 +217,24 @@ it is a pure projection of the source.
     }
   },
   "documents": {
-    "lock-file-schema": { "file": "docs/specs/lock-file-schema.md", "genre": "docs/specs/**" }
+    "docs/specs/lock-file-schema": { "file": "docs/specs/lock-file-schema.md", "genre": "docs/specs/**" }
   }
 }
 ```
+
+**The `documents` map is keyed by the document path identifier of §1.3**, not
+by basename. This example previously showed a bare basename and was caught by
+the implementation rather than by review: keying the index by basename would
+have reintroduced, at the index layer, exactly the collision that §1.3
+eliminates at the resolution layer — and it would have done so silently, since
+a collision there overwrites rather than errors.
+
+Worth stating why it survived a draft. §1.3 changed identifiers from basenames
+to paths and gave the reasoning, but the worked example three sections later
+was not re-derived from it, so the document held its own rule and a violation
+of that rule simultaneously. Nothing in docket catches this, because `MVP.md`
+carries no claim blocks — which is a precise statement of the gap, and the
+argument for closing it.
 
 ### 4.2 Blast radius
 
