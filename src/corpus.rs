@@ -44,6 +44,18 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
             continue;
         };
 
+        // Only .md files are scanned (MVP.md §2): a claim block can only
+        // live in markdown, so reading anything else is wasted work at
+        // best. It's a real failure mode, not a hypothetical — a TLC
+        // model-checker state dump (binary, no extension) sitting in a
+        // generated subtree under a matched genre aborted the first run
+        // against a real corpus. Extension-based, not content-sniffed:
+        // sniffing would still have to open every file, the cost this
+        // check exists to avoid.
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+
         let contents = std::fs::read_to_string(&path).map_err(|source| CorpusError::Read {
             path: relative.clone(),
             source,
@@ -125,10 +137,13 @@ mod tests {
             &self.0
         }
         fn write(&self, relative: &str, contents: &str) {
+            self.write_bytes(relative, contents.as_bytes());
+        }
+        fn write_bytes(&self, relative: &str, contents: &[u8]) {
             let path = self.0.join(relative);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             let mut f = std::fs::File::create(path).unwrap();
-            f.write_all(contents.as_bytes()).unwrap();
+            f.write_all(contents).unwrap();
         }
     }
     impl Drop for TempDir {
@@ -220,5 +235,38 @@ mod tests {
         assert_eq!(loaded.corpus.claims.len(), 0);
         assert_eq!(loaded.orphan_claims.len(), 1);
         assert_eq!(loaded.orphan_claims[0].file, "docs/orphan.md");
+    }
+
+    #[test]
+    fn scans_cleanly_past_a_non_utf8_binary_file_in_a_matched_genre() {
+        // The exact real-corpus failure mode (MVP.md §2): a TLC
+        // model-checker state dump, binary and extensionless, sitting
+        // inside docs/models/ where the genre pattern legitimately
+        // matches it. The walk must skip it silently rather than abort.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/models/**", kinds = ["invariant"] } ] }"#,
+        );
+        dir.write(
+            "docs/models/claim.md",
+            "### [x]\n\n```claim\nkind: invariant\n```\n",
+        );
+        dir.write_bytes(
+            "docs/models/tla/states/26-06-06-22-46-06/nodes_0",
+            &[0xff, 0xfe, 0x00, 0x01, 0x80, 0x81, 0xc0, 0xc1],
+        );
+        // Also cover a non-markdown file that DOES decode as UTF-8, to
+        // pin the rule as ".md specifically" rather than "whatever
+        // doesn't crash the reader".
+        dir.write("docs/models/notes.txt", "plain text, not markdown\n");
+
+        let config = load_config(dir.path()).unwrap();
+        let loaded = load_corpus(dir.path(), &config).expect("must not abort on the binary file");
+
+        assert_eq!(loaded.corpus.claims.len(), 1);
+        assert_eq!(loaded.corpus.claims[0].id, "x");
+        assert_eq!(loaded.corpus.documents.len(), 1);
+        assert_eq!(loaded.corpus.documents[0].file, "docs/models/claim.md");
     }
 }
