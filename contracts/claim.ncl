@@ -24,9 +24,22 @@
   # evaluator: how the claim's status would be discharged. The evaluator
   # runner itself is out of MVP scope (README.md "MVP scope") — only the
   # name is recorded and validated here.
+  #
+  # The values are a PREFERENCE ORDER, not an unordered set (README.md,
+  # "The hierarchy is normative, not merely descriptive"):
+  #
+  #   proof > type > property-test > test > example > none
+  #
+  # `type` means the claim is enforced by construction — the violation
+  # cannot be written, rather than being caught when written. That is a
+  # categorically stronger discharge than a test, and where it is
+  # elegantly reachable it should be preferred. Its honesty limit: the
+  # machine confirms the marked item exists and builds, never that the type
+  # enforces what the claim says, so faithfulness is review-established.
   Evaluator = std.contract.from_predicate (fun v =>
     v == 'proof          || v == "proof"
     || v == 'model-check   || v == "model-check"
+    || v == 'type          || v == "type"
     || v == 'property-test || v == "property-test"
     || v == 'test          || v == "test"
     || v == 'example       || v == "example"

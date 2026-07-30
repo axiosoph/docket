@@ -43,7 +43,7 @@ error (`orphan-claim`).
 | field | required | type |
 |:---|:--|:---|
 | `kind` | yes | one of `requirement`, `invariant`, `constraint` |
-| `evaluator` | yes | one of `proof`, `model-check`, `property-test`, `test`, `example`, `none` |
+| `evaluator` | yes | one of `proof`, `model-check`, `type`, `property-test`, `test`, `example`, `none` |
 | `cites` | no (default `[]`) | array of refs |
 
 Unknown fields are an error, not ignored. Tolerating them would let a
@@ -67,6 +67,19 @@ whose *shape* is invalid — whitespace, a second `#`, an empty half — is a
 malformed block and fails **C1**. C4 therefore only ever operates on
 well-formed refs, and "does this resolve" presupposes "is this a ref."
 
+**Prose-link normalization.** A markdown href in prose is normalized to a
+ref before comparison (C5): strip any directory prefix and the `.md`
+extension to leave the document stem, retain any `#fragment`, and treat a
+fragment-only href as referring to the containing document. So
+`[…](../models/composition-model.md#6)` normalizes to
+`composition-model#6`.
+
+This is load-bearing rather than cosmetic: **real corpora link by relative
+path with an extension**, and without normalization those links would never
+match a `cites` entry, making C5 fire on every correctly-linked claim. The
+bare-literal form used in `fixtures/` is the degenerate case of the same
+rule.
+
 **Anchor derivation.** An anchor `A` matches a heading iff the heading's
 text — after stripping `#` markers and leading whitespace — begins with
 `A` followed by either end-of-string or a non-alphanumeric character. So
@@ -84,6 +97,15 @@ silent.
 
 A repository declares its own genre hierarchy in `docket.ncl` at the
 repository root. Genres are **not** built in.
+
+**A path matching more than one genre is a configuration error (exit 2),
+not a precedence question.** No first-match, no most-specific-wins. Both
+conventions are defensible and both surprise somebody — and note that
+first-match is the *opposite* of `.gitignore`, where later patterns
+override — so rather than pick an order and document it, the config is
+required to be unambiguous. Making patterns disjoint is trivial; silently
+assigning a document to the wrong genre is exactly the failure this tool
+exists to prevent.
 
 ```nickel
 {
