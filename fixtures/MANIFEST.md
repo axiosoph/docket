@@ -24,6 +24,8 @@ called out below.
 | `c5-prose-cites-mismatch/` | `C5` | `docs/specs/a.md` declares `[target-claim]` (cited, and it resolves — so `C4` passes) and `[mismatched-claim]`, which cites `[target-claim]` but whose prose body carries no matching link. `L = {}`, `cites = {target-claim}`, sets disagree. `[target-claim]` exists specifically so the citation resolves and `C4` cannot also fire. |
 | `orphan-claim/` | `orphan-claim` | `docs/specs/a.md` is a claim block with no preceding heading in the file at all — the minimal case of "no `[id]`-shaped heading precedes it" (MVP.md §1.1). |
 | `explanation-forbids-kinds/` | — (config error) | Not a `C`-check fixture — see below. Isolates the `quadrant`/`kinds` derived rule (MVP.md §2), a `docket.ncl` config error, not a corpus-content check. |
+| `normative-prose-unclaimed/` | `normative-prose` | `docs/adr/0001-decision.md` (genre `docs/adr/**`, `kinds = []`) carries a bare `MUST` in its own prose, with no claim block anywhere in the file. See below. |
+| `normative-prose-quoted/` | — (all pass) | Not a check fixture — see below. The identical keyword, present only inside a block quote and inside an inline code span, in the same `kinds = []` genre. |
 | `blast-doc-anchor/` | — (all pass) | Not a check fixture — see below. Isolates a `blast` behaviour rather than a check. |
 | `golden/` | — (all pass) | See below. |
 
@@ -72,6 +74,36 @@ pass every `C`-check if the config ever let it load.
 document — a `requirement` claim under an ADR-shaped path — kept for
 realism as a self-contained corpus root, even though `docket check` never
 reaches it: the config error is returned before any file is scanned.
+
+## `normative-prose-unclaimed/` and `normative-prose-quoted/`
+
+Isolate the `normative-prose` check: a genre whose `kinds` is empty
+permits no claim blocks, which already means no RFC-2119 keyword may
+appear in that genre's own-voice text either — the mechanism by which a
+decision record is prevented from carrying normative content extends
+from *claim blocks* (`kinds = []`, C3) to *unregistered prose* (this
+check), since a bare `MUST` is a binding assertion whether or not it
+carries a block.
+
+Both fixtures share one genre — `docs/adr/**`, `kinds = []`,
+`quadrant = "explanation"` — and neither carries a claim block at all;
+the check fires independently of C3/orphan-claim, so nothing else in
+either corpus is capable of failing.
+
+- **`normative-prose-unclaimed/`** — `docs/adr/0001-decision.md` line 3:
+  `This decision MUST be treated as final.`, a bare own-voice `MUST`.
+  `docket check --corpus fixtures/normative-prose-unclaimed` exits **1**
+  with exactly one `normative-prose` failure naming the file, the line,
+  and the genre.
+- **`normative-prose-quoted/`** — the identical keyword, present twice,
+  neither instance in the document's own voice: once inside a block
+  quote (`> ... MUST retry.`, quoting a rejected proposal so the
+  document can refute it) and once inside an inline code span
+  (`` `MUST` ``, naming the token rather than asserting it). This is the
+  fixture that proves the *design* rather than the feature — a
+  regex over raw text cannot tell a quoted `MUST` from an asserted one,
+  and this corpus is built to make exactly that distinction load-bearing.
+  `docket check --corpus fixtures/normative-prose-quoted` exits **0**.
 
 ## `blast-doc-anchor/`
 
@@ -204,7 +236,8 @@ observed, one block per line, `<fixture>_<file>_<block-index-within-file>`:
 the fixture's failure is entirely in `docket.ncl`, before any block is
 ever extracted; see its own section below.
 
-Every `docket.ncl` (all nine fixtures) validated against
+Every `docket.ncl` (all eleven fixtures, `normative-prose-unclaimed/` and
+`normative-prose-quoted/` included) validated against
 `contracts/docket.ncl` with exit code 0 — `explanation-forbids-kinds/`
 included, since the Nickel contract does not enforce the derived rule
 (see its own section below for why).
