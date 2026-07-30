@@ -259,6 +259,27 @@ constraint guarded by a test where a type could make the violation
 unrepresentable. That is a queryable list rather than an insight someone
 has to happen to have.
 
+### The hierarchy is normative, not merely descriptive
+
+It is a **preference order**, not a scale for reporting. Where a claim can
+be discharged elegantly at a higher grade, it should be — a violation that
+cannot be written beats one caught when written.
+
+So a grade gap is not neutral information. The mechanical part is the
+signal (*discharged at N; N+1 appears reachable*); the verdict stays human,
+because a type-level solution reached by contortion is worse than the test
+it replaced. Surfaced by the machine, judged by a person — the same split as
+everywhere else here.
+
+**The gradient also predicts which obligations are irreducible**, which is
+its most useful property. Types enforce *structural* claims — this cannot be
+represented, this cannot be called without that. Proofs establish *semantic*
+ones — this holds over all inputs, or all reachable states. So a claim
+quantified over all inputs will never reach type-grade, and no amount of
+API design will move it. **Counting those tells a project exactly how much
+proof it actually needs**, rather than deciding by architectural instinct up
+front.
+
 ### Where type-discharge's honesty limit sits, stated rather than hidden
 
 The machine confirms the marked item exists and compiles. **It cannot
