@@ -7,7 +7,7 @@
 //! heading string, not on document structure, and is implemented by hand
 //! rather than pulling in a regex crate for one small token grammar.
 
-use crate::model::{Claim, CiteRef, Heading, Line, RawClaimBlock};
+use crate::model::{CiteRef, Claim, Heading, Line, RawClaimBlock};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// A `claim` fence with no preceding bracket-kebab heading in the same
@@ -55,9 +55,12 @@ fn bracket_kebab_id(text: &str) -> Option<String> {
     if inner.is_empty() {
         return None;
     }
-    let is_kebab = inner
-        .split('-')
-        .all(|seg| !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()));
+    let is_kebab = inner.split('-').all(|seg| {
+        !seg.is_empty()
+            && seg
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    });
     is_kebab.then(|| inner.to_string())
 }
 
@@ -93,7 +96,11 @@ fn parse_raw_claim_block(yaml: &str) -> RawClaimBlock {
     let cites = mapping
         .and_then(|m| m.get("cites"))
         .and_then(|v| v.as_sequence())
-        .map(|seq| seq.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .map(|seq| {
+            seq.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
     RawClaimBlock {
         yaml: yaml.to_string(),
@@ -141,7 +148,12 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
     for (event, range) in parser {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
-                cur_heading = Some((heading_level_u8(level), range.start, range.end, String::new()));
+                cur_heading = Some((
+                    heading_level_u8(level),
+                    range.start,
+                    range.end,
+                    String::new(),
+                ));
             }
             Event::End(TagEnd::Heading(_)) => {
                 if let Some((level, start, end, text)) = cur_heading.take() {
@@ -154,7 +166,12 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
                 }
             }
             Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) => {
-                cur_block = Some((range.start, range.end, info.trim() == "claim", String::new()));
+                cur_block = Some((
+                    range.start,
+                    range.end,
+                    info.trim() == "claim",
+                    String::new(),
+                ));
             }
             Event::End(TagEnd::CodeBlock) => {
                 if let Some((start, end, is_claim, yaml)) = cur_block.take() {
@@ -385,14 +402,20 @@ mod tests {
         // just confirms extraction hands it clean, unprefixed text.
         let src = "## 6. The fact-set: the substrate's only state\n";
         let res = extract_document("docs/models/composition-model.md", src);
-        assert_eq!(res.headings[0].text, "6. The fact-set: the substrate's only state");
+        assert_eq!(
+            res.headings[0].text,
+            "6. The fact-set: the substrate's only state"
+        );
         assert!(crate::model::anchor_matches(&res.headings[0].text, "6"));
         assert!(!crate::model::anchor_matches(&res.headings[0].text, "60"));
     }
 
     #[test]
     fn bracket_kebab_id_rejects_non_kebab_and_non_bracket_text() {
-        assert_eq!(bracket_kebab_id("[lock-groundness]"), Some("lock-groundness".to_string()));
+        assert_eq!(
+            bracket_kebab_id("[lock-groundness]"),
+            Some("lock-groundness".to_string())
+        );
         assert_eq!(bracket_kebab_id("[Lock-Groundness]"), None);
         assert_eq!(bracket_kebab_id("[lock_groundness]"), None);
         assert_eq!(bracket_kebab_id("lock-groundness"), None);

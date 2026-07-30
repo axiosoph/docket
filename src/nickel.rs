@@ -62,7 +62,10 @@ pub enum ContractCheck {
 /// path); the driver expression that imports both the data and the
 /// contract and applies one to the other is piped over stdin, so this
 /// needs exactly one temp file rather than two.
-pub fn check_contract(contract_path: &Path, value_json: &str) -> Result<ContractCheck, NickelError> {
+pub fn check_contract(
+    contract_path: &Path,
+    value_json: &str,
+) -> Result<ContractCheck, NickelError> {
     let data_path = write_temp_json(value_json).map_err(NickelError::Io)?;
     let result = (|| {
         let driver = format!(

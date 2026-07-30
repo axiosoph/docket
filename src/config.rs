@@ -110,11 +110,12 @@ pub fn load_config(corpus_root: &Path) -> Result<Config, ConfigError> {
             })?);
         }
 
-        let compiled = glob::Pattern::new(&genre_path).map_err(|e| ConfigError::InvalidPattern {
-            path: path_str.clone(),
-            pattern: genre_path.clone(),
-            detail: e.to_string(),
-        })?;
+        let compiled =
+            glob::Pattern::new(&genre_path).map_err(|e| ConfigError::InvalidPattern {
+                path: path_str.clone(),
+                pattern: genre_path.clone(),
+                detail: e.to_string(),
+            })?;
 
         genres.push(Genre {
             path: genre_path,
@@ -192,7 +193,11 @@ mod tests {
             r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"] } ] }"#,
         );
         let config = load_config(dir.path()).unwrap();
-        assert!(config.match_genre("docs/specs/lock-file-schema.md").is_some());
+        assert!(
+            config
+                .match_genre("docs/specs/lock-file-schema.md")
+                .is_some()
+        );
         assert!(config.match_genre("docs/specs/nested/deep.md").is_some());
         assert!(config.match_genre("docs/models/x.md").is_none());
         assert!(config.match_genre("README.md").is_none());

@@ -4,7 +4,7 @@
 use crate::config::Config;
 use crate::contract::{self, ContractError};
 use crate::corpus::LoadedCorpus;
-use crate::model::{Claim, CiteRef, Document, Kind, anchor_matches};
+use crate::model::{CiteRef, Claim, Document, Kind, anchor_matches};
 use crate::nickel::ContractCheck;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
@@ -365,7 +365,11 @@ mod tests {
     }
 
     fn only(report: &CheckReport, check: CheckId) -> Vec<&Failure> {
-        report.failures.iter().filter(|f| f.check == check).collect()
+        report
+            .failures
+            .iter()
+            .filter(|f| f.check == check)
+            .collect()
     }
 
     #[test]
@@ -483,7 +487,11 @@ mod tests {
             "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ncites: [composition-model#6]\n```\n",
         );
         let report = run(&dir);
-        assert!(only(&report, CheckId::C4).is_empty(), "{:#?}", report.failures);
+        assert!(
+            only(&report, CheckId::C4).is_empty(),
+            "{:#?}",
+            report.failures
+        );
     }
 
     #[test]
@@ -525,7 +533,11 @@ mod tests {
             "### [x]\n\nSee [the fact-set](../models/composition-model.md#6).\n\n```claim\nkind: constraint\nevaluator: test\ncites: [composition-model#6]\n```\n",
         );
         let report = run(&dir);
-        assert!(only(&report, CheckId::C5).is_empty(), "{:#?}", report.failures);
+        assert!(
+            only(&report, CheckId::C5).is_empty(),
+            "{:#?}",
+            report.failures
+        );
     }
 
     #[test]
@@ -561,7 +573,11 @@ mod tests {
             "### [x]\n\nSee [the web](https://example.com) and [an untracked file](../scratch/notes.md).\n\n```claim\nkind: constraint\nevaluator: test\ncites: []\n```\n",
         );
         let report = run(&dir);
-        assert!(only(&report, CheckId::C5).is_empty(), "{:#?}", report.failures);
+        assert!(
+            only(&report, CheckId::C5).is_empty(),
+            "{:#?}",
+            report.failures
+        );
     }
 
     #[test]
@@ -571,7 +587,10 @@ mod tests {
             "docket.ncl",
             r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"] } ] }"#,
         );
-        dir.write("docs/specs/x.md", "## Notes\n\n```claim\nkind: constraint\n```\n");
+        dir.write(
+            "docs/specs/x.md",
+            "## Notes\n\n```claim\nkind: constraint\n```\n",
+        );
         let report = run(&dir);
         assert_eq!(only(&report, CheckId::OrphanClaim).len(), 1);
     }
@@ -614,6 +633,9 @@ mod tests {
             normalize_prose_link("lock-groundness", "docs/specs/x.md"),
             Some(CiteRef::Claim("lock-groundness".into()))
         );
-        assert_eq!(normalize_prose_link("composition-model.md", "docs/specs/x.md"), None);
+        assert_eq!(
+            normalize_prose_link("composition-model.md", "docs/specs/x.md"),
+            None
+        );
     }
 }

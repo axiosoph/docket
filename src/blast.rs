@@ -7,7 +7,7 @@
 //! document-anchor `cites` entry targets a *heading*, not a claim, so it
 //! can never itself be the claim whose citers we're walking.
 
-use crate::model::{Claim, CiteRef, Corpus};
+use crate::model::{CiteRef, Claim, Corpus};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +105,13 @@ mod tests {
         )
     }
 
+    fn corpus_with_claims(claims: Vec<Claim>) -> Corpus {
+        Corpus {
+            claims,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn finds_direct_and_transitive_citers() {
         // a <- b <- c (c cites b, b cites a): blasting `a` should surface
@@ -112,8 +119,11 @@ mod tests {
         let a = claim_src("a", &[]);
         let b = claim_src("b", &["a"]);
         let c = claim_src("c", &["b"]);
-        let mut corpus = Corpus::default();
-        corpus.claims = claims_from(&[("f-a.md", &a), ("f-b.md", &b), ("f-c.md", &c)]);
+        let corpus = corpus_with_claims(claims_from(&[
+            ("f-a.md", &a),
+            ("f-b.md", &b),
+            ("f-c.md", &c),
+        ]));
 
         let result = blast_radius(&corpus, "a");
         let ids: Vec<&str> = result.entries.iter().map(|e| e.claim.as_str()).collect();
@@ -129,13 +139,21 @@ mod tests {
         let b = claim_src("b", &["a"]);
         let c = claim_src("c", &["a"]);
         let d = claim_src("d", &["b", "c"]);
-        let mut corpus = Corpus::default();
-        corpus.claims = claims_from(&[("f-a.md", &a), ("f-b.md", &b), ("f-c.md", &c), ("f-d.md", &d)]);
+        let corpus = corpus_with_claims(claims_from(&[
+            ("f-a.md", &a),
+            ("f-b.md", &b),
+            ("f-c.md", &c),
+            ("f-d.md", &d),
+        ]));
 
         let result = blast_radius(&corpus, "a");
         let ids: Vec<&str> = result.entries.iter().map(|e| e.claim.as_str()).collect();
         assert_eq!(ids.iter().filter(|id| **id == "d").count(), 1);
-        assert!(result.cycles.is_empty(), "a diamond is not a cycle: {:?}", result.cycles);
+        assert!(
+            result.cycles.is_empty(),
+            "a diamond is not a cycle: {:?}",
+            result.cycles
+        );
     }
 
     #[test]
@@ -144,8 +162,11 @@ mod tests {
         let a = claim_src("a", &[]);
         let b = claim_src("b", &["a", "c"]);
         let c = claim_src("c", &["b"]);
-        let mut corpus = Corpus::default();
-        corpus.claims = claims_from(&[("f-a.md", &a), ("f-b.md", &b), ("f-c.md", &c)]);
+        let corpus = corpus_with_claims(claims_from(&[
+            ("f-a.md", &a),
+            ("f-b.md", &b),
+            ("f-c.md", &c),
+        ]));
 
         let result = blast_radius(&corpus, "a");
         let ids: Vec<&str> = result.entries.iter().map(|e| e.claim.as_str()).collect();
@@ -161,8 +182,7 @@ mod tests {
 
     #[test]
     fn an_unknown_start_id_yields_an_empty_result() {
-        let mut corpus = Corpus::default();
-        corpus.claims = claims_from(&[("f.md", &claim_src("a", &[]))]);
+        let corpus = corpus_with_claims(claims_from(&[("f.md", &claim_src("a", &[]))]));
         let result = blast_radius(&corpus, "does-not-exist");
         assert!(result.entries.is_empty());
         assert!(result.cycles.is_empty());
@@ -172,9 +192,9 @@ mod tests {
     fn document_anchor_cites_do_not_create_reverse_edges() {
         // A claim that only cites a document anchor never counts as a
         // citer of any claim id.
-        let src = "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ncites: [some-doc#3]\n```\n";
-        let mut corpus = Corpus::default();
-        corpus.claims = extract_document("f.md", src).claims;
+        let src =
+            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ncites: [some-doc#3]\n```\n";
+        let corpus = corpus_with_claims(extract_document("f.md", src).claims);
         let result = blast_radius(&corpus, "some-doc");
         assert!(result.entries.is_empty());
     }

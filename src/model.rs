@@ -192,7 +192,10 @@ mod tests {
 
     #[test]
     fn cite_ref_parses_bare_claim_id() {
-        assert_eq!(CiteRef::parse("lock-groundness"), CiteRef::Claim("lock-groundness".into()));
+        assert_eq!(
+            CiteRef::parse("lock-groundness"),
+            CiteRef::Claim("lock-groundness".into())
+        );
     }
 
     #[test]
@@ -208,7 +211,10 @@ mod tests {
 
     #[test]
     fn cite_ref_display_round_trips() {
-        assert_eq!(CiteRef::parse("lock-groundness").to_string(), "lock-groundness");
+        assert_eq!(
+            CiteRef::parse("lock-groundness").to_string(),
+            "lock-groundness"
+        );
         assert_eq!(
             CiteRef::parse("composition-model#6").to_string(),
             "composition-model#6"

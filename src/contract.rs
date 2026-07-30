@@ -34,7 +34,10 @@ pub const DEFAULT_CONTRACT_RELATIVE_PATH: &str = "contracts/claim.ncl";
 /// contract-rejected value is — not surfaced as a distinct Rust error,
 /// since from a caller's point of view both mean "this block does not
 /// validate."
-pub fn validate_claim_block(contract_path: &Path, raw_yaml: &str) -> Result<ContractCheck, ContractError> {
+pub fn validate_claim_block(
+    contract_path: &Path,
+    raw_yaml: &str,
+) -> Result<ContractCheck, ContractError> {
     let value: serde_norway::Value = match serde_norway::from_str(raw_yaml) {
         Ok(v) => v,
         Err(e) => {
@@ -47,7 +50,8 @@ pub fn validate_claim_block(contract_path: &Path, raw_yaml: &str) -> Result<Cont
     // same data model (mappings, sequences, scalars), so this is a
     // straight re-serialization, not a lossy conversion for the shapes
     // MVP.md's claim block permits (records, arrays, strings).
-    let json = serde_json::to_string(&value).expect("a parsed YAML value always re-serializes to JSON");
+    let json =
+        serde_json::to_string(&value).expect("a parsed YAML value always re-serializes to JSON");
     Ok(nickel::check_contract(contract_path, &json)?)
 }
 

@@ -8,7 +8,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 #[derive(Parser)]
-#[command(name = "docket", about = "A register of claims across a documentation corpus.")]
+#[command(
+    name = "docket",
+    about = "A register of claims across a documentation corpus."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -91,7 +94,12 @@ fn run_check(corpus_root: &Path, out: Option<&Path>, contract_relative: &Path) -
                 line,
                 failure.message
             ),
-            None => eprintln!("{}: {}: {}", failure.check.as_str(), failure.file, failure.message),
+            None => eprintln!(
+                "{}: {}: {}",
+                failure.check.as_str(),
+                failure.file,
+                failure.message
+            ),
         }
     }
 
@@ -123,7 +131,10 @@ fn run_blast(corpus_root: &Path, claim_id: &str) -> ExitCode {
         println!("{}\t{}", entry.claim, entry.file);
     }
     for cycle in &result.cycles {
-        eprintln!("cycle: {} cites back to {}, not followed again", cycle.claim, cycle.ancestor);
+        eprintln!(
+            "cycle: {} cites back to {}, not followed again",
+            cycle.claim, cycle.ancestor
+        );
     }
 
     ExitCode::SUCCESS

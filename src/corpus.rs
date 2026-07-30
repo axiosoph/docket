@@ -66,7 +66,10 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
         orphan_claims.extend(result.orphan_claims);
     }
 
-    Ok(LoadedCorpus { corpus, orphan_claims })
+    Ok(LoadedCorpus {
+        corpus,
+        orphan_claims,
+    })
 }
 
 /// A deterministic, hidden-file-skipping, symlink-skipping recursive file
@@ -157,7 +160,10 @@ mod tests {
             "docs/specs/lock.md",
             "### [lock-groundness]\n\n```claim\nkind: constraint\n```\n",
         );
-        dir.write("docs/other/ignored.md", "### [not-scanned]\n\n```claim\nkind: constraint\n```\n");
+        dir.write(
+            "docs/other/ignored.md",
+            "### [not-scanned]\n\n```claim\nkind: constraint\n```\n",
+        );
         dir.write("README.md", "# hello\n");
 
         let config = load_config(dir.path()).unwrap();
@@ -176,9 +182,18 @@ mod tests {
             "docket.ncl",
             r#"{ genres = [ { path = "docs/**", kinds = ["constraint"] } ] }"#,
         );
-        dir.write("docs/.hidden/should-not-be-seen.md", "### [x]\n\n```claim\nkind: constraint\n```\n");
-        dir.write("docs/.dotfile.md", "### [y]\n\n```claim\nkind: constraint\n```\n");
-        dir.write("docs/visible.md", "### [z]\n\n```claim\nkind: constraint\n```\n");
+        dir.write(
+            "docs/.hidden/should-not-be-seen.md",
+            "### [x]\n\n```claim\nkind: constraint\n```\n",
+        );
+        dir.write(
+            "docs/.dotfile.md",
+            "### [y]\n\n```claim\nkind: constraint\n```\n",
+        );
+        dir.write(
+            "docs/visible.md",
+            "### [z]\n\n```claim\nkind: constraint\n```\n",
+        );
 
         let config = load_config(dir.path()).unwrap();
         let loaded = load_corpus(dir.path(), &config).unwrap();
@@ -194,7 +209,10 @@ mod tests {
             "docket.ncl",
             r#"{ genres = [ { path = "docs/**", kinds = ["constraint"] } ] }"#,
         );
-        dir.write("docs/orphan.md", "## Notes\n\n```claim\nkind: constraint\n```\n");
+        dir.write(
+            "docs/orphan.md",
+            "## Notes\n\n```claim\nkind: constraint\n```\n",
+        );
 
         let config = load_config(dir.path()).unwrap();
         let loaded = load_corpus(dir.path(), &config).unwrap();
