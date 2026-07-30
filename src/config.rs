@@ -26,6 +26,18 @@ pub enum ConfigError {
     },
 }
 
+/// MVP.md §2: "A path matching more than one genre is a configuration
+/// error (exit 2), not a precedence question." Raised per corpus-relative
+/// path as the walk encounters it (corpus.rs), not by statically
+/// analyzing the patterns for overlap — two patterns can overlap in the
+/// abstract without any real file ever landing in the intersection.
+#[derive(Debug, thiserror::Error)]
+#[error("{path} matches more than one genre: {}", matched.join(", "))]
+pub struct AmbiguousGenre {
+    pub path: String,
+    pub matched: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Genre {
     /// The glob pattern as written in `docket.ncl`, kept for diagnostics
@@ -42,17 +54,30 @@ pub struct Config {
 }
 
 impl Config {
-    /// The first genre (in declaration order) whose pattern matches
-    /// `corpus_relative_path`, if any. "Files matching no genre are not
-    /// scanned" (MVP.md §2) — first-match-wins is this crate's read of
-    /// what happens when more than one pattern matches, since MVP.md
-    /// doesn't otherwise say; declaration order is the natural precedence
-    /// for a list of rules, matching common precedent (`.gitignore`-style
-    /// pattern lists).
-    pub fn match_genre(&self, corpus_relative_path: &str) -> Option<&Genre> {
-        self.genres
+    /// The genre whose pattern matches `corpus_relative_path`, if any —
+    /// `Ok(None)` for "files matching no genre are not scanned" (MVP.md
+    /// §2). More than one match is `Err`, not a precedence question:
+    /// both plausible tie-break conventions (first-match, most-specific)
+    /// surprise somebody, and first-match is the *opposite* of
+    /// `.gitignore`'s later-wins rule, so the config is required to be
+    /// unambiguous instead.
+    pub fn match_genre(
+        &self,
+        corpus_relative_path: &str,
+    ) -> Result<Option<&Genre>, AmbiguousGenre> {
+        let matched: Vec<&Genre> = self
+            .genres
             .iter()
-            .find(|g| g.compiled.matches(corpus_relative_path))
+            .filter(|g| g.compiled.matches(corpus_relative_path))
+            .collect();
+        match matched.len() {
+            0 => Ok(None),
+            1 => Ok(Some(matched[0])),
+            _ => Err(AmbiguousGenre {
+                path: corpus_relative_path.to_string(),
+                matched: matched.into_iter().map(|g| g.path.clone()).collect(),
+            }),
+        }
     }
 }
 
@@ -196,15 +221,21 @@ mod tests {
         assert!(
             config
                 .match_genre("docs/specs/lock-file-schema.md")
+                .unwrap()
                 .is_some()
         );
-        assert!(config.match_genre("docs/specs/nested/deep.md").is_some());
-        assert!(config.match_genre("docs/models/x.md").is_none());
-        assert!(config.match_genre("README.md").is_none());
+        assert!(
+            config
+                .match_genre("docs/specs/nested/deep.md")
+                .unwrap()
+                .is_some()
+        );
+        assert!(config.match_genre("docs/models/x.md").unwrap().is_none());
+        assert!(config.match_genre("README.md").unwrap().is_none());
     }
 
     #[test]
-    fn first_matching_genre_wins_for_overlapping_patterns() {
+    fn a_path_matching_more_than_one_genre_is_an_error() {
         let dir = tempdir();
         write_docket_ncl(
             dir.path(),
@@ -216,8 +247,9 @@ mod tests {
             }"#,
         );
         let config = load_config(dir.path()).unwrap();
-        let g = config.match_genre("docs/specs/x.md").unwrap();
-        assert_eq!(g.kinds, vec![Kind::Requirement]);
+        let err = config.match_genre("docs/specs/x.md").unwrap_err();
+        assert_eq!(err.path, "docs/specs/x.md");
+        assert_eq!(err.matched, vec!["docs/**", "docs/specs/**"]);
     }
 
     /// A minimal, dependency-free temp dir: create under the system temp

@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn extracts_a_simple_claim() {
-        let src = "### [lock-groundness]\n\nEvery lock value MUST be ground.\n\n```claim\nkind: constraint\nevaluator: property-test\ncites: [composition-model#6]\n```\n";
+        let src = "### [lock-groundness]\n\nEvery lock value MUST be ground.\n\n```claim\nkind: constraint\nevaluator: property-test\ncites: [docs/models/composition-model#6]\n```\n";
         let res = extract_document("docs/specs/lock.md", src);
         assert_eq!(ids(&res), vec!["lock-groundness"]);
         let claim = &res.claims[0];
@@ -306,7 +306,7 @@ mod tests {
         assert_eq!(
             claim.cites,
             vec![CiteRef::DocAnchor {
-                stem: "composition-model".into(),
+                path: "docs/models/composition-model".into(),
                 anchor: "6".into()
             }]
         );

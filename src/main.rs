@@ -19,7 +19,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the five checks (+ orphan-claim, duplicate-stem) and emit the index.
+    /// Run the five checks (+ orphan-claim) and emit the index.
     Check {
         /// Corpus root.
         #[arg(long, default_value = ".")]
@@ -88,21 +88,13 @@ fn run_check(corpus_root: &Path, out: Option<&Path>, contract_path: &Path) -> Ex
     }
 
     for failure in &report.failures {
-        match failure.line {
-            Some(line) => eprintln!(
-                "{}: {}:{}: {}",
-                failure.check.as_str(),
-                failure.file,
-                line,
-                failure.message
-            ),
-            None => eprintln!(
-                "{}: {}: {}",
-                failure.check.as_str(),
-                failure.file,
-                failure.message
-            ),
-        }
+        eprintln!(
+            "{}: {}:{}: {}",
+            failure.check.as_str(),
+            failure.file,
+            failure.line,
+            failure.message
+        );
     }
 
     if report.passed() {

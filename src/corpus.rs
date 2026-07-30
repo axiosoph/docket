@@ -2,7 +2,7 @@
 //! extract claims from the ones that match. "Files matching no genre are
 //! not scanned" (MVP.md §2).
 
-use crate::config::Config;
+use crate::config::{AmbiguousGenre, Config};
 use crate::extract::{self, OrphanClaim};
 use crate::model::{Corpus, Document};
 use std::path::{Path, PathBuf};
@@ -21,8 +21,11 @@ pub enum CorpusError {
         #[source]
         source: std::io::Error,
     },
+    #[error(transparent)]
+    AmbiguousGenre(#[from] AmbiguousGenre),
 }
 
+#[derive(Debug)]
 pub struct LoadedCorpus {
     pub corpus: Corpus,
     pub orphan_claims: Vec<OrphanClaim>,
@@ -40,7 +43,7 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
             .to_string_lossy()
             .replace(std::path::MAIN_SEPARATOR, "/");
 
-        let Some(genre) = config.match_genre(&relative) else {
+        let Some(genre) = config.match_genre(&relative)? else {
             continue;
         };
 
@@ -63,13 +66,18 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
 
         let result = extract::extract_document(&relative, &contents);
 
-        let stem = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| relative.clone());
+        // The document identifier is the corpus-relative path with `.md`
+        // removed (MVP.md §1.3) — unique by construction, unlike a bare
+        // basename. `relative` is guaranteed to end in `.md` by the
+        // extension filter above; `unwrap_or` is a defensive fallback,
+        // not an expected path.
+        let doc_path = relative
+            .strip_suffix(".md")
+            .unwrap_or(&relative)
+            .to_string();
 
         corpus.documents.push(Document {
-            stem,
+            doc_path,
             file: relative,
             genre_path: genre.path.clone(),
             headings: result.headings,
@@ -185,9 +193,57 @@ mod tests {
         let loaded = load_corpus(dir.path(), &config).unwrap();
 
         assert_eq!(loaded.corpus.documents.len(), 1);
-        assert_eq!(loaded.corpus.documents[0].stem, "lock");
+        assert_eq!(loaded.corpus.documents[0].doc_path, "docs/specs/lock");
         assert_eq!(loaded.corpus.claims.len(), 1);
         assert_eq!(loaded.corpus.claims[0].id, "lock-groundness");
+    }
+
+    #[test]
+    fn documents_sharing_a_basename_get_distinct_path_identifiers() {
+        // The real-corpus shape that retired duplicate-stem: three
+        // README.md files under one genre are legitimate, not a
+        // collision, because the identifier is the whole path.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/models/**", kinds = ["invariant"] } ] }"#,
+        );
+        dir.write("docs/models/lean/README.md", "# Lean\n");
+        dir.write("docs/models/tla/README.md", "# TLA\n");
+
+        let config = load_config(dir.path()).unwrap();
+        let loaded = load_corpus(dir.path(), &config).unwrap();
+
+        let mut paths: Vec<&str> = loaded
+            .corpus
+            .documents
+            .iter()
+            .map(|d| d.doc_path.as_str())
+            .collect();
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec!["docs/models/lean/README", "docs/models/tla/README"]
+        );
+    }
+
+    #[test]
+    fn a_file_matching_two_genres_aborts_the_walk() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/**", kinds = ["requirement"] },
+                { path = "docs/specs/**", kinds = ["constraint"] },
+              ],
+            }"#,
+        );
+        dir.write("docs/specs/x.md", "# hello\n");
+
+        let config = load_config(dir.path()).unwrap();
+        let err = load_corpus(dir.path(), &config).unwrap_err();
+        assert!(matches!(err, CorpusError::AmbiguousGenre(_)));
     }
 
     #[test]

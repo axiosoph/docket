@@ -21,7 +21,7 @@ pub fn build_index(corpus: &Corpus) -> Index {
 
     for doc in &corpus.documents {
         index.documents.insert(
-            doc.stem.clone(),
+            doc.doc_path.clone(),
             IndexDocument {
                 file: doc.file.clone(),
                 genre: doc.genre_path.clone(),
@@ -40,12 +40,12 @@ mod tests {
 
     #[test]
     fn matches_the_mvp_example_shape() {
-        let src = "### [lock-groundness]\n\nEvery lock value MUST be ground: names bound to content identities and exact version strings.\n\n```claim\nkind: constraint\nevaluator: property-test\ncites: [composition-model#6, execution-model#2.4]\n```\n";
+        let src = "### [lock-groundness]\n\nEvery lock value MUST be ground: names bound to content identities and exact version strings.\n\n```claim\nkind: constraint\nevaluator: property-test\ncites: [docs/models/composition-model#6, docs/models/execution-model#2.4]\n```\n";
         let result = extract_document("docs/specs/lock-file-schema.md", src);
         let corpus = Corpus {
             claims: result.claims,
             documents: vec![Document {
-                stem: "lock-file-schema".to_string(),
+                doc_path: "docs/specs/lock-file-schema".to_string(),
                 file: "docs/specs/lock-file-schema.md".to_string(),
                 genre_path: "docs/specs/**".to_string(),
                 headings: vec![Heading {
@@ -64,12 +64,22 @@ mod tests {
         assert_eq!(claim.evaluator, "property-test");
         assert_eq!(
             claim.cites,
-            vec!["composition-model#6", "execution-model#2.4"]
+            vec![
+                "docs/models/composition-model#6",
+                "docs/models/execution-model#2.4"
+            ]
         );
 
+        // The index's document key is the same path-based identifier
+        // cites/C4 resolve against (MVP.md §1.3) — not the bare basename
+        // MVP.md §4.1's worked JSON example still shows, which would
+        // silently reintroduce the basename-collision bug §1.3's own
+        // rationale retired duplicate-stem to fix. Flagged to team-lead
+        // as a stale example rather than resolved by picking a
+        // different, inconsistent identifier scheme just for the index.
         let doc = index
             .documents
-            .get("lock-file-schema")
+            .get("docs/specs/lock-file-schema")
             .expect("document indexed");
         assert_eq!(doc.file, "docs/specs/lock-file-schema.md");
         assert_eq!(doc.genre, "docs/specs/**");

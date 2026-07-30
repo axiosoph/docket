@@ -10,8 +10,11 @@ use std::collections::BTreeMap;
 /// A claim id: a bracketed kebab-case token, without the brackets.
 pub type ClaimId = String;
 
-/// A document stem: a corpus-relative file basename without extension.
-pub type DocStem = String;
+/// A document identifier: the corpus-relative path with the `.md`
+/// extension removed (MVP.md §1.3). Unique by construction — two files
+/// can share a basename (`docs/models/lean/README.md` and
+/// `docs/models/tla/README.md`) but never a path.
+pub type DocPath = String;
 
 /// MVP.md §1.2: the three permitted claim kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -49,17 +52,21 @@ pub enum Evaluator {
 pub enum CiteRef {
     /// A bare kebab-case claim id, e.g. `lock-groundness`.
     Claim(ClaimId),
-    /// `<doc-stem>#<anchor>`, e.g. `composition-model#6`.
-    DocAnchor { stem: DocStem, anchor: String },
+    /// `<doc-path>#<anchor>`, e.g. `docs/models/composition-model#6`.
+    DocAnchor { path: DocPath, anchor: String },
 }
 
 impl CiteRef {
-    /// Parse the `<doc-stem>#<anchor>` / bare-id surface syntax shared by
-    /// `cites` entries (MVP.md §1.3) and prose link targets (§3, C5).
+    /// Parse the `<doc-path>#<anchor>` / bare-id surface syntax shared by
+    /// `cites` entries (MVP.md §1.3) and normalized prose link targets
+    /// (§3, C5). This is a pure split, not a resolution — a raw `cites`
+    /// entry is already in final path form by the time it reaches this
+    /// crate (C1 enforces the shape), and a prose href is resolved to the
+    /// same form beforehand (see `checks::normalize_prose_link`).
     pub fn parse(raw: &str) -> CiteRef {
         match raw.split_once('#') {
-            Some((stem, anchor)) => CiteRef::DocAnchor {
-                stem: stem.to_string(),
+            Some((path, anchor)) => CiteRef::DocAnchor {
+                path: path.to_string(),
                 anchor: anchor.to_string(),
             },
             None => CiteRef::Claim(raw.to_string()),
@@ -71,7 +78,7 @@ impl std::fmt::Display for CiteRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CiteRef::Claim(id) => write!(f, "{id}"),
-            CiteRef::DocAnchor { stem, anchor } => write!(f, "{stem}#{anchor}"),
+            CiteRef::DocAnchor { path, anchor } => write!(f, "{path}#{anchor}"),
         }
     }
 }
@@ -124,7 +131,7 @@ pub struct Claim {
 }
 
 /// A heading found anywhere in a scanned document, kept for anchor
-/// resolution (`<doc-stem>#<anchor>`, §1.3). `text` is already stripped of
+/// resolution (`<doc-path>#<anchor>`, §1.3). `text` is already stripped of
 /// `#` markers and leading whitespace — that's how pulldown-cmark hands us
 /// heading content — so it's ready for [`anchor_matches`] as-is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,7 +156,9 @@ pub fn anchor_matches(heading_text: &str, anchor: &str) -> bool {
 /// A scanned document (one that matched a genre in `docket.ncl`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Document {
-    pub stem: DocStem,
+    /// The identifier other claims cite by (MVP.md §1.3): `file` with its
+    /// `.md` extension removed.
+    pub doc_path: DocPath,
     pub file: String,
     pub genre_path: String,
     pub headings: Vec<Heading>,
@@ -183,7 +192,7 @@ pub struct IndexDocument {
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct Index {
     pub claims: BTreeMap<ClaimId, IndexClaim>,
-    pub documents: BTreeMap<DocStem, IndexDocument>,
+    pub documents: BTreeMap<DocPath, IndexDocument>,
 }
 
 #[cfg(test)]
@@ -201,9 +210,9 @@ mod tests {
     #[test]
     fn cite_ref_parses_document_anchor() {
         assert_eq!(
-            CiteRef::parse("composition-model#6"),
+            CiteRef::parse("docs/models/composition-model#6"),
             CiteRef::DocAnchor {
-                stem: "composition-model".into(),
+                path: "docs/models/composition-model".into(),
                 anchor: "6".into()
             }
         );
@@ -216,8 +225,8 @@ mod tests {
             "lock-groundness"
         );
         assert_eq!(
-            CiteRef::parse("composition-model#6").to_string(),
-            "composition-model#6"
+            CiteRef::parse("docs/models/composition-model#6").to_string(),
+            "docs/models/composition-model#6"
         );
     }
 
