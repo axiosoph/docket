@@ -121,8 +121,11 @@ The register is a pure projection and is therefore **not committed**.
 `cites` is the graph edge; a markdown link in prose is presentation. A
 lint checks they agree, so they cannot diverge — and a normative change's
 **blast radius** is computed over `cites`, never by pattern-matching
-prose. Change a claim, and the set of documents that must be re-checked is
-a query result.
+prose. A `cites` entry names either a claim or a document section
+directly, so the query runs the same way from either end: change a
+claim, or change the prose a claim depends on without yet giving that
+prose its own claim, and the set of documents that must be re-checked is
+a query result either way.
 
 ## "Stable", defined honestly
 
@@ -393,7 +396,8 @@ need something to measure; the writing pass needs only tractability.
    - **`kind` is permitted by the genre its path declares**
    - every `cites` target resolves
    - prose links agree with `cites`
-5. A blast-radius query: given a claim id, what cites it, transitively.
+5. A blast-radius query: given a claim id or a document anchor, what
+   cites it, transitively.
 
 **Out, until there is something to measure:** the evaluator runner, the
 verdict register, the metric, generated reference output, signing.

@@ -265,12 +265,46 @@ cites: [reference-syntax]
 ### 4.2 Blast radius
 
 ```
-docket blast <claim-id>
+docket blast <ref>
 ```
 
-Prints, transitively, every claim and document that cites the given claim
-— the set a reviewer must re-check if it changes. Cycles are reported, not
+`<ref>` is a `cites` entry per §1.3: a claim id or a `<doc-path>#<anchor>`
+document anchor. Prints, transitively, every claim (and the document it
+lives in) that cites the given ref — the set a reviewer must re-check if
+the cited claim or document section changes. Cycles are reported, not
 followed twice.
+
+**Both reference forms feed one graph.** A document-anchor `cites` entry
+creates a reverse edge exactly as a claim-id entry does — there is no
+second, lesser notion of citation for the anchor form. A document anchor
+is never itself a *citer* (only a claim carries a `cites` list), so once
+a claim citing an anchor is found, the walk continues from that claim's
+own id exactly as it would from any other claim-id node: an anchor is a
+valid starting point, never a graph dead end partway through.
+
+**A `<ref>` that does not resolve in the corpus is a usage error** (exit
+2, §5) — the same treatment already given an unknown claim id, extended
+to an unmatched document anchor. **A `<ref>` that resolves but has no
+citers is not an error**: `blast` prints nothing and exits 0, since an
+empty blast radius is a legitimate answer, distinct from "this ref names
+nothing in the corpus."
+
+#### [blast-semantics]
+
+`docket blast <ref>` accepts either [reference-syntax](reference-syntax)
+form as its argument. A document-anchor `cites` entry creates a reverse
+edge the same way a claim-id entry does, and the transitive walk
+continues from a citing claim's own id afterward — a document anchor is
+a valid starting point but never itself further citable, since only a
+claim carries a `cites` list. An argument that does not resolve in the
+corpus is a usage error (exit 2); one that resolves but has no citers
+prints nothing (exit 0).
+
+```claim
+kind: constraint
+evaluator: test
+cites: [reference-syntax]
+```
 
 ## 5. Exit codes
 

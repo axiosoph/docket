@@ -3,6 +3,7 @@
 //! I/O, and exit codes (§5).
 
 use clap::{Parser, Subcommand};
+use docket::model::{CiteRef, anchor_matches};
 use docket::{blast, checks, config, contract, corpus, index};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -33,9 +34,11 @@ enum Command {
         #[arg(long, default_value = contract::DEFAULT_CONTRACT_RELATIVE_PATH)]
         contract: PathBuf,
     },
-    /// Print the transitive blast radius of a claim id (§4.2).
+    /// Print the transitive blast radius of a ref — a claim id or a
+    /// `<doc-path>#<anchor>` document anchor (§4.2, §1.3).
     Blast {
-        claim_id: String,
+        /// A claim id or a `<doc-path>#<anchor>` document anchor.
+        target: String,
         /// Corpus root.
         #[arg(long, default_value = ".")]
         corpus: PathBuf,
@@ -50,9 +53,9 @@ fn main() -> ExitCode {
             contract,
         } => run_check(&corpus_root, out.as_deref(), &contract),
         Command::Blast {
-            claim_id,
+            target,
             corpus: corpus_root,
-        } => run_blast(&corpus_root, &claim_id),
+        } => run_blast(&corpus_root, &target),
     }
 }
 
@@ -104,7 +107,7 @@ fn run_check(corpus_root: &Path, out: Option<&Path>, contract_path: &Path) -> Ex
     }
 }
 
-fn run_blast(corpus_root: &Path, claim_id: &str) -> ExitCode {
+fn run_blast(corpus_root: &Path, target: &str) -> ExitCode {
     let cfg = match config::load_config(corpus_root) {
         Ok(cfg) => cfg,
         Err(e) => return usage_error(&e),
@@ -115,12 +118,34 @@ fn run_blast(corpus_root: &Path, claim_id: &str) -> ExitCode {
         Err(e) => return usage_error(&e),
     };
 
-    if !loaded.corpus.claims.iter().any(|c| c.id == claim_id) {
-        eprintln!("error: no claim with id {claim_id:?} in this corpus");
-        return ExitCode::from(2);
+    // Dispatch on the argument's shape via the same ref grammar `cites`
+    // entries use (model::CiteRef) — not a second notion of what a ref
+    // is. An argument that does not resolve in the corpus is a usage
+    // error (exit 2), the same treatment already given an unknown claim
+    // id; a ref that resolves but has no citers is a legitimate empty
+    // answer (exit 0), so the two must not be conflated.
+    match CiteRef::parse(target) {
+        CiteRef::Claim(id) => {
+            if !loaded.corpus.claims.iter().any(|c| c.id == id) {
+                eprintln!("error: no claim with id {id:?} in this corpus");
+                return ExitCode::from(2);
+            }
+        }
+        CiteRef::DocAnchor { path, anchor } => {
+            let resolves = loaded
+                .corpus
+                .documents
+                .iter()
+                .find(|d| d.doc_path == path)
+                .is_some_and(|d| d.headings.iter().any(|h| anchor_matches(&h.text, &anchor)));
+            if !resolves {
+                eprintln!("error: document anchor {target:?} does not resolve in this corpus");
+                return ExitCode::from(2);
+            }
+        }
     }
 
-    let result = blast::blast_radius(&loaded.corpus, claim_id);
+    let result = blast::blast_radius(&loaded.corpus, target);
     for entry in &result.entries {
         println!("{}\t{}", entry.claim, entry.file);
     }

@@ -1,13 +1,18 @@
-//! Blast radius (MVP.md §4.2): given a claim id, every claim (and the
+//! Blast radius (MVP.md §4.2): given a ref — a claim id or a
+//! `<doc-path>#<anchor>` document anchor (§1.3) — every claim (and the
 //! document it lives in) that transitively cites it — "the set a
 //! reviewer must re-check if it changes." Computed purely over `cites`
 //! (README.md, "Links are data": "never by pattern-matching prose").
 //!
-//! Only claim-id `cites` entries form reverse edges here — a
-//! document-anchor `cites` entry targets a *heading*, not a claim, so it
-//! can never itself be the claim whose citers we're walking.
+//! Both `cites` forms create reverse edges, keyed by the cited ref's
+//! canonical string (`CiteRef::to_string()` — a bare id for a claim, or
+//! `path#anchor` for a document anchor). A document anchor is never
+//! itself a *citer* (only a claim has a `cites` list), so once a claim
+//! citing a document anchor is found, the walk continues from that
+//! claim's own id exactly as it would from any other claim-id node —
+//! the recursion is agnostic to which ref form found it.
 
-use crate::model::{CiteRef, Claim, Corpus};
+use crate::model::{Claim, Corpus};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,12 +37,15 @@ pub struct BlastResult {
 }
 
 pub fn blast_radius(corpus: &Corpus, start: &str) -> BlastResult {
-    let mut citers: HashMap<&str, Vec<&Claim>> = HashMap::new();
+    // Keyed by the cited ref's canonical string, so a claim-id cite and a
+    // document-anchor cite both register a reverse edge under the same
+    // vocabulary `start` (a raw ref argument) is written in. The two key
+    // spaces never collide: a claim id is bare kebab-case, a document
+    // anchor's string always contains `#` (CiteRef::Display).
+    let mut citers: HashMap<String, Vec<&Claim>> = HashMap::new();
     for claim in &corpus.claims {
         for cite in &claim.cites {
-            if let CiteRef::Claim(id) = cite {
-                citers.entry(id.as_str()).or_default().push(claim);
-            }
+            citers.entry(cite.to_string()).or_default().push(claim);
         }
     }
 
@@ -53,7 +61,7 @@ pub fn blast_radius(corpus: &Corpus, start: &str) -> BlastResult {
 
 fn visit<'a>(
     node: &str,
-    citers: &HashMap<&'a str, Vec<&'a Claim>>,
+    citers: &HashMap<String, Vec<&'a Claim>>,
     visited: &mut HashSet<&'a str>,
     stack: &mut Vec<&'a str>,
     result: &mut BlastResult,
@@ -189,13 +197,46 @@ mod tests {
     }
 
     #[test]
-    fn document_anchor_cites_do_not_create_reverse_edges() {
-        // A claim that only cites a document anchor never counts as a
-        // citer of any claim id.
+    fn a_document_anchor_cite_creates_a_reverse_edge() {
+        // A claim citing a document anchor (not a claim id) must surface
+        // when blasting that exact `path#anchor` ref — the defect this
+        // change fixes: MVP.md's motivating example (§4.1's worked-example
+        // dependency) is exactly this shape.
+        let src =
+            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ncites: [some-doc#3]\n```\n";
+        let corpus = corpus_with_claims(extract_document("f.md", src).claims);
+
+        let result = blast_radius(&corpus, "some-doc#3");
+        let ids: Vec<&str> = result.entries.iter().map(|e| e.claim.as_str()).collect();
+        assert_eq!(ids, vec!["x"]);
+    }
+
+    #[test]
+    fn a_claim_id_argument_still_ignores_an_unrelated_document_anchor() {
+        // The bare claim id "some-doc" (no `#`) never matches the
+        // document-anchor key "some-doc#3" — the two ref forms occupy
+        // disjoint string spaces, so this must stay empty.
         let src =
             "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ncites: [some-doc#3]\n```\n";
         let corpus = corpus_with_claims(extract_document("f.md", src).claims);
         let result = blast_radius(&corpus, "some-doc");
         assert!(result.entries.is_empty());
+    }
+
+    #[test]
+    fn the_walk_continues_past_a_document_anchor_citer_via_its_claim_id() {
+        // some-doc#3 <- x <- y (y cites x by claim id; x cites the
+        // document anchor). Blasting the anchor must reach both: a
+        // document-anchor citer is not a graph dead end, since other
+        // claims can still cite that citer by its own claim id.
+        let x =
+            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ncites: [some-doc#3]\n```\n";
+        let y = claim_src("y", &["x"]);
+        let corpus = corpus_with_claims(claims_from(&[("f-x.md", x), ("f-y.md", &y)]));
+
+        let result = blast_radius(&corpus, "some-doc#3");
+        let ids: Vec<&str> = result.entries.iter().map(|e| e.claim.as_str()).collect();
+        assert_eq!(ids, vec!["x", "y"]);
+        assert!(result.cycles.is_empty());
     }
 }

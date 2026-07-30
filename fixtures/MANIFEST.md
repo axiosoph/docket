@@ -23,6 +23,7 @@ called out below.
 | `c4-dangling-cite/` | `C4` | `docs/specs/a.md`'s claim cites `nonexistent-claim`, which resolves to nothing in the corpus. A prose link `[related work](nonexistent-claim)` with the identical target is present so `C5` (link/cites agreement) still passes — see the C5-vs-C4 judgment call below. |
 | `c5-prose-cites-mismatch/` | `C5` | `docs/specs/a.md` declares `[target-claim]` (cited, and it resolves — so `C4` passes) and `[mismatched-claim]`, which cites `[target-claim]` but whose prose body carries no matching link. `L = {}`, `cites = {target-claim}`, sets disagree. `[target-claim]` exists specifically so the citation resolves and `C4` cannot also fire. |
 | `orphan-claim/` | `orphan-claim` | `docs/specs/a.md` is a claim block with no preceding heading in the file at all — the minimal case of "no `[id]`-shaped heading precedes it" (MVP.md §1.1). |
+| `blast-doc-anchor/` | — (all pass) | Not a check fixture — see below. Isolates a `blast` behaviour rather than a check. |
 | `golden/` | — (all pass) | See below. |
 
 **`duplicate-stem/` is retired**, not just its row here. MVP.md §1.3 was
@@ -31,6 +32,32 @@ genre (`docs/models/{lean,lean-surety,tla}/README.md`), indistinguishable
 by basename: document identifiers are now corpus-relative paths, unique
 by construction, so there is nothing left for a stem-collision check to
 detect. The fixture directory and its two empty files are deleted.
+
+## `blast-doc-anchor/`
+
+Isolates the defect fixed alongside `blast-semantics`: a `cites` entry
+that is a document anchor (§1.3) must create a reverse edge, the same as
+a claim-id `cites` entry does. Under the pre-fix implementation, this
+corpus's blast query returned nothing; a maintainer relying on it would
+have missed exactly the class of dependency §4.1's own worked example
+depends on.
+
+- `docs/models/rule.md` — hosts `## 3. The rule`, a section with no
+  claim block of its own: the fixture isolates a citation *targeting a
+  section*, not a claim living in one.
+- `docs/specs/a.md` — claim `[depends-on-rule]` cites
+  `docs/models/rule#3`, the **doc-path#anchor** form, with a matching
+  prose link.
+- `docs/specs/b.md` — claim `[depends-transitively]` cites
+  `depends-on-rule` by claim id, with a matching prose link. This proves
+  the walk does not dead-end at a document-anchor citer: `x` (found via
+  the anchor) is still citable by its own claim id, exactly like any
+  other claim.
+
+`docket blast 'docs/models/rule#3' --corpus fixtures/blast-doc-anchor`
+must report both `depends-on-rule` and `depends-transitively`, in that
+order. The corpus passes `docket check` cleanly — this fixture
+demonstrates a `blast` behaviour, not a check failure.
 
 ## `golden/`
 
