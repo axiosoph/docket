@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# docket pre-commit hook — generic, drop into any corpus.
+#
+# Install:
+#   ln -s ../../hooks/pre-commit .git/hooks/pre-commit
+#   # or, if docket is a sibling checkout:
+#   cp path/to/docket/hooks/pre-commit .git/hooks/pre-commit
+#
+# Configure (optional, git config):
+#   docket.bin       path to the docket binary            (default: docket on PATH)
+#   docket.contract  path to contracts/claim_apply.ncl    (default: contracts/claim_apply.ncl)
+#   docket.blast     true|false — print blast radius      (default: true)
+#
+# Exit 0 allows the commit; non-zero blocks it. Git's own --no-verify
+# bypasses this, as it does any hook; that is git's decision, not ours.
+set -uo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)" || exit 0
+cd "$repo_root" || exit 0
+
+# No config, no corpus — nothing to enforce. Silence is correct here: this
+# hook must be harmless in a repository that has not adopted docket.
+[ -f docket.ncl ] || exit 0
+
+bin="$(git config --get docket.bin || true)"
+bin="${bin:-docket}"
+if ! command -v "$bin" >/dev/null 2>&1 && [ ! -x "$bin" ]; then
+  echo "docket: '$bin' not found — skipping (set docket.bin to enable)" >&2
+  exit 0
+fi
+
+contract="$(git config --get docket.contract || true)"
+contract="${contract:-contracts/claim_apply.ncl}"
+
+# ---------------------------------------------------------------------------
+# The gate. Run against the working tree rather than a staged snapshot:
+# claim resolution is corpus-wide, so checking a partial index would report
+# dangling references for claims that exist but are merely unstaged. A
+# false failure that teaches people to bypass the hook is worse than a late
+# one that does not.
+# ---------------------------------------------------------------------------
+index="$(mktemp)"
+trap 'rm -f "$index"' EXIT
+
+if ! "$bin" check --corpus . --contract "$contract" >"$index" 2>/tmp/docket-hook-err; then
+  code=$?
+  echo >&2
+  echo "docket: check failed — commit blocked" >&2
+  echo >&2
+  sed 's/^/  /' /tmp/docket-hook-err >&2
+  echo >&2
+  if [ "$code" -eq 2 ]; then
+    echo "  (exit 2 — configuration error, not a claim defect: see docket.ncl)" >&2
+  fi
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Advisory: blast radius for every claim in a touched document.
+#
+# Deliberately per-file rather than per-changed-block. An edit anywhere in a
+# document can change what its claims mean, and computing which individual
+# block changed adds fragility for a signal that is advisory anyway. Over-
+# reporting here is cheap; under-reporting is what we are trying to fix.
+# ---------------------------------------------------------------------------
+[ "$(git config --get docket.blast || echo true)" = "true" ] || exit 0
+
+touched="$(git diff --cached --name-only --diff-filter=ACM -- '*.md' || true)"
+[ -n "$touched" ] || exit 0
+
+printed=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  # Claim ids are `### [kebab-case]` headings; take them from the staged file.
+  ids="$(git show ":$f" 2>/dev/null | sed -n 's/^#\{1,6\}[[:space:]]*\[\([a-z0-9][a-z0-9-]*\)\][[:space:]]*$/\1/p' || true)"
+  [ -n "$ids" ] || continue
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    radius="$("$bin" blast "$id" --corpus . 2>/dev/null || true)"
+    [ -n "$radius" ] || continue
+    if [ "$printed" -eq 0 ]; then
+      echo >&2
+      echo "docket: blast radius of claims in this commit —" >&2
+      printed=1
+    fi
+    echo >&2
+    echo "  $id" >&2
+    echo "$radius" | sed 's/^/    /' >&2
+  done <<<"$ids"
+done <<<"$touched"
+
+[ "$printed" -eq 1 ] && echo >&2
+
+exit 0
