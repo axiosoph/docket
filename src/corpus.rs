@@ -3,7 +3,7 @@
 //! not scanned" (MVP.md §2).
 
 use crate::config::{AmbiguousGenre, Config};
-use crate::extract::{self, OrphanClaim};
+use crate::extract::{self, NormativeOccurrence, OrphanClaim};
 use crate::model::{Corpus, Document};
 use std::path::{Path, PathBuf};
 
@@ -29,12 +29,18 @@ pub enum CorpusError {
 pub struct LoadedCorpus {
     pub corpus: Corpus,
     pub orphan_claims: Vec<OrphanClaim>,
+    /// Every RFC-2119 keyword found in a scanned document's own voice,
+    /// genre-agnostic (extract.rs). Whether one is a violation depends on
+    /// its document's genre, which only checks.rs's `normative-prose`
+    /// check has in view — collected here the same way `orphan_claims` is.
+    pub normative_occurrences: Vec<NormativeOccurrence>,
 }
 
 /// Load every genre-matched file under `corpus_root`.
 pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, CorpusError> {
     let mut corpus = Corpus::default();
     let mut orphan_claims = Vec::new();
+    let mut normative_occurrences = Vec::new();
 
     for path in walk_files(corpus_root)? {
         let relative = path
@@ -84,11 +90,13 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
         });
         corpus.claims.extend(result.claims);
         orphan_claims.extend(result.orphan_claims);
+        normative_occurrences.extend(result.normative_occurrences);
     }
 
     Ok(LoadedCorpus {
         corpus,
         orphan_claims,
+        normative_occurrences,
     })
 }
 

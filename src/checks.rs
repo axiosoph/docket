@@ -18,6 +18,15 @@ pub enum CheckId {
     C4,
     C5,
     OrphanClaim,
+    /// A genre whose `kinds` is empty permits no RFC-2119 keyword in a
+    /// scanned document's own-voice text (MVP.md §2/§3). Its own
+    /// identifier rather than an extension of C3: C3 judges a
+    /// *registered* claim's `kind` against its genre, while this judges
+    /// text that carries no claim block at all — a disjoint failure mode
+    /// C3's diagnostic ("kind X not permitted") cannot honestly describe.
+    /// Named descriptively rather than numbered, the same convention
+    /// `orphan-claim` already set for a check beyond MVP.md's five.
+    NormativeProse,
 }
 
 impl CheckId {
@@ -29,6 +38,7 @@ impl CheckId {
             CheckId::C4 => "C4",
             CheckId::C5 => "C5",
             CheckId::OrphanClaim => "orphan-claim",
+            CheckId::NormativeProse => "normative-prose",
         }
     }
 }
@@ -183,6 +193,35 @@ pub fn run_checks(
                 message: format!(
                     "prose links and cites disagree for {:?}: only in prose {only_prose:?}, only in cites {only_cites:?}",
                     claim.id
+                ),
+            });
+        }
+    }
+
+    // normative-prose: a genre declaring `kinds = []` already permits no
+    // claim blocks (MVP.md §2) — which means nothing normatively binding
+    // may live in it. An RFC-2119 keyword in such a genre's own-voice
+    // text is a binding assertion that carries no block, which is
+    // exactly how it evades C3: C3 only ever sees a claim that exists.
+    // Derived from `kinds`, not a new config field — a genre that permits
+    // at least one kind is unaffected, since its job is to say MUST.
+    // Extraction (extract.rs) finds every occurrence genre-agnostically;
+    // only here, once genres are in view, is "kinds = []" known.
+    for occurrence in &loaded.normative_occurrences {
+        let Some(doc) = corpus.documents.iter().find(|d| d.file == occurrence.file) else {
+            continue; // extraction invariant: every occurrence comes from a scanned document
+        };
+        let Some(genre) = config.genres.iter().find(|g| g.path == doc.genre_path) else {
+            continue;
+        };
+        if genre.kinds.is_empty() {
+            failures.push(Failure {
+                check: CheckId::NormativeProse,
+                file: occurrence.file.clone(),
+                line: occurrence.line.0,
+                message: format!(
+                    "normative keyword {:?} in own-voice prose, but genre {:?} permits no claim kinds",
+                    occurrence.keyword, genre.path
                 ),
             });
         }
@@ -652,6 +691,93 @@ mod tests {
             "{:#?}",
             report.failures
         );
+    }
+
+    // --- normative-prose ---------------------------------------------
+
+    #[test]
+    fn normative_prose_fails_on_a_bare_keyword_in_a_kinds_empty_genre() {
+        // Criterion 2: a `kinds = []` genre holding a bare MUST in its
+        // own voice, no claim block anywhere in the file.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/adr/**", kinds = [], quadrant = "explanation" } ] }"#,
+        );
+        dir.write(
+            "docs/adr/0001-decision.md",
+            "# ADR 0001: decision\n\nThis decision MUST be treated as final.\n",
+        );
+        let report = run(&dir);
+        assert_eq!(
+            only(&report, CheckId::NormativeProse).len(),
+            1,
+            "{:#?}",
+            report.failures
+        );
+    }
+
+    #[test]
+    fn normative_prose_passes_when_the_keyword_is_only_quoted_or_coded() {
+        // Criterion 3: the same keyword, present only inside a block
+        // quote and inside an inline code span — the check must PASS,
+        // proving the design (a quote/code exemption) rather than a grep.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/adr/**", kinds = [], quadrant = "explanation" } ] }"#,
+        );
+        dir.write(
+            "docs/adr/0001-decision.md",
+            "# ADR 0001: decision\n\n> The rejected proposal said the service MUST retry.\n\nWe reject that. Note `MUST` above is quoted, not asserted.\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, CheckId::NormativeProse).is_empty(),
+            "{:#?}",
+            report.failures
+        );
+    }
+
+    #[test]
+    fn normative_prose_is_silent_in_a_genre_that_permits_kinds() {
+        // Criterion 4: a genre that permits kinds is unaffected — its job
+        // is to say MUST.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/lock.md",
+            "### [lock-groundness]\n\nEvery lock value MUST be ground.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, CheckId::NormativeProse).is_empty(),
+            "{:#?}",
+            report.failures
+        );
+    }
+
+    #[test]
+    fn normative_prose_names_the_file_line_and_genre() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/adr/**", kinds = [], quadrant = "explanation" } ] }"#,
+        );
+        dir.write(
+            "docs/adr/x.md",
+            "# ADR\n\nline2\n\nThis SHALL NOT be reopened.\n",
+        );
+        let report = run(&dir);
+        let failures = only(&report, CheckId::NormativeProse);
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].file, "docs/adr/x.md");
+        assert_eq!(failures[0].line, 5);
+        assert!(failures[0].message.contains("SHALL NOT"));
+        assert!(failures[0].message.contains("docs/adr/**"));
     }
 
     #[test]

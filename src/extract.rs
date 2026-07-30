@@ -1,11 +1,14 @@
-//! The extractor: MVP.md §1.1 (claim block syntax + id assignment) and
-//! the C5 prose-link scope (§3).
+//! The extractor: MVP.md §1.1 (claim block syntax + id assignment), the
+//! C5 prose-link scope (§3), and the `normative-prose` own-voice scan
+//! (§2/§3: a genre declaring `kinds = []` permits no claim blocks, which
+//! already means no RFC-2119 keyword may appear in that genre's own
+//! voice either — see checks.rs, which is where genres come into view).
 //!
 //! Parses markdown to pulldown-cmark's event tree and walks it — no
-//! regular expressions over prose (MVP.md §7). The one regex-shaped bit of
-//! parsing here, [`leading_numeral`], operates on an already-isolated
-//! heading string, not on document structure, and is implemented by hand
-//! rather than pulling in a regex crate for one small token grammar.
+//! regular expressions over prose (MVP.md §7). The hand-rolled tokenizers
+//! here ([`bracket_kebab_id`], [`ascii_words`]) operate on an
+//! already-isolated string a tree walk has produced, not on document
+//! structure, which is the distinction MVP.md §7 draws.
 
 use crate::model::{CiteRef, Claim, Heading, Line, RawClaimBlock};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -19,11 +22,26 @@ pub struct OrphanClaim {
     pub line: Line,
 }
 
+/// An RFC-2119 keyword found in a document's own voice: outside a block
+/// quote at any nesting depth, an inline code span, or a fenced (or
+/// indented) code block. Extraction is genre-agnostic — every occurrence
+/// in every scanned document is collected here; whether it is a
+/// violation depends on the document's genre, which only checks.rs's
+/// `normative-prose` check has in view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormativeOccurrence {
+    pub file: String,
+    pub line: Line,
+    /// The canonical keyword text, e.g. `"MUST"` or `"MUST NOT"`.
+    pub keyword: &'static str,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ExtractResult {
     pub headings: Vec<Heading>,
     pub claims: Vec<Claim>,
     pub orphan_claims: Vec<OrphanClaim>,
+    pub normative_occurrences: Vec<NormativeOccurrence>,
 }
 
 /// Byte-offset -> 1-indexed line number, built once per document.
@@ -62,6 +80,89 @@ fn bracket_kebab_id(text: &str) -> Option<String> {
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
     });
     is_kebab.then(|| inner.to_string())
+}
+
+/// RFC 2119's ten keywords, whole-word and all-caps only — capitalisation
+/// is the only signal that distinguishes a normative keyword from the
+/// ordinary English word. `MUST`/`SHOULD`/`SHALL` additionally combine
+/// with an immediately-following `NOT` into the negated compound form
+/// (`MUST NOT` is a prohibition, a different assertion than `MUST`); the
+/// other four keywords have no such compound in the set. Returns the
+/// canonical keyword text and whether `next` was consumed as part of it.
+fn classify_keyword(word: &str, next: Option<&str>) -> Option<(&'static str, bool)> {
+    match word {
+        "MUST" if next == Some("NOT") => Some(("MUST NOT", true)),
+        "MUST" => Some(("MUST", false)),
+        "SHOULD" if next == Some("NOT") => Some(("SHOULD NOT", true)),
+        "SHOULD" => Some(("SHOULD", false)),
+        "SHALL" if next == Some("NOT") => Some(("SHALL NOT", true)),
+        "SHALL" => Some(("SHALL", false)),
+        "REQUIRED" => Some(("REQUIRED", false)),
+        "RECOMMENDED" => Some(("RECOMMENDED", false)),
+        "MAY" => Some(("MAY", false)),
+        "OPTIONAL" => Some(("OPTIONAL", false)),
+        _ => None,
+    }
+}
+
+/// Maximal runs of ASCII alphabetic bytes in `text`, each paired with its
+/// byte offset within `text`. Any other byte (digit, punctuation,
+/// whitespace) is a word boundary, matching the boundary rule
+/// [`crate::model::anchor_matches`] uses for heading prefixes — applied
+/// here to tokenize a whole string rather than test one prefix.
+fn ascii_words(text: &str) -> Vec<(&str, usize)> {
+    let bytes = text.as_bytes();
+    let mut words = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_alphabetic() {
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            words.push((&text[start..i], start));
+        } else {
+            i += 1;
+        }
+    }
+    words
+}
+
+/// Scan one `Event::Text` chunk for RFC-2119 keywords. `chunk_start` is
+/// the chunk's byte offset in the source (from pulldown-cmark's
+/// offset-iterator range), needed to map a match back to a line.
+///
+/// Negation (`MUST NOT`, `SHOULD NOT`, `SHALL NOT`) is only recognised
+/// within a single chunk: `NOT` immediately following the modal verb in
+/// the same run of plain text. A phrase split across chunks by inline
+/// markup (e.g. `MUST **NOT**`, where `**` starts a new Text event)
+/// reports the modal verb alone rather than the negated compound — the
+/// occurrence is still caught, only the compound label is missed, for a
+/// rare authoring pattern.
+fn scan_normative_keywords(
+    file: &str,
+    text: &str,
+    chunk_start: usize,
+    line_index: &LineIndex,
+) -> Vec<NormativeOccurrence> {
+    let words = ascii_words(text);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        let (word, offset) = words[i];
+        let next = words.get(i + 1).map(|(w, _)| *w);
+        if let Some((keyword, consumed_next)) = classify_keyword(word, next) {
+            out.push(NormativeOccurrence {
+                file: file.to_string(),
+                line: line_index.line_of(chunk_start + offset),
+                keyword,
+            });
+            i += if consumed_next { 2 } else { 1 };
+        } else {
+            i += 1;
+        }
+    }
+    out
 }
 
 fn heading_level_u8(level: HeadingLevel) -> u8 {
@@ -144,9 +245,17 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
     // accumulate text until End closes it.
     let mut cur_heading: Option<(u8, usize, usize, String)> = None;
     let mut cur_block: Option<(usize, usize, bool, String)> = None;
+    // Nesting depth, not a bool: a quote can contain a quote. Only its
+    // zero/nonzero state matters to the normative-prose scan below.
+    let mut blockquote_depth: u32 = 0;
+    let mut normative_occurrences: Vec<NormativeOccurrence> = Vec::new();
 
     for (event, range) in parser {
         match event {
+            Event::Start(Tag::BlockQuote(_)) => blockquote_depth += 1,
+            Event::End(TagEnd::BlockQuote(_)) => {
+                blockquote_depth = blockquote_depth.saturating_sub(1);
+            }
             Event::Start(Tag::Heading { level, .. }) => {
                 cur_heading = Some((
                     heading_level_u8(level),
@@ -195,6 +304,23 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
                 }
                 if let Some((_, _, _, ref mut yaml)) = cur_block {
                     yaml.push_str(&t);
+                }
+                // normative-prose scan: "own voice" is everything but a
+                // block quote (any depth) or a fenced code block (`claim`
+                // or otherwise — cur_block is set for every fence, so a
+                // claim block's own YAML is exempted the same way an
+                // ordinary code sample is). A heading counts as own
+                // voice like any other text; nothing here exempts it.
+                // Inline code spans need no separate exclusion:
+                // pulldown-cmark emits them as `Event::Code`, never
+                // `Event::Text` — this arm simply never sees them.
+                if blockquote_depth == 0 && cur_block.is_none() {
+                    normative_occurrences.extend(scan_normative_keywords(
+                        file,
+                        &t,
+                        range.start,
+                        &line_index,
+                    ));
                 }
             }
             Event::Code(t) => {
@@ -284,6 +410,7 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
         headings,
         claims,
         orphan_claims,
+        normative_occurrences,
     }
 }
 
@@ -420,5 +547,141 @@ mod tests {
         assert_eq!(bracket_kebab_id("[lock_groundness]"), None);
         assert_eq!(bracket_kebab_id("lock-groundness"), None);
         assert_eq!(bracket_kebab_id("[]"), None);
+    }
+
+    // --- normative-prose scan --------------------------------------------
+
+    fn keywords(res: &ExtractResult) -> Vec<&str> {
+        res.normative_occurrences
+            .iter()
+            .map(|o| o.keyword)
+            .collect()
+    }
+
+    #[test]
+    fn a_bare_own_voice_keyword_is_captured_with_its_line() {
+        let src = "# Decision\n\nThis MUST be treated as final.\n";
+        let res = extract_document("docs/adr/x.md", src);
+        assert_eq!(keywords(&res), vec!["MUST"]);
+        assert_eq!(res.normative_occurrences[0].file, "docs/adr/x.md");
+        assert_eq!(res.normative_occurrences[0].line, Line(3));
+    }
+
+    #[test]
+    fn lowercase_or_mixed_case_is_not_a_keyword() {
+        // Capitalisation is the only signal (dispatch, "Detection scope");
+        // ordinary English "must"/"Must" must not fire.
+        let src = "# Decision\n\nWe must, and we really Must, keep going.\n";
+        let res = extract_document("docs/adr/x.md", src);
+        assert!(keywords(&res).is_empty());
+    }
+
+    #[test]
+    fn must_not_is_one_compound_occurrence_not_two() {
+        let src = "# Decision\n\nThis MUST NOT be reopened.\n";
+        let res = extract_document("docs/adr/x.md", src);
+        assert_eq!(keywords(&res), vec!["MUST NOT"]);
+    }
+
+    #[test]
+    fn should_not_and_shall_not_also_compound() {
+        let src = "# Decision\n\nA SHOULD NOT b, and c SHALL NOT d.\n";
+        let res = extract_document("docs/adr/x.md", src);
+        assert_eq!(keywords(&res), vec!["SHOULD NOT", "SHALL NOT"]);
+    }
+
+    #[test]
+    fn a_negatable_keyword_without_a_following_not_reports_standalone() {
+        let src = "# Decision\n\nThis MUST hold, and that is final.\n";
+        let res = extract_document("docs/adr/x.md", src);
+        assert_eq!(keywords(&res), vec!["MUST"]);
+    }
+
+    #[test]
+    fn every_rfc2119_keyword_is_detected() {
+        let src = "# D\n\nMUST, MUST NOT, SHOULD, SHOULD NOT, SHALL, SHALL NOT, REQUIRED, RECOMMENDED, MAY, OPTIONAL.\n";
+        let res = extract_document("docs/adr/x.md", src);
+        assert_eq!(
+            keywords(&res),
+            vec![
+                "MUST",
+                "MUST NOT",
+                "SHOULD",
+                "SHOULD NOT",
+                "SHALL",
+                "SHALL NOT",
+                "REQUIRED",
+                "RECOMMENDED",
+                "MAY",
+                "OPTIONAL",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_keyword_inside_a_block_quote_is_exempt_at_any_depth() {
+        let src =
+            "# Decision\n\n> The proposal said it MUST retry.\n>\n> > Nested: it also MUST log.\n";
+        let res = extract_document("docs/adr/x.md", src);
+        assert!(
+            keywords(&res).is_empty(),
+            "{:#?}",
+            res.normative_occurrences
+        );
+    }
+
+    #[test]
+    fn a_keyword_inside_an_inline_code_span_is_exempt() {
+        let src = "# Decision\n\nThe token `MUST` is discussed, not asserted, here.\n";
+        let res = extract_document("docs/adr/x.md", src);
+        assert!(
+            keywords(&res).is_empty(),
+            "{:#?}",
+            res.normative_occurrences
+        );
+    }
+
+    #[test]
+    fn a_keyword_inside_a_fenced_code_block_is_exempt() {
+        let src = "# Decision\n\n```text\nMUST\n```\n";
+        let res = extract_document("docs/adr/x.md", src);
+        assert!(
+            keywords(&res).is_empty(),
+            "{:#?}",
+            res.normative_occurrences
+        );
+    }
+
+    #[test]
+    fn a_keyword_inside_a_claim_blocks_own_yaml_is_exempt() {
+        // A claim block's YAML is a fenced code block like any other —
+        // exempted the same way, not by a special case for `claim` fences.
+        let src = "### [x]\n\n```claim\nkind: constraint\nevaluator: test\n# MUST not appear here anyway, but if it did:\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(
+            keywords(&res).is_empty(),
+            "{:#?}",
+            res.normative_occurrences
+        );
+    }
+
+    #[test]
+    fn a_keyword_in_a_heading_counts_as_own_voice() {
+        // Delegated decision: headings are not in the dispatch's exemption
+        // list (block quotes, inline code, fenced code blocks) — only
+        // those three are exempt, so a heading is own voice like any
+        // other text. A heading asserting "you MUST configure X" is a
+        // real normative assertion in prose form, not structurally
+        // different from the same sentence in a paragraph.
+        let src = "# You MUST configure this first\n";
+        let res = extract_document("docs/adr/x.md", src);
+        assert_eq!(keywords(&res), vec!["MUST"]);
+    }
+
+    #[test]
+    fn a_quoted_keyword_and_a_coded_keyword_coexist_with_a_real_own_voice_one() {
+        let src = "# Decision\n\n> The old rule said it MUST retry.\n\nWe reject that; note `MUST` above is quoted, not asserted. The new rule\nSHALL retry once.\n";
+        let res = extract_document("docs/adr/x.md", src);
+        assert_eq!(keywords(&res), vec!["SHALL"]);
     }
 }
