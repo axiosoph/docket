@@ -122,6 +122,22 @@ exists to prevent.
 `kinds = []` means the genre may hold **no** claim blocks — the mechanism
 by which a decision record is prevented from carrying normative content.
 
+**Only files with a `.md` extension are scanned.** Non-markdown files
+inside a matched genre are skipped silently — not an error, not a warning.
+
+A claim block can only live in markdown, so reading anything else is
+wasted work at best. It is also a real failure mode rather than a
+hypothetical: the first run against a real corpus aborted on a TLC
+model-checker state dump (binary, no extension) sitting in a generated
+subtree beneath a matched genre. That a model checker writes output under
+`docs/models/` is a **repository-layout fact, not a misconfiguration**, and
+every real corpus has some equivalent. Narrowing the genre pattern to dodge
+it would push the tool's problem onto every config that uses it.
+
+Extension-based rather than content-sniffed, deliberately: a content check
+would have to open every file — the cost being avoided — and would make
+"is this markdown?" a heuristic where an extension is a fact.
+
 ## 3. Checks
 
 All five run on every invocation. Each failure names the file, the line,
