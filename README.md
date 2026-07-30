@@ -221,6 +221,76 @@ ceiling holds (see this repository's ledger), then per-kind conformance
 reads as **which axis is under-closed**, which makes that correspondence
 actionable rather than decorative.
 
+### The same marker reaches load-bearing API surface — at a higher grade
+
+An API can discharge a claim, and it does so **differently in kind** from a
+test:
+
+| | what it establishes |
+|:---|:---|
+| a test | *this case passed* — evidence of conformance |
+| **a type** | *the violation does not exist* — enforcement by construction |
+
+A phantom-typed digest disjoint from a backend object id does not *test*
+that the two are never confused; it makes the confusion **unrepresentable**.
+A set type exposing only a join does not test commutativity; it removes the
+means to violate it. A verdict with no boolean conversion does not test that
+its residue is non-erasable; erasure fails to compile.
+
+So the register records a **grade**, not a boolean, along the standard
+hierarchy:
+
+```
+proof  >  type  >  property test  >  example test  >  linter  >  review
+```
+
+Mechanically this is the same marker in the same place, which is the point
+— one mechanism, two capabilities:
+
+```rust
+// docket: czd-oid-disjoint
+pub struct Czd<T>(…);
+```
+
+**Two things this buys that a boolean cannot.** It distinguishes *how
+strongly* each claim is held. And it surfaces a refactoring signal no tool
+gives today: **a claim discharged at a lower grade than it could be** — a
+constraint guarded by a test where a type could make the violation
+unrepresentable. That is a queryable list rather than an insight someone
+has to happen to have.
+
+### Where type-discharge's honesty limit sits, stated rather than hidden
+
+The machine confirms the marked item exists and compiles. **It cannot
+confirm the type genuinely enforces what the claim says** — a type could be
+marked and enforce nothing.
+
+So type-discharge splits: the machine half is *"it exists and the build
+passes"*; the faithfulness half is **review-established**. That is exactly
+the epistemics of a machine-checked proof, where the checker verifies the
+proof and a human verifies the *definition* is faithful. Same honesty
+discipline, applied one grade down; it must be reported as
+review-established rather than silently counted as machine-established.
+
+A partial machine check is possible per language — confirming the marked
+item is a type rather than a function — but it is a per-language
+enhancement, not a precondition.
+
+### Why a deterministic index rather than careful reading
+
+*"Which API surfaces enforce which invariants"* is an exhaustive
+cross-cutting question over a large corpus, and it is precisely the shape
+where a language model returns a confident partial answer. There is no
+gradient toward exhaustiveness in generation, so the omissions are
+invisible from inside.
+
+The consequence is about review, not tidiness. A human auditing machine-authored
+work needs to establish *"was this claim actually enforced?"* — and the cost
+of that answer determines whether review is feasible at all. **A register
+makes it a query; without one it is a code read.** Given that code review is
+slow by definition, moving the audit from diff level to declaration level is
+what makes the human side of the loop tractable.
+
 ### Out of MVP scope, but it disturbs nothing
 
 This needs the evaluator runner, so it lands after the index. It requires
