@@ -39,8 +39,15 @@ if ! command -v "$bin" >/dev/null 2>&1 && [ ! -x "$bin" ]; then
   exit 0
 fi
 
+# Resolve the contract relative to THIS HOOK, not to the corpus being checked.
+# The contract ships with docket, so a path relative to the corpus is only ever
+# correct when the corpus happens to be docket's own checkout. Every other
+# consumer gets an unresolvable import — and the failure is invisible until the
+# corpus grows its first claim, because with no claims there is nothing for C1
+# to validate and the missing file is never opened.
+self="$(readlink -f "${BASH_SOURCE[0]}")"
 contract="$(git config --get docket.contract || true)"
-contract="${contract:-contracts/claim_apply.ncl}"
+contract="${contract:-$(dirname "$self")/../contracts/claim_apply.ncl}"
 
 # ---------------------------------------------------------------------------
 # The gate. Run against the working tree rather than a staged snapshot:
