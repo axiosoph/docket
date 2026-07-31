@@ -46,7 +46,7 @@ called out below.
 | `run-vacuous-ignored/` | — (all pass; `docket run ignored-test-target` exits 4) | Not a `C`-check fixture — see below. The marker names a real `#[ignore]`d test; cargo collects and skips it, still exiting 0. |
 | `run-vacuous-exempt/` | — (all pass; `docket run exempt-target` exits 0) | Not a `C`-check fixture — see below. The marker's `!` opts its command out of vacuity detection even though its output would otherwise match. |
 | `run-multi-block-pass/` | — (all pass; `docket run multi-block-target` exits 0) | Not a `C`-check fixture — see below. Reproduces the real two-binary shape a `cargo test` invocation prints on a crate with both unit tests and doc-comment examples: a unittest `test result: ` block with three real passes, followed by a doctest block reading `0 passed; 0 failed`, the same shape `run-vacuous-missing/` isolates. Proves a block that checked nothing does not sink an invocation that has a sibling block with real activity. |
-| `bold-form-definitions/` | — (all pass) | Not a check fixture — see below. Isolates the bold-form recognizer: three definitions, one direct-colon and two parenthetical (one non-ASCII), each with a matching block. |
+| `bold-form-definitions/` | — (all pass) | Not a check fixture — see below. Isolates the bold-form recognizer: five definitions — one direct-colon, two parenthetical (one non-ASCII), and two italicized revision notes (one multi-line) — each with a matching block. |
 | `bold-form-false-positives/` | — (all pass) | Not a check fixture — see below. The false-positive floor: ordinary bold text, a mid-sentence citation, a line-start bracket with no adjacent punctuation, and a list-embedded bracket — none recognized as a definition. |
 | `c2-duplicate-across-forms/` | `C2` | `docs/specs/a.md` declares `[dup-across-forms]` in heading form, `docs/specs/b.md` declares the same id in bold form. Proves a duplicate arising from two *different* recognizers is still one C2 finding pair, each naming the other's site. |
 | `unregistered-definition/` | `unregistered-definition` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition with no `claim` block, plus one registered heading-form definition for contrast. Exits **0** — `Warn` severity, the coverage count. |
@@ -381,9 +381,17 @@ normal starting state (the dispatch's own words) — never a reason to
 add a second code path that has to agree with the first about which
 files were scanned.
 
-- **`bold-form-definitions/`** — the positive case: all three
+- **`bold-form-definitions/`** — the positive case: all five
   syntactic variants (direct colon; parenthetical; parenthetical with a
-  non-ASCII prime), each with a matching block. `docket check
+  non-ASCII prime; an italicized revision note; a multi-line italicized
+  revision note with an em dash), each with a matching block. The italic
+  pair is a later generalization: a real-corpus measurement found the
+  original two-form recognizer silently invisible to exactly the
+  definitions carrying revision history (`_(amended …)_`,
+  `_(retired …)_`, `_(superseded …)_`, `_(disambiguated …)_`), so this
+  form is not a third enumerated case but the same "bounded, colon-free
+  interstitial" rule the direct and parenthetical forms already satisfy,
+  applied to a markup-wrapped span instead of a plain one. `docket check
   --corpus fixtures/bold-form-definitions` exits **0**.
 - **`bold-form-false-positives/`** — the false-positive floor
   (criterion 4): ordinary bold text with no bracket-kebab id; a

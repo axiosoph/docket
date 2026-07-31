@@ -37,7 +37,7 @@ pub struct NormativeOccurrence {
 }
 
 /// A recognized id definition (heading-form or bold-form — see
-/// [`bracket_kebab_id`] / [`definitional_punctuation_len`]) with no
+/// [`bracket_kebab_id`] / [`scan_interstitial_chunk`]) with no
 /// `claim` block that claimed it (§1.1's ownership rule, generalized to
 /// both forms). This is the coverage-count deliverable: a real-corpus run
 /// measured 418 recognized definitions, only 18 with a registered block —
@@ -96,40 +96,59 @@ fn bracket_kebab_id(text: &str) -> Option<String> {
     is_kebab.then(|| inner.to_string())
 }
 
-/// The bold-form definition's punctuation (a considered second marking
-/// convention alongside the heading form's `### [id]` — a real-corpus
-/// measurement found 400 definitions in this shape against only 18 in
-/// heading form). Four properties together identify a definition; this
-/// function is the fourth, applied to the single `Event::Text` chunk
-/// pulldown-cmark hands back immediately after a line-start `**[id]**`
-/// bold span (the other three — line start, the `**…**` wrapper, and a
-/// bracketed kebab id inside it — are checked by the caller). Operates on
-/// an already-isolated string a tree walk produced, the same class of
+/// Bound, in source bytes, on the interstitial between a bold-form
+/// definition's closing `**` and its terminating colon (the fourth of the
+/// four properties that together identify a definition — line start, the
+/// `**…**` wrapper, a bracketed kebab id inside it, and this; the other
+/// three are checked by the caller). What sits in the interstitial is
+/// deliberately unconstrained in *kind* — a parenthetical formula label
+/// (`**[id]** (P8):`), an italicized revision note
+/// (`**[id]** _(amended 2026-07-14)_:`), whatever a corpus grows into
+/// next — but bounded in *length*, so the scan below never degrades into
+/// an open-ended prose search. A real-corpus measurement of the italic
+/// form found interstitials up to 88 bytes; this bound gives headroom
+/// above that rather than sitting tight against it, because the two kinds
+/// of error here are not symmetric: claim ids are unique corpus-wide
+/// (enforced by `contracts/claim_apply.ncl`), so an over-matched
+/// interstitial produces a loud duplicate-id finding naming both sites,
+/// never a silently invented claim — while under-matching is exactly the
+/// silently invisible definition this generalization exists to fix.
+const MAX_INTERSTITIAL_LEN: usize = 128;
+
+/// Outcome of scanning one interstitial chunk — an `Event::Text` chunk
+/// immediately adjacent to where the interstitial left off — for the
+/// colon that closes a bold-form definition.
+enum InterstitialStep {
+    /// The colon sits at this byte offset within the chunk.
+    ResolvedAt(usize),
+    /// No colon in this chunk, but nothing disqualifying either (no line
+    /// break, budget not yet exhausted) — the interstitial may still
+    /// resolve in a later, adjacent chunk.
+    Continue,
+    /// The chunk crossed a line break before any colon, or exhausted the
+    /// remaining budget — the interstitial cannot close from here.
+    Failed,
+}
+
+/// Scan `chunk` — up to `budget` bytes of it — for the interstitial's
+/// terminating colon. A line break inside the (budget-limited) window
+/// fails the chunk outright: "immediately followed by definitional
+/// punctuation" (MVP.md §1.1) does not survive crossing a line. Operates
+/// on an already-isolated string a tree walk produced, the same class of
 /// hand-rolled tokenizing [`bracket_kebab_id`] and [`ascii_words`] do —
 /// not a regex over document structure.
-///
-/// Two forms, both requiring the punctuation to start the chunk with no
-/// intervening prose (a mid-sentence citation of the same bracket id has
-/// prose before any colon ever appears, so it never matches):
-///
-/// - **direct**: `: ` — `**[sigil-required]**: An input string MUST…`
-/// - **parenthetical**: ` (…): ` — `**[eos-scheduler-frozen-stability]**
-///   (P8): Once an EP…`. The parenthetical's content is unconstrained
-///   (may hold non-ASCII, e.g. `P9′`) since only its own closing `)`
-///   bounds it.
-///
-/// Returns the byte length of the matched punctuation run (the caller
-/// uses it to compute where the definition's own prose begins), or
-/// `None` if this bold span is not a recognized definition — the
-/// ordinary-bold-text and mid-sentence-citation false-positive floor.
-fn definitional_punctuation_len(text: &str) -> Option<usize> {
-    if text.starts_with(':') {
-        return Some(1);
+fn scan_interstitial_chunk(chunk: &str, budget: usize) -> InterstitialStep {
+    let window_len = chunk.len().min(budget);
+    let window = &chunk[..window_len];
+    let scan = window.find('\n').map_or(window, |nl| &window[..nl]);
+    if let Some(rel) = scan.find(':') {
+        return InterstitialStep::ResolvedAt(rel);
     }
-    let rest = text.strip_prefix(" (")?;
-    let close = rest.find(')')?;
-    let after_paren = &rest[close + 1..];
-    after_paren.starts_with(':').then_some(2 + close + 1 + 1)
+    if window.contains('\n') || window_len < chunk.len() {
+        InterstitialStep::Failed
+    } else {
+        InterstitialStep::Continue
+    }
 }
 
 /// RFC 2119's ten keywords, whole-word and all-caps only — capitalisation
@@ -299,6 +318,39 @@ struct RawBoldDef {
     id: ClaimId,
 }
 
+/// A closed line-start `**[id]**` still hunting for its definitional
+/// colon, carried across however many adjacent inline events the
+/// interstitial spans. A colon-bearing `Event::Text` immediately after
+/// the bold span resolves it in one step (the direct-colon and plain
+/// parenthetical forms); a markup-wrapped aside (`_(amended …)_`)
+/// instead arrives from pulldown-cmark as a `Start`/`Text`/`End` triple,
+/// so this state persists across that whole span rather than only
+/// checking the single next event.
+struct PendingBold {
+    /// Byte offset of the definition's opening `**`.
+    start: usize,
+    /// Byte offset where the interstitial began (`strong_end`) — budgets
+    /// against [`MAX_INTERSTITIAL_LEN`] are measured from here.
+    interstitial_start: usize,
+    /// Byte offset the next adjacent event must start at. A gap (a
+    /// non-adjacent event, or an event kind that can't continue the
+    /// interstitial) abandons this candidate.
+    cursor: usize,
+    id: ClaimId,
+    /// `>0` while inside a balanced inline wrapper whose whole span was
+    /// already pre-consumed by jumping `cursor` to its `Start` event's
+    /// `range.end` — pulldown-cmark's offset iterator gives a container's
+    /// `Start` and `End` the same full-span range (the same fact
+    /// `extract_document`'s heading/code-block capture already relies
+    /// on), so one hop skips the wrapper entirely. Events inside are
+    /// ignored outright, never scanned for a colon: the wrapper's content
+    /// is unconstrained, the same rule the parenthetical form already
+    /// applies to its own `(...)`, generalized from one wrapper syntax to
+    /// any of them (emphasis today; whatever a corpus grows into next)
+    /// rather than special-cased per syntax.
+    skip_depth: u32,
+}
+
 /// A recognized id definition, either form, merged into one
 /// position-ordered stream for §1.1's "nearest preceding [id]" ownership
 /// search — generalized from heading-only to whichever form is nearer,
@@ -339,29 +391,69 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
     // properties. Non-line-start bold spans are never tracked here at
     // all, which is what keeps a mid-sentence bold run cheap to ignore.
     let mut cur_strong: Option<(usize, usize, String)> = None;
-    // A closed line-start `**[id]**` awaiting the very next event to
-    // supply its definitional punctuation (`definitional_punctuation_len`)
-    // — the fourth property. Cleared unconditionally after the next event
-    // is checked, matched or not: only an immediately-adjacent match
-    // survives, so ordinary bold text and a mid-sentence citation of a
-    // real id (no colon follows) both fall through silently here.
-    let mut pending_bold: Option<(usize, usize, ClaimId)> = None;
+    // A closed line-start `**[id]**` awaiting its definitional
+    // punctuation — the fourth property. See `PendingBold`'s own docs for
+    // how far this state can carry; ordinary bold text and a mid-sentence
+    // citation of a real id (no colon ever follows) both fall through
+    // silently, same as before this state grew multi-event.
+    let mut pending_bold: Option<PendingBold> = None;
     // Nesting depth, not a bool: a quote can contain a quote. Only its
     // zero/nonzero state matters to the normative-prose scan below.
     let mut blockquote_depth: u32 = 0;
     let mut normative_occurrences: Vec<NormativeOccurrence> = Vec::new();
 
     for (event, range) in parser {
-        if let Some((start, strong_end, id)) = pending_bold.take()
-            && let Event::Text(t) = &event
-            && range.start == strong_end
-            && let Some(punct_len) = definitional_punctuation_len(t)
-        {
-            raw_bold_defs.push(RawBoldDef {
-                start,
-                end: strong_end + punct_len,
-                id,
-            });
+        if let Some(mut pb) = pending_bold.take() {
+            if pb.skip_depth > 0 {
+                // Inside an opaque wrapper span whose whole byte range is
+                // already accounted for in `pb.cursor` — track balance
+                // only, never scan for a colon in here.
+                match &event {
+                    Event::Start(_) => pb.skip_depth += 1,
+                    Event::End(_) => pb.skip_depth -= 1,
+                    _ => {}
+                }
+                pending_bold = Some(pb);
+            } else if range.start == pb.cursor {
+                match &event {
+                    Event::Text(t) => {
+                        let budget =
+                            MAX_INTERSTITIAL_LEN.saturating_sub(pb.cursor - pb.interstitial_start);
+                        match scan_interstitial_chunk(t, budget) {
+                            InterstitialStep::ResolvedAt(rel) => {
+                                raw_bold_defs.push(RawBoldDef {
+                                    start: pb.start,
+                                    end: range.start + rel + 1,
+                                    id: pb.id,
+                                });
+                            }
+                            InterstitialStep::Continue => {
+                                pb.cursor = range.end;
+                                pending_bold = Some(pb);
+                            }
+                            InterstitialStep::Failed => {}
+                        }
+                    }
+                    Event::Start(_) => {
+                        // A balanced inline wrapper opening exactly where
+                        // the interstitial continues (`PendingBold`'s
+                        // docs): pre-consume its whole span in one hop.
+                        let new_cursor = range.end;
+                        if new_cursor - pb.interstitial_start <= MAX_INTERSTITIAL_LEN {
+                            pb.cursor = new_cursor;
+                            pb.skip_depth = 1;
+                            pending_bold = Some(pb);
+                        }
+                    }
+                    // A line break (Soft/HardBreak), inline code, or
+                    // anything else: MVP.md §1.1's "immediately followed"
+                    // does not survive crossing a line, and no other
+                    // event kind is a recognized wrapper — abandon.
+                    _ => {}
+                }
+            }
+            // else: a gap between events broke the interstitial's
+            // continuity — abandon (already None from `take()`).
         }
 
         match event {
@@ -414,7 +506,13 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
                 if let Some((start, end, text)) = cur_strong.take()
                     && let Some(id) = bracket_kebab_id(text.trim())
                 {
-                    pending_bold = Some((start, end, id));
+                    pending_bold = Some(PendingBold {
+                        start,
+                        interstitial_start: end,
+                        cursor: end,
+                        id,
+                        skip_depth: 0,
+                    });
                 }
             }
             Event::Start(Tag::Link { dest_url, .. }) => {
@@ -1052,17 +1150,76 @@ mod tests {
     }
 
     #[test]
-    fn definitional_punctuation_len_matches_the_direct_and_parenthetical_forms() {
-        assert_eq!(definitional_punctuation_len(": text"), Some(1));
-        assert_eq!(
-            definitional_punctuation_len(" (P8): text"),
-            Some(" (P8):".len())
-        );
-        assert_eq!(
-            definitional_punctuation_len(" (P9′): text"),
-            Some(" (P9′):".len())
-        );
-        assert_eq!(definitional_punctuation_len(" text, no colon"), None);
-        assert_eq!(definitional_punctuation_len(" (P8) no colon after"), None);
+    fn scan_interstitial_chunk_matches_the_direct_and_parenthetical_forms() {
+        assert!(matches!(
+            scan_interstitial_chunk(": text", 128),
+            InterstitialStep::ResolvedAt(0)
+        ));
+        assert!(matches!(
+            scan_interstitial_chunk(" (P8): text", 128),
+            InterstitialStep::ResolvedAt(5)
+        ));
+    }
+
+    #[test]
+    fn scan_interstitial_chunk_keeps_hunting_when_no_colon_yet_within_budget() {
+        assert!(matches!(
+            scan_interstitial_chunk(" text, no colon", 128),
+            InterstitialStep::Continue
+        ));
+    }
+
+    #[test]
+    fn scan_interstitial_chunk_fails_on_a_crossed_line_or_an_exhausted_budget() {
+        assert!(matches!(
+            scan_interstitial_chunk(" text\nmore: after a break", 128),
+            InterstitialStep::Failed
+        ));
+        assert!(matches!(
+            scan_interstitial_chunk(" text, no colon", 4),
+            InterstitialStep::Failed
+        ));
+    }
+
+    #[test]
+    fn extracts_a_bold_form_claim_with_an_italicized_revision_note() {
+        // The shape this dispatch exists for: a markdown emphasis span
+        // (`_(...)_`) between the closing `**` and the colon, carrying
+        // revision history rather than a plain parenthetical label.
+        // Multi-line, matching the real corpus (e.g.
+        // docs/specs/trust-model.md's `[trust-owner-selector]`).
+        let src = "**[lock-groundness]** _(amended 2026-07-14 — retitled\nfrom lock-nonzero)_: Every lock value MUST be ground.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(ids(&res), vec!["lock-groundness"]);
+        assert!(res.orphan_claims.is_empty(), "{:#?}", res.orphan_claims);
+    }
+
+    #[test]
+    fn extracts_a_bold_form_claim_with_a_retired_or_superseded_note() {
+        let src = "**[anchor-is-genesis]** _(retired 2026-07-08 — superseded by\nthe charter amendment)_: The former rule is retired.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(ids(&res), vec!["anchor-is-genesis"]);
+    }
+
+    #[test]
+    fn a_nested_bracket_id_inside_the_revision_note_does_not_confuse_the_wrapper_skip() {
+        // The real corpus's own counterexample
+        // (docs/specs/atom-transactions.md's `[anchor-resolvable]`): the
+        // aside itself cites another id in brackets, which must stay
+        // opaque content — never mistaken for a second definition, never
+        // breaking the wrapper scan.
+        let src = "**[anchor-resolvable]** _(supersedes [anchor-discoverable],\n2026-07-08)_: Given a source, any party MUST verify.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(ids(&res), vec!["anchor-resolvable"]);
+    }
+
+    #[test]
+    fn the_two_already_supported_forms_still_work_alongside_the_italic_one() {
+        let src = "**[direct]**: direct colon.\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n**[paren]** (P8): plain parenthetical.\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n**[italic]** _(amended 2026-07-14)_: italic revision note.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        let mut got = ids(&res);
+        got.sort_unstable();
+        assert_eq!(got, vec!["direct", "italic", "paren"]);
+        assert!(res.orphan_claims.is_empty(), "{:#?}", res.orphan_claims);
     }
 }

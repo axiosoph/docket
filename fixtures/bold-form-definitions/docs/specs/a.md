@@ -23,3 +23,22 @@ non-ASCII content, such as a prime mark.
 kind: constraint
 evaluator: test
 ```
+
+**[italic-amended-form]** _(amended 2026-07-14)_: An input MUST also
+be recognized when an italicized revision note — not a plain
+parenthetical — sits between the closing `**` and the colon.
+
+```claim
+kind: constraint
+evaluator: test
+```
+
+**[italic-retired-form]** _(retired 2026-07-08 — superseded by the
+amended form above)_: The revision note MAY span more than one line
+and hold an em dash, matching the real-corpus shape this form exists
+for.
+
+```claim
+kind: constraint
+evaluator: test
+```
