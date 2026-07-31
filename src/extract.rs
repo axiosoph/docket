@@ -10,7 +10,7 @@
 //! already-isolated string a tree walk has produced, not on document
 //! structure, which is the distinction MVP.md §7 draws.
 
-use crate::model::{CiteRef, Claim, Heading, Line, RawClaimBlock};
+use crate::model::{CiteRef, Claim, ClaimId, Heading, Line, RawClaimBlock};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// A `claim` fence with no preceding bracket-kebab heading in the same
@@ -36,12 +36,26 @@ pub struct NormativeOccurrence {
     pub keyword: &'static str,
 }
 
+/// A recognized id definition (heading-form or bold-form — see
+/// [`bracket_kebab_id`] / [`definitional_punctuation_len`]) with no
+/// `claim` block that claimed it (§1.1's ownership rule, generalized to
+/// both forms). This is the coverage-count deliverable: a real-corpus run
+/// measured 418 recognized definitions, only 18 with a registered block —
+/// this is the other 400, discovered rather than counted by hand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnregisteredDefinition {
+    pub file: String,
+    pub line: Line,
+    pub id: ClaimId,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ExtractResult {
     pub headings: Vec<Heading>,
     pub claims: Vec<Claim>,
     pub orphan_claims: Vec<OrphanClaim>,
     pub normative_occurrences: Vec<NormativeOccurrence>,
+    pub unregistered_definitions: Vec<UnregisteredDefinition>,
 }
 
 /// Byte-offset -> 1-indexed line number, built once per document.
@@ -80,6 +94,42 @@ fn bracket_kebab_id(text: &str) -> Option<String> {
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
     });
     is_kebab.then(|| inner.to_string())
+}
+
+/// The bold-form definition's punctuation (a considered second marking
+/// convention alongside the heading form's `### [id]` — a real-corpus
+/// measurement found 400 definitions in this shape against only 18 in
+/// heading form). Four properties together identify a definition; this
+/// function is the fourth, applied to the single `Event::Text` chunk
+/// pulldown-cmark hands back immediately after a line-start `**[id]**`
+/// bold span (the other three — line start, the `**…**` wrapper, and a
+/// bracketed kebab id inside it — are checked by the caller). Operates on
+/// an already-isolated string a tree walk produced, the same class of
+/// hand-rolled tokenizing [`bracket_kebab_id`] and [`ascii_words`] do —
+/// not a regex over document structure.
+///
+/// Two forms, both requiring the punctuation to start the chunk with no
+/// intervening prose (a mid-sentence citation of the same bracket id has
+/// prose before any colon ever appears, so it never matches):
+///
+/// - **direct**: `: ` — `**[sigil-required]**: An input string MUST…`
+/// - **parenthetical**: ` (…): ` — `**[eos-scheduler-frozen-stability]**
+///   (P8): Once an EP…`. The parenthetical's content is unconstrained
+///   (may hold non-ASCII, e.g. `P9′`) since only its own closing `)`
+///   bounds it.
+///
+/// Returns the byte length of the matched punctuation run (the caller
+/// uses it to compute where the definition's own prose begins), or
+/// `None` if this bold span is not a recognized definition — the
+/// ordinary-bold-text and mid-sentence-citation false-positive floor.
+fn definitional_punctuation_len(text: &str) -> Option<usize> {
+    if text.starts_with(':') {
+        return Some(1);
+    }
+    let rest = text.strip_prefix(" (")?;
+    let close = rest.find(')')?;
+    let after_paren = &rest[close + 1..];
+    after_paren.starts_with(':').then_some(2 + close + 1 + 1)
 }
 
 /// RFC 2119's ten keywords, whole-word and all-caps only — capitalisation
@@ -236,6 +286,38 @@ struct RawBlock {
     yaml: String,
 }
 
+/// A recognized bold-form definition: `start` is the byte offset of the
+/// opening `**` (used for the line-start check and as this definition's
+/// position in the nearest-preceding-anchor search, §1.1's ownership
+/// rule); `end` is the offset immediately after the matched definitional
+/// punctuation, i.e. where the definition's own prose begins (the
+/// bold-form analogue of a heading's `end`, used as C5's prose-scope
+/// start).
+struct RawBoldDef {
+    start: usize,
+    end: usize,
+    id: ClaimId,
+}
+
+/// A recognized id definition, either form, merged into one
+/// position-ordered stream for §1.1's "nearest preceding [id]" ownership
+/// search — generalized from heading-only to whichever form is nearer,
+/// exactly the way a deeper heading already wins over a shallower one.
+/// `idx` indexes back into `raw_headings` / `raw_bold_defs` so the
+/// claim-building loop can recover the form-specific fields (heading
+/// level for its same-or-higher-level C5 scope close; the bold
+/// definition's own `end` for its scope start).
+enum AnchorKind {
+    Heading(usize),
+    Bold(usize),
+}
+
+struct IdAnchor {
+    start: usize,
+    id: ClaimId,
+    kind: AnchorKind,
+}
+
 /// Parse one markdown document and extract its claim blocks, per MVP.md
 /// §1.1. `file` is the corpus-relative path recorded on each claim.
 pub fn extract_document(file: &str, source: &str) -> ExtractResult {
@@ -245,18 +327,43 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
     let mut raw_headings: Vec<RawHeading> = Vec::new();
     let mut raw_links: Vec<RawLink> = Vec::new();
     let mut raw_blocks: Vec<RawBlock> = Vec::new();
+    let mut raw_bold_defs: Vec<RawBoldDef> = Vec::new();
 
     // pulldown-cmark's offset iterator gives Start and End the same full
     // element range, so we capture level/start/end at Start and only
     // accumulate text until End closes it.
     let mut cur_heading: Option<(u8, usize, usize, String)> = None;
     let mut cur_block: Option<(usize, usize, bool, String)> = None;
+    // A `**…**` span that opened at line start (byte immediately before
+    // `**` is `\n` or file-start) — the first of the bold form's four
+    // properties. Non-line-start bold spans are never tracked here at
+    // all, which is what keeps a mid-sentence bold run cheap to ignore.
+    let mut cur_strong: Option<(usize, usize, String)> = None;
+    // A closed line-start `**[id]**` awaiting the very next event to
+    // supply its definitional punctuation (`definitional_punctuation_len`)
+    // — the fourth property. Cleared unconditionally after the next event
+    // is checked, matched or not: only an immediately-adjacent match
+    // survives, so ordinary bold text and a mid-sentence citation of a
+    // real id (no colon follows) both fall through silently here.
+    let mut pending_bold: Option<(usize, usize, ClaimId)> = None;
     // Nesting depth, not a bool: a quote can contain a quote. Only its
     // zero/nonzero state matters to the normative-prose scan below.
     let mut blockquote_depth: u32 = 0;
     let mut normative_occurrences: Vec<NormativeOccurrence> = Vec::new();
 
     for (event, range) in parser {
+        if let Some((start, strong_end, id)) = pending_bold.take()
+            && let Event::Text(t) = &event
+            && range.start == strong_end
+            && let Some(punct_len) = definitional_punctuation_len(t)
+        {
+            raw_bold_defs.push(RawBoldDef {
+                start,
+                end: strong_end + punct_len,
+                id,
+            });
+        }
+
         match event {
             Event::Start(Tag::BlockQuote(_)) => blockquote_depth += 1,
             Event::End(TagEnd::BlockQuote(_)) => {
@@ -298,6 +405,18 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
                     });
                 }
             }
+            Event::Start(Tag::Strong) => {
+                let line_start =
+                    range.start == 0 || source.as_bytes().get(range.start - 1) == Some(&b'\n');
+                cur_strong = line_start.then(|| (range.start, range.end, String::new()));
+            }
+            Event::End(TagEnd::Strong) => {
+                if let Some((start, end, text)) = cur_strong.take()
+                    && let Some(id) = bracket_kebab_id(text.trim())
+                {
+                    pending_bold = Some((start, end, id));
+                }
+            }
             Event::Start(Tag::Link { dest_url, .. }) => {
                 raw_links.push(RawLink {
                     start: range.start,
@@ -306,6 +425,9 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
             }
             Event::Text(t) => {
                 if let Some((_, _, _, ref mut text)) = cur_heading {
+                    text.push_str(&t);
+                }
+                if let Some((_, _, ref mut text)) = cur_strong {
                     text.push_str(&t);
                 }
                 if let Some((_, _, _, ref mut yaml)) = cur_block {
@@ -354,23 +476,43 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
         })
         .collect();
 
+    // One position-ordered stream of every recognized id definition,
+    // heading-form and bold-form together (MVP.md §1.1, generalized): a
+    // claim block's owner is the nearest preceding definition regardless
+    // of which form it is, exactly the existing "deeper heading wins"
+    // rule extended from one shape to two.
+    let mut id_anchors: Vec<IdAnchor> = raw_headings
+        .iter()
+        .enumerate()
+        .filter_map(|(i, h)| {
+            bracket_kebab_id(&h.text).map(|id| IdAnchor {
+                start: h.start,
+                id,
+                kind: AnchorKind::Heading(i),
+            })
+        })
+        .chain(raw_bold_defs.iter().enumerate().map(|(i, b)| IdAnchor {
+            start: b.start,
+            id: b.id.clone(),
+            kind: AnchorKind::Bold(i),
+        }))
+        .collect();
+    id_anchors.sort_by_key(|a| a.start);
+
     let mut claims = Vec::new();
     let mut orphan_claims = Vec::new();
+    let mut claimed_anchor_starts: std::collections::HashSet<usize> =
+        std::collections::HashSet::new();
 
     for block in raw_blocks.iter().filter(|b| b.is_claim) {
         let block_line = line_index.line_of(block.start);
 
-        // Nearest preceding heading whose text is exactly a bracketed
-        // kebab-case token (MVP.md §1.1) — scan every heading before the
-        // block, across all levels, keeping the last (= nearest) match.
-        let found = raw_headings
+        let found = id_anchors
             .iter()
-            .enumerate()
-            .take_while(|(_, h)| h.start < block.start)
-            .filter_map(|(i, h)| bracket_kebab_id(&h.text).map(|id| (i, id)))
+            .take_while(|a| a.start < block.start)
             .last();
 
-        let Some((idx, id)) = found else {
+        let Some(anchor) = found else {
             orphan_claims.push(OrphanClaim {
                 file: file.to_string(),
                 line: block_line,
@@ -378,17 +520,51 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
             continue;
         };
 
-        let heading = &raw_headings[idx];
-        let heading_line = line_index.line_of(heading.start);
+        // Prose scope (C5, §3), per form:
+        // - heading-form: from the id heading to the next heading of the
+        //   same or higher level (unchanged from before this dispatch).
+        // - bold-form: from the end of the matched punctuation to the
+        //   next definition of EITHER form, or the next heading of ANY
+        //   level — a bold-form definition is inline prose, not a
+        //   section, so nothing beneath a subheading and nothing past
+        //   the next definition belongs to it. Human-authored analogue:
+        //   the paragraph(s) discussing this claim, up to whatever comes
+        //   next.
+        let (id, heading_line, scope_start, scope_end) = match anchor.kind {
+            AnchorKind::Heading(idx) => {
+                let heading = &raw_headings[idx];
+                let scope_start = heading.end;
+                let scope_end = raw_headings[idx + 1..]
+                    .iter()
+                    .find(|h2| h2.level <= heading.level)
+                    .map(|h2| h2.start)
+                    .unwrap_or(source.len());
+                (
+                    anchor.id.clone(),
+                    line_index.line_of(heading.start),
+                    scope_start,
+                    scope_end,
+                )
+            }
+            AnchorKind::Bold(idx) => {
+                let bold = &raw_bold_defs[idx];
+                let next_heading = raw_headings.iter().find(|h| h.start > bold.end);
+                let next_bold = raw_bold_defs[idx + 1..].iter().next();
+                let scope_end = [next_heading.map(|h| h.start), next_bold.map(|b| b.start)]
+                    .into_iter()
+                    .flatten()
+                    .min()
+                    .unwrap_or(source.len());
+                (
+                    anchor.id.clone(),
+                    line_index.line_of(bold.start),
+                    bold.end,
+                    scope_end,
+                )
+            }
+        };
 
-        // Prose scope (C5, §3): from the id heading to the next heading
-        // of the same or higher level, excluding the claim block itself.
-        let scope_start = heading.end;
-        let scope_end = raw_headings[idx + 1..]
-            .iter()
-            .find(|h2| h2.level <= heading.level)
-            .map(|h2| h2.start)
-            .unwrap_or(source.len());
+        claimed_anchor_starts.insert(anchor.start);
 
         let prose_links: Vec<String> = raw_links
             .iter()
@@ -414,11 +590,25 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
         });
     }
 
+    // Coverage count (the dispatch's second deliverable): a recognized
+    // definition — either form — that no claim block ever adopted as its
+    // nearest preceding anchor. Reported, never failed on (checks.rs).
+    let unregistered_definitions: Vec<UnregisteredDefinition> = id_anchors
+        .iter()
+        .filter(|a| !claimed_anchor_starts.contains(&a.start))
+        .map(|a| UnregisteredDefinition {
+            file: file.to_string(),
+            line: line_index.line_of(a.start),
+            id: a.id.clone(),
+        })
+        .collect();
+
     ExtractResult {
         headings,
         claims,
         orphan_claims,
         normative_occurrences,
+        unregistered_definitions,
     }
 }
 
@@ -713,5 +903,166 @@ mod tests {
         let src = "# Decision\n\n> The old rule said it MUST retry.\n\nWe reject that; note `MUST` above is quoted, not asserted. The new rule\nSHALL retry once.\n";
         let res = extract_document("docs/adr/x.md", src);
         assert_eq!(keywords(&res), vec!["SHALL"]);
+    }
+
+    // --- bold-form definitions -------------------------------------------
+    //
+    // The corpus's own convention (team-lead dispatch): 400/418 real-corpus
+    // definitions use this shape, only 18 use heading-form. Four properties
+    // together identify one — line start, a `**…**` wrapper, a bracketed
+    // kebab id inside it, and definitional punctuation immediately after —
+    // and none alone is sufficient, which is what the false-positive tests
+    // below are for.
+
+    #[test]
+    fn extracts_a_bold_form_claim_with_a_direct_colon() {
+        let src = "**[sigil-required]**: An input string MUST be treated as\ncontaining an alias.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(ids(&res), vec!["sigil-required"]);
+        assert!(res.orphan_claims.is_empty(), "{:#?}", res.orphan_claims);
+    }
+
+    #[test]
+    fn extracts_a_bold_form_claim_with_a_parenthetical_before_the_colon() {
+        // The 17-of-400 variant: a parenthetical (which may hold
+        // non-ASCII, e.g. a prime) sits between the closing `**` and the
+        // colon.
+        let src = "**[eos-scheduler-frozen-stability]** (P8): Once an EP\ntransitions, its scope MUST NOT change.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(ids(&res), vec!["eos-scheduler-frozen-stability"]);
+
+        let src_prime = "**[eos-scheduler-bounded-window]** (P9′): When a ready EP\nhas a feasible worker, it MUST be dispatched.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res_prime = extract_document("docs/specs/x.md", src_prime);
+        assert_eq!(ids(&res_prime), vec!["eos-scheduler-bounded-window"]);
+    }
+
+    #[test]
+    fn bold_form_ordinary_bold_text_without_brackets_is_not_a_definition() {
+        let src = "**Note**: this is emphasis, not an id definition.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.claims.is_empty());
+        assert_eq!(res.orphan_claims.len(), 1);
+    }
+
+    #[test]
+    fn bold_form_mid_sentence_citation_of_a_real_id_is_not_a_second_definition() {
+        // Criterion 4's false-positive floor: citing an existing id in
+        // running prose — not at line start — must never be mistaken for
+        // a definition, even though the bracket-kebab wrapper is
+        // identical to a real one.
+        let src = "**[real-claim]**: The real definition.\n\n```claim\nkind: constraint\nevaluator: test\n```\n\nAs required by **[real-claim]** above, the caller MUST retry.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(ids(&res), vec!["real-claim"]);
+    }
+
+    #[test]
+    fn bold_form_line_start_bracket_with_no_adjacent_punctuation_is_not_a_definition() {
+        // The exact real-corpus shape that motivated the punctuation
+        // requirement rather than "bracket-kebab bold at line start"
+        // alone: `**[id]**` opens the line but is followed by ordinary
+        // prose, not a colon (whether direct or parenthetical).
+        let src = "**[not-yet-a-definition]** appears here but is not\nimmediately followed by punctuation.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.claims.is_empty());
+        assert_eq!(res.orphan_claims.len(), 1);
+    }
+
+    #[test]
+    fn bold_form_inside_a_list_item_is_not_line_start() {
+        // The real-corpus counterexample (`no-unpublished-dependency`,
+        // docs/specs/atom-sourcing.md): a list marker precedes the bold
+        // span on the same line, so the byte immediately before `**` is
+        // a space, never `\n` — excluded by the line-start check itself,
+        // independent of the punctuation floor.
+        let src = "- **[no-unpublished-dependency]** MUST be enforced: atoms\n  with an unpublished dependency are rejected.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.claims.is_empty());
+        assert_eq!(res.orphan_claims.len(), 1);
+    }
+
+    #[test]
+    fn bold_form_prose_scope_stops_at_the_next_bold_form_definition() {
+        let src = "**[a]**: first claim.\n\n[link-a](target-a)\n\n**[b]**: second claim.\n\n[link-b](target-b)\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        let claim_b = res.claims.iter().find(|c| c.id == "b").unwrap();
+        assert_eq!(claim_b.prose_links, vec!["target-b"]);
+    }
+
+    #[test]
+    fn bold_form_prose_scope_stops_at_the_next_heading_of_any_level() {
+        let src = "**[a]**: first claim.\n\n[link-a](target-a)\n\n#### Notes\n\n[link-b](target-b)\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        // The block's nearest preceding anchor is still [a] (`#### Notes`
+        // is not bracket-kebab), but [a]'s own PROSE SCOPE closed at the
+        // heading, so only target-a is in scope.
+        assert_eq!(ids(&res), vec!["a"]);
+        assert_eq!(res.claims[0].prose_links, vec!["target-a"]);
+    }
+
+    #[test]
+    fn a_claim_block_after_a_bold_form_definition_and_intervening_prose_is_owned_by_it() {
+        // Mirrors nested_headings_find_the_nearest_bracket_kebab_ancestor:
+        // a bold-form definition's block need not be immediately
+        // adjacent, only nearest.
+        let src = "**[lock-groundness]**: Every lock value MUST be ground.\n\nSome elaborating prose in between.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/lock.md", src);
+        assert_eq!(ids(&res), vec!["lock-groundness"]);
+    }
+
+    #[test]
+    fn heading_form_and_bold_form_can_coexist_in_one_document() {
+        let src = "### [heading-claim]\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n**[bold-claim]**: A second claim, this time bold-form.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        let mut got = ids(&res);
+        got.sort_unstable();
+        assert_eq!(got, vec!["bold-claim", "heading-claim"]);
+    }
+
+    // --- unregistered definitions (coverage count) ------------------------
+
+    #[test]
+    fn a_bold_form_definition_with_no_claim_block_is_unregistered() {
+        let src = "**[unregistered-one]**: A definition nobody registered yet.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.claims.is_empty());
+        assert_eq!(res.unregistered_definitions.len(), 1);
+        assert_eq!(res.unregistered_definitions[0].id, "unregistered-one");
+        assert_eq!(res.unregistered_definitions[0].file, "docs/specs/x.md");
+    }
+
+    #[test]
+    fn a_heading_form_definition_with_no_claim_block_is_also_unregistered() {
+        // The coverage count is generalized across both forms, not
+        // bold-only: an id heading with no following block was always
+        // silently invisible before this dispatch; it is real corpus
+        // debt either way.
+        let src = "### [heading-only]\n\nNo block follows.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.claims.is_empty());
+        assert_eq!(res.unregistered_definitions.len(), 1);
+        assert_eq!(res.unregistered_definitions[0].id, "heading-only");
+    }
+
+    #[test]
+    fn a_registered_bold_form_definition_is_not_reported_as_unregistered() {
+        let src =
+            "**[registered]**: has a block.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.unregistered_definitions.is_empty(), "{:#?}", res);
+    }
+
+    #[test]
+    fn definitional_punctuation_len_matches_the_direct_and_parenthetical_forms() {
+        assert_eq!(definitional_punctuation_len(": text"), Some(1));
+        assert_eq!(
+            definitional_punctuation_len(" (P8): text"),
+            Some(" (P8):".len())
+        );
+        assert_eq!(
+            definitional_punctuation_len(" (P9′): text"),
+            Some(" (P9′):".len())
+        );
+        assert_eq!(definitional_punctuation_len(" text, no colon"), None);
+        assert_eq!(definitional_punctuation_len(" (P8) no colon after"), None);
     }
 }

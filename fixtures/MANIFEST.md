@@ -42,6 +42,10 @@ called out below.
 | `run-fail/` | — (all pass; `docket run always-false` exits 1) | Not a `C`-check fixture — see below. `src/lib.rs` carries `// docket: always-false :: false`; the marker's command exits 1. |
 | `run-absent/` | — (all pass; `docket run unbacked-claim` exits 3) | Not a `C`-check fixture — see below. `[unbacked-claim]` declares `evaluator: test`; no `docket:` marker for it exists anywhere in the corpus. |
 | `run-none/` | — (all pass; `docket run not-yet-implemented` exits 0) | Not a `C`-check fixture — see below. `[not-yet-implemented]` declares `evaluator: none`; a marker for it exists (`:: false`) but must never be consulted. |
+| `bold-form-definitions/` | — (all pass) | Not a check fixture — see below. Isolates the bold-form recognizer: three definitions, one direct-colon and two parenthetical (one non-ASCII), each with a matching block. |
+| `bold-form-false-positives/` | — (all pass) | Not a check fixture — see below. The false-positive floor: ordinary bold text, a mid-sentence citation, a line-start bracket with no adjacent punctuation, and a list-embedded bracket — none recognized as a definition. |
+| `c2-duplicate-across-forms/` | `C2` | `docs/specs/a.md` declares `[dup-across-forms]` in heading form, `docs/specs/b.md` declares the same id in bold form. Proves a duplicate arising from two *different* recognizers is still one C2 finding pair, each naming the other's site. |
+| `unregistered-definition/` | `unregistered-definition` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition with no `claim` block, plus one registered heading-form definition for contrast. Exits **0** — `Warn` severity, the coverage count. |
 
 **`duplicate-stem/` is retired**, not just its row here. MVP.md §1.3 was
 amended once a real corpus produced three `README.md` files under one
@@ -280,6 +284,95 @@ MVP.md §4.1 / README.md's claim-block sample almost verbatim:
 All five document paths are distinct, all three claim ids are distinct,
 every `depends`/`because` entry matches a corresponding prose link, and
 every citation resolves.
+
+## Bold-form definitions and the coverage count
+
+A second marking convention for a claim's id, alongside `### [id]`
+(MVP.md §1.1's heading form): a bracket-kebab id wrapped in `**…**` at
+the very start of a line, immediately followed by definitional
+punctuation. A team-lead dispatch measured a real specification corpus
+at 418 recognized definitions, only 18 in heading form — this is the
+other 400.
+
+**Four properties, all required**, extraction.rs's `definitional_punctuation_len`
+doc comment states the exact grammar:
+
+1. **Line start** — the byte immediately before the opening `**` is a
+   newline or the start of the file. This is checked directly against
+   the source, not inferred from tree nesting, and it has a useful side
+   effect: a block quote (`> **[id]**…`) and a list item
+   (`- **[id]**…`) are *both* excluded automatically, since a `>` or a
+   list marker always sits between the line start and the `**` — no
+   separate guard against either was needed.
+2. **The `**…**` wrapper.**
+3. **A bracketed kebab id inside it**, reusing `bracket_kebab_id`
+   unchanged — the same grammar the heading form already enforces.
+4. **Definitional punctuation immediately after**, with no intervening
+   prose: a direct colon (`**[id]**: …`, 383/400 in the measured
+   corpus), or a parenthetical then a colon (`**[id]** (P8): …`, the
+   other 17 — the parenthetical's content is unconstrained, since only
+   its own `)` bounds it, so it may hold non-ASCII like `P9′`).
+
+**Block placement.** A bold-form definition sits inline in prose, so a
+fenced block cannot follow it directly the way a heading-form block
+can. The rule adopted: a claim block is owned by the **nearest
+preceding recognized definition, either form** — the exact rule the
+heading form already used (a deeper heading wins over a shallower one,
+scanning back across every earlier heading regardless of level),
+generalized from one shape to two rather than replaced. A human author
+writes the id, elaborates in prose, and eventually reaches the block;
+nothing here requires the block to be adjacent, only nearest. This
+answers the dispatch's own question without a genuine ambiguity to
+halt on: the ownership rule was already form-agnostic in spirit (it
+never depended on "heading" specifically, only on "nearest preceding
+recognized id"), so extending it to a second form is not a new
+convention, only a wider one.
+
+A bold-form definition's own **prose scope** (C5, §3) is narrower than
+a heading's, deliberately: it ends at the earliest of the next
+definition (either form) or the next heading of *any* level — unlike a
+heading-form definition, whose scope survives a deeper subheading
+(MVP.md §1.1's `nested_headings_find_the_nearest_bracket_kebab_ancestor`
+case). A bold-form definition is a sentence inside a section, not a
+section of its own, so nothing beneath the next heading — even a
+subheading — belongs to it.
+
+**The coverage count** (dispatch's second deliverable): a recognized
+definition, either form, that no claim block ever adopted. Reported as
+a new diagnostic, `unregistered-definition` (`Warn` severity, never
+flips the exit code) rather than a bespoke subcommand or output format:
+the `(file, line, id)` shape a definition site needs is exactly what
+`Diagnostic` already carries, corpus-loading and genre-scoping are
+already `run_checks`'s job, and a corpus with hundreds of these is the
+normal starting state (the dispatch's own words) — never a reason to
+add a second code path that has to agree with the first about which
+files were scanned.
+
+- **`bold-form-definitions/`** — the positive case: all three
+  syntactic variants (direct colon; parenthetical; parenthetical with a
+  non-ASCII prime), each with a matching block. `docket check
+  --corpus fixtures/bold-form-definitions` exits **0**.
+- **`bold-form-false-positives/`** — the false-positive floor
+  (criterion 4): ordinary bold text with no bracket-kebab id; a
+  mid-sentence citation of a real id (bracketed, but not line start);
+  a line-start bracket with no adjacent punctuation; and a
+  list-embedded bracket (not line start, for the same reason a block
+  quote isn't). None is recognized as a definition — the corpus's one
+  real definition is the only claim, and the check emits zero
+  diagnostics. Exits **0**.
+- **`c2-duplicate-across-forms/`** — criterion 5: `[dup-across-forms]`
+  declared once in heading form (`docs/specs/a.md`) and once in bold
+  form (`docs/specs/b.md`). C2 groups by `Claim::id` alone, so this
+  needed no new logic — the fixture is proof the existing rule already
+  covers a duplicate arriving via two different recognizers, reported
+  as two diagnostics, each naming the other's site. Exits **1**.
+- **`unregistered-definition/`** — the coverage count itself: one
+  bold-form and one heading-form definition with no block, plus one
+  registered heading-form definition for contrast (silent, as any
+  registered claim already is). `docket check
+  --corpus fixtures/unregistered-definition` exits **0** with exactly
+  two `unregistered-definition` warnings on stderr, naming the file,
+  line, and id of each.
 
 ## Judgment calls made while writing these fixtures
 

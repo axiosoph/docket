@@ -3,7 +3,7 @@
 //! not scanned" (MVP.md §2).
 
 use crate::config::{AmbiguousGenre, Config};
-use crate::extract::{self, NormativeOccurrence, OrphanClaim};
+use crate::extract::{self, NormativeOccurrence, OrphanClaim, UnregisteredDefinition};
 use crate::model::{Corpus, Document};
 use std::path::{Path, PathBuf};
 
@@ -34,6 +34,10 @@ pub struct LoadedCorpus {
     /// its document's genre, which only checks.rs's `normative-prose`
     /// check has in view — collected here the same way `orphan_claims` is.
     pub normative_occurrences: Vec<NormativeOccurrence>,
+    /// Every recognized id definition (heading- or bold-form) with no
+    /// claim block — the coverage count. Collected corpus-wide the same
+    /// way `orphan_claims` is.
+    pub unregistered_definitions: Vec<UnregisteredDefinition>,
 }
 
 /// Load every genre-matched file under `corpus_root`.
@@ -41,6 +45,7 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
     let mut corpus = Corpus::default();
     let mut orphan_claims = Vec::new();
     let mut normative_occurrences = Vec::new();
+    let mut unregistered_definitions = Vec::new();
 
     for path in walk_files(corpus_root)? {
         let relative = path
@@ -91,12 +96,14 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
         corpus.claims.extend(result.claims);
         orphan_claims.extend(result.orphan_claims);
         normative_occurrences.extend(result.normative_occurrences);
+        unregistered_definitions.extend(result.unregistered_definitions);
     }
 
     Ok(LoadedCorpus {
         corpus,
         orphan_claims,
         normative_occurrences,
+        unregistered_definitions,
     })
 }
 

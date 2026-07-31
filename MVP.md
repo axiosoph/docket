@@ -25,18 +25,65 @@ depends: [docs/models/composition-model#6, docs/models/execution-model#2.4]
 ````
 
 **The claim's `id` is not in the block.** It is taken from the nearest
-preceding heading whose text is exactly a bracketed kebab-case token:
+preceding **definition** — a marker elsewhere in the document whose
+sole job is to state the id. Two forms are recognized:
+
+**Heading form.** A heading whose text is exactly a bracketed
+kebab-case token:
 
 ```markdown
 ### [lock-groundness]
 ```
 
-Rationale: the id already exists in prose as the human-readable anchor,
-and duplicating it into the block would create precisely the divergence
-surface this tool exists to remove. One statement, one place.
+**Bold form.** A `**…**` span, at the very start of a line, wrapping
+exactly a bracketed kebab-case token, immediately followed by
+definitional punctuation — a colon, or a parenthetical then a colon
+(the parenthetical's content is unconstrained, e.g. a formula label):
 
-A claim block with no such preceding heading in the same file is an
-error (`orphan-claim`).
+```markdown
+**[lock-groundness]**: Every lock value MUST be ground.
+
+**[lock-groundness]** (P8): Every lock value MUST be ground.
+```
+
+Both forms exist because corpora do: a specification-first corpus
+built around numbered sections tends toward the heading form, while a
+prose-first corpus stating one requirement per paragraph tends toward
+the bold form — and a real corpus measured against an early
+heading-only draft of this tool had 400 of its 418 definitions in bold
+form. **The tool learns the corpus's convention rather than requiring
+the corpus to restructure around the tool's.** Recognizing a form is
+deliberately permissive rather than requiring a canonical one: id
+uniqueness (C2) adjudicates precision centrally, so an over-matching
+recognizer produces a loud, corpus-wide duplicate-id failure — naming
+every site that declared the id, regardless of which recognizer found
+each one — rather than a silently invented claim. This is what keeps
+adding a third form, later, cheap: each recognizer needs to be roughly
+right, not perfect.
+
+Rationale, unchanged by the addition of a second form: the id already
+exists in prose as the human-readable anchor, and duplicating it into
+the block would create precisely the divergence surface this tool
+exists to remove. One statement, one place.
+
+**Ownership.** A claim block belongs to the **nearest preceding
+definition, either form** — one rule across both, not two: exactly the
+existing "a deeper heading wins over a shallower one" behavior,
+generalized from one shape to two rather than replaced. The block need
+not be adjacent to its definition, only nearest to it — a bold-form
+definition sits inline in prose, so a fenced block cannot follow it
+directly the way it can a heading, and a human author reaches the
+block after elaborating, not before.
+
+A claim block with no such preceding definition anywhere in the file is
+an error (`orphan-claim`).
+
+**Unregistered definitions.** A recognized definition — either form —
+with no claim block is *unregistered*: real corpus content the
+register does not yet cover. Reported as `unregistered-definition`
+(`Warn` severity, §5) rather than failed on, since a corpus is expected
+to carry many of these on the day a registration effort begins; the
+count is exactly the number that effort exists to move.
 
 ### 1.2 Fields
 
@@ -362,6 +409,22 @@ Sharing C4's severity was considered and rejected: it would either block
 a merge on a merely-thin justification, or, softened to match, silently
 swallow real breakage — the severity split is the entire reason §1.2
 distinguishes the two kinds at all.
+
+**A bold-form definition's prose scope (§1.1) is narrower than a
+heading's.** `L`'s window is "from the definition to the next heading
+of the same or higher level" for heading form (unchanged), but "to the
+next definition of *either* form, or the next heading of *any* level"
+for bold form — a bold-form definition is a sentence inside a section,
+not a section of its own, so nothing beneath even a subheading belongs
+to it the way it would for a heading-form claim.
+
+**`unregistered-definition`, derived the same way `normative-prose`
+is, not a sixth numbered check.** §1.1's two forms are both recognized
+independently of whether a claim block follows; a recognized definition
+with no block is real corpus content this register does not yet cover.
+`Warn` severity, like `orphaned-because` — never failed on, since a
+corpus is expected to carry many of these on the day a registration
+effort begins.
 
 **`normative-prose`, derived from `kinds = []`, not a sixth numbered
 check.** §2's `kinds = []` already means a genre may hold no claim

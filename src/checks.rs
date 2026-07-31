@@ -46,6 +46,14 @@ pub enum CheckId {
     /// would be a lie here — the claim still stands, only its stated
     /// reason is gone. Always `Warn` severity; see [`Severity`].
     OrphanedBecause,
+    /// A recognized id definition (heading- or bold-form, extract.rs)
+    /// with no claim block — the coverage-count deliverable ("bold form
+    /// recognition" dispatch, §2). Reported as a diagnostic rather than a
+    /// bespoke subcommand: the (file, line, id) shape a definition site
+    /// needs is exactly what `Diagnostic` already carries, and a corpus
+    /// with hundreds of these is the normal starting state (dispatch),
+    /// never a reason to fail — always `Warn` severity.
+    UnregisteredDefinition,
 }
 
 impl CheckId {
@@ -59,6 +67,7 @@ impl CheckId {
             CheckId::OrphanClaim => "orphan-claim",
             CheckId::NormativeProse => "normative-prose",
             CheckId::OrphanedBecause => "orphaned-because",
+            CheckId::UnregisteredDefinition => "unregistered-definition",
         }
     }
 }
@@ -301,6 +310,20 @@ pub fn run_checks(
                 ),
             });
         }
+    }
+
+    // unregistered-definition: the coverage count (dispatch §2). Every
+    // recognized definition (heading- or bold-form) that no claim block
+    // adopted, reported at `Warn` severity — the normal starting state
+    // for a real corpus, never a reason to flip the exit code.
+    for def in &loaded.unregistered_definitions {
+        diagnostics.push(Diagnostic {
+            check: CheckId::UnregisteredDefinition,
+            severity: Severity::Warn,
+            file: def.file.clone(),
+            line: def.line.0,
+            message: format!("definition {:?} has no claim block — unregistered", def.id),
+        });
     }
 
     Ok(CheckReport { diagnostics })
@@ -1140,6 +1163,90 @@ mod tests {
         );
         let report = run(&dir);
         assert_eq!(only(&report, CheckId::OrphanClaim).len(), 1);
+    }
+
+    // --- bold-form recognizer: C2 across recognizers, coverage count ------
+
+    #[test]
+    fn c2_fails_on_one_id_declared_via_both_heading_and_bold_form() {
+        // Criterion 5: two definitions of one id, arriving via DIFFERENT
+        // recognizers (heading-form in one file, bold-form in another),
+        // must still be caught as a single C2 duplicate naming both
+        // sites — C2 groups by `Claim::id` alone, so this needs no new
+        // logic, only proof it actually holds.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "### [dup-across-forms]\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        dir.write(
+            "docs/specs/b.md",
+            "**[dup-across-forms]**: A second definition, bold-form this time.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        let report = run(&dir);
+        let failures = only(&report, CheckId::C2);
+        // One diagnostic per site (existing C2 shape), each naming the
+        // OTHER site in its message — together the pair names both
+        // locations, exactly what the dispatch's criterion 5 asks for.
+        assert_eq!(failures.len(), 2, "{:#?}", report.diagnostics);
+        let at_a = failures.iter().find(|d| d.file == "docs/specs/a.md");
+        let at_b = failures.iter().find(|d| d.file == "docs/specs/b.md");
+        assert!(at_a.is_some() && at_b.is_some(), "{:#?}", failures);
+        assert!(at_a.unwrap().message.contains("docs/specs/b.md"));
+        assert!(at_b.unwrap().message.contains("docs/specs/a.md"));
+    }
+
+    #[test]
+    fn unregistered_definition_is_reported_but_never_fails_the_report() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "**[not-yet-registered]**: A real definition with no block yet.\n",
+        );
+        let report = run(&dir);
+        let warnings = only(&report, CheckId::UnregisteredDefinition);
+        assert_eq!(warnings.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(warnings[0].severity, Severity::Warn);
+        assert!(warnings[0].message.contains("not-yet-registered"));
+        assert!(
+            report.passed(),
+            "unregistered-definition must never flip the exit code: {:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_registered_bold_form_claim_passes_every_check_cleanly() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
+              ],
+            }"#,
+        );
+        dir.write("docs/models/composition-model.md", "## 6. The fact-set\n");
+        dir.write(
+            "docs/specs/x.md",
+            "**[bold-registered]**: A bold-form claim that depends on\na model section, declared via a real relative markdown link.\n\nSee [the fact-set](../models/composition-model.md#6).\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/composition-model#6]\n```\n",
+        );
+        let report = run(&dir);
+        assert!(report.passed(), "{:#?}", report.diagnostics);
+        assert!(
+            only(&report, CheckId::UnregisteredDefinition).is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
     }
 
     #[test]
