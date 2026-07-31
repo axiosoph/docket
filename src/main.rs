@@ -208,14 +208,16 @@ fn run_run(corpus_root: &Path, claim_id: &str) -> ExitCode {
 
     print_run_result(&result);
 
-    // 0 pass/none, 1 fail, 2 usage error (above), 3 absent — see run.rs's
-    // module docs for why absent gets its own code rather than sharing
-    // fail's: a reader gating CI on this exit code can tell "write the
-    // marker" from "the evaluator regressed" without parsing stdout.
+    // 0 pass/none, 1 fail, 2 usage error (above), 3 absent, 4 vacuous —
+    // see run.rs's module docs for why each gets its own code rather
+    // than sharing another's: a reader gating CI on this exit code can
+    // tell "write the marker" from "the evaluator regressed" from "the
+    // evaluator ran but checked nothing" without parsing stdout.
     match result.outcome {
         Outcome::Pass | Outcome::None => ExitCode::SUCCESS,
         Outcome::Fail => ExitCode::FAILURE,
         Outcome::Absent => ExitCode::from(3),
+        Outcome::Vacuous => ExitCode::from(4),
     }
 }
 
@@ -236,7 +238,9 @@ fn print_run_result(result: &RunResult) {
     }
 
     for m in &result.markers {
-        let status = if m.success {
+        let status = if let Some(signal) = m.vacuous {
+            format!("VACUOUS ({signal})")
+        } else if m.success {
             "ok".to_string()
         } else {
             match m.exit_code {
@@ -248,10 +252,12 @@ fn print_run_result(result: &RunResult) {
             "  {status}\t{}:{}\t{}",
             m.marker.file, m.marker.line, m.marker.command
         );
-        // Terse on success — the command and its exit status already
-        // say everything a passing marker needs to; captured output
-        // earns its keep only when there's a failure to diagnose.
-        if !m.success {
+        // Terse on genuine success — the command and its exit status
+        // already say everything a passing marker needs to; captured
+        // output earns its keep only when there's something to
+        // diagnose, which a vacuous "success" is exactly as much as a
+        // failure.
+        if !m.success || m.vacuous.is_some() {
             if !m.stdout.is_empty() {
                 println!("  --- stdout ---");
                 for line in m.stdout.lines() {

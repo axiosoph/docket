@@ -38,6 +38,19 @@
 //! exactly as language-agnostic and sidesteps writing a comment lexer
 //! for every language a corpus's evaluators happen to be in.
 //!
+//! **The id may carry a trailing `!`**, immediately after it and before
+//! any whitespace: `docket: <id>! :: <command>`. This exempts the
+//! marker from the runner's vacuity detection (run.rs) — its exit
+//! status alone is trusted, unconditionally. It exists for an evaluator
+//! kind the runner has no output recognizer for (README.md's own list —
+//! Lean, TLA+, Alloy — has three, and the runner starts with a
+//! recognizer for exactly one, cargo's), so that evaluator would
+//! otherwise be permanently unable to report a genuine `Pass`: no
+//! recognizer to clear it, no way to say "trust me." A **deliberate**
+//! per-marker assertion the author writes once, not a default any
+//! marker gets silently — see run.rs's module docs for why that
+//! distinction is load-bearing rather than cosmetic.
+//!
 //! **Alternatives weighed and rejected** (see the runner dispatch,
 //! "Weigh at least..."):
 //!
@@ -72,6 +85,15 @@ pub struct Marker {
     pub command: String,
     pub file: String,
     pub line: Line,
+    /// `docket: <id>! :: <command>` — a deliberate, per-marker assertion
+    /// that this command's success really does mean something was
+    /// checked, so the runner's vacuity detection (run.rs) must not be
+    /// applied to it. Exists for the evaluator kind vacuity detection
+    /// cannot cover (no recognized signal in its output) but the author
+    /// knows is conclusive; see run.rs's module docs for why this has to
+    /// be opt-out rather than a silent default, and why it must be
+    /// spelled explicitly rather than inferred.
+    pub exempt: bool,
 }
 
 const KEYWORD: &str = "docket:";
@@ -118,7 +140,12 @@ fn find_keyword(line: &str) -> Option<usize> {
 /// coverage-index feature, or just not a marker). Both are equally
 /// invisible to the runner: a marker this parser cannot execute is
 /// indistinguishable, to the runner, from no marker at all.
-fn parse_marker_line(line: &str) -> Option<(ClaimId, String)> {
+///
+/// The id may carry a trailing `!` (no intervening whitespace) marking
+/// it vacuity-exempt — `docket: <id>! :: <command>` — the author's
+/// explicit assertion that this command's exit status alone is
+/// conclusive (run.rs).
+fn parse_marker_line(line: &str) -> Option<(ClaimId, bool, String)> {
     let pos = find_keyword(line)?;
     let after = line[pos + KEYWORD.len()..].trim_start();
 
@@ -130,12 +157,17 @@ fn parse_marker_line(line: &str) -> Option<(ClaimId, String)> {
         return None;
     }
 
-    let command = after[id_len..].trim_start().strip_prefix("::")?.trim();
+    let (exempt, rest) = match after[id_len..].strip_prefix('!') {
+        Some(rest) => (true, rest),
+        None => (false, &after[id_len..]),
+    };
+
+    let command = rest.trim_start().strip_prefix("::")?.trim();
     if command.is_empty() {
         return None;
     }
 
-    Some((id.to_string(), command.to_string()))
+    Some((id.to_string(), exempt, command.to_string()))
 }
 
 /// Scan every file under `root` (the same walk `corpus::load_corpus`
@@ -161,12 +193,13 @@ pub fn scan_markers(root: &Path) -> Result<Vec<Marker>, CorpusError> {
             .replace(std::path::MAIN_SEPARATOR, "/");
 
         for (i, line) in contents.lines().enumerate() {
-            if let Some((id, command)) = parse_marker_line(line) {
+            if let Some((id, exempt, command)) = parse_marker_line(line) {
                 markers.push(Marker {
                     id,
                     command,
                     file: relative.clone(),
                     line: Line(i + 1),
+                    exempt,
                 });
             }
         }
@@ -186,6 +219,7 @@ mod tests {
             parse_marker_line("// docket: lock-groundness :: cargo test ground_values_only"),
             Some((
                 "lock-groundness".to_string(),
+                false,
                 "cargo test ground_values_only".to_string()
             ))
         );
@@ -197,6 +231,7 @@ mod tests {
             parse_marker_line("\\* docket: spine-chain-complete :: tlc Model.tla"),
             Some((
                 "spine-chain-complete".to_string(),
+                false,
                 "tlc Model.tla".to_string()
             ))
         );
@@ -208,8 +243,33 @@ mod tests {
             parse_marker_line("-- docket: no-double-spend :: alloy exec Model.als"),
             Some((
                 "no-double-spend".to_string(),
+                false,
                 "alloy exec Model.als".to_string()
             ))
+        );
+    }
+
+    #[test]
+    fn a_trailing_bang_on_the_id_marks_the_marker_vacuity_exempt() {
+        assert_eq!(
+            parse_marker_line("// docket: no-double-spend! :: alloy exec Model.als"),
+            Some((
+                "no-double-spend".to_string(),
+                true,
+                "alloy exec Model.als".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn the_exempt_bang_must_immediately_follow_the_id_not_float_in_whitespace() {
+        // A `!` with a space before it is not part of this grammar at
+        // all — it fails the `::`-prefix check the same way any other
+        // stray token would, rather than being silently absorbed as
+        // exempt.
+        assert_eq!(
+            parse_marker_line("// docket: no-double-spend ! :: alloy exec Model.als"),
+            None
         );
     }
 
@@ -252,6 +312,7 @@ mod tests {
             parse_marker_line("// docket: x :: cargo test mod::test_name -- --exact"),
             Some((
                 "x".to_string(),
+                false,
                 "cargo test mod::test_name -- --exact".to_string()
             ))
         );

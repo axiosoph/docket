@@ -11,7 +11,7 @@ The `run-*/` fixtures additionally carry a `src/` tree — the runner
 (`docket run <id>`, `src/marker.rs`/`src/run.rs`) scans the *whole*
 corpus root for `docket: <id> :: <command>` markers, not only `docs/`,
 so their evaluator markers live beside a stand-in Rust test the way a
-real corpus's would. All four still `docket check` cleanly (see their
+real corpus's would. All seven still `docket check` cleanly (see their
 own row): they isolate `run` behavior, not a `C`-check failure.
 
 Every failing fixture is minimal in the strict sense stated in the
@@ -42,6 +42,9 @@ called out below.
 | `run-fail/` | — (all pass; `docket run always-false` exits 1) | Not a `C`-check fixture — see below. `src/lib.rs` carries `// docket: always-false :: false`; the marker's command exits 1. |
 | `run-absent/` | — (all pass; `docket run unbacked-claim` exits 3) | Not a `C`-check fixture — see below. `[unbacked-claim]` declares `evaluator: test`; no `docket:` marker for it exists anywhere in the corpus. |
 | `run-none/` | — (all pass; `docket run not-yet-implemented` exits 0) | Not a `C`-check fixture — see below. `[not-yet-implemented]` declares `evaluator: none`; a marker for it exists (`:: false`) but must never be consulted. |
+| `run-vacuous-missing/` | — (all pass; `docket run missing-test-target` exits 4) | Not a `C`-check fixture — see below. The marker names a test that was renamed/deleted; its command still exits 0. |
+| `run-vacuous-ignored/` | — (all pass; `docket run ignored-test-target` exits 4) | Not a `C`-check fixture — see below. The marker names a real `#[ignore]`d test; cargo collects and skips it, still exiting 0. |
+| `run-vacuous-exempt/` | — (all pass; `docket run exempt-target` exits 0) | Not a `C`-check fixture — see below. The marker's `!` opts its command out of vacuity detection even though its output would otherwise match. |
 | `bold-form-definitions/` | — (all pass) | Not a check fixture — see below. Isolates the bold-form recognizer: three definitions, one direct-colon and two parenthetical (one non-ASCII), each with a matching block. |
 | `bold-form-false-positives/` | — (all pass) | Not a check fixture — see below. The false-positive floor: ordinary bold text, a mid-sentence citation, a line-start bracket with no adjacent punctuation, and a list-embedded bracket — none recognized as a definition. |
 | `c2-duplicate-across-forms/` | `C2` | `docs/specs/a.md` declares `[dup-across-forms]` in heading form, `docs/specs/b.md` declares the same id in bold form. Proves a duplicate arising from two *different* recognizers is still one C2 finding pair, each naming the other's site. |
@@ -204,15 +207,17 @@ failed C5: the anchor form normalized to a doc-anchor
 which covers that same-shape negative case directly rather than as a
 second fixture.
 
-## `run-pass/`, `run-fail/`, `run-absent/`, `run-none/`
+## `run-pass/`, `run-fail/`, `run-absent/`, `run-none/`, `run-vacuous-missing/`, `run-vacuous-ignored/`, `run-vacuous-exempt/`
 
 Isolate `docket run <claim-id>` (`src/marker.rs`, `src/run.rs`): given a
 claim, execute the `docket: <id> :: <command>` marker(s) that discharge
-it and report `pass` / `fail` / `absent` / `none` — the three-outcome
-distinction the runner's own dispatch names as its most easily lost
-property (`absent` must never read as `fail`), plus the fourth,
+it and report `pass` / `fail` / `absent` / `none` / `vacuous` — the
+three-outcome distinction the runner's own dispatch names as its most
+easily lost property (`absent` must never read as `fail`), the fourth,
 unconditional state `evaluator: none` gets without ever touching the
-marker scan.
+marker scan, and the fifth, added by a later dispatch closing a
+green-by-construction hole: a marker's command can exit 0 while its own
+output proves nothing was actually checked.
 
 - **`run-pass/`** — `docs/specs/a.md` declares `[always-true]`
   (`evaluator: test`); `src/lib.rs` carries `// docket: always-true ::
@@ -241,8 +246,35 @@ marker scan.
   that none happens to exist. Removing the marker changes nothing about
   this fixture's `run` output, which is the point: `none` needs nothing
   executable to be expressible.
+- **`run-vacuous-missing/`** — `[missing-test-target]` (`evaluator:
+  test`); `src/lib.rs`'s marker names a test that was renamed or
+  deleted. Its command's exit status alone would read as `pass` (a
+  filtered-to-nothing `cargo test -- --exact` run still exits 0); the
+  marker's `printf` reproduces the exact, measured `cargo test` summary
+  line for that case (`test result: ok. 0 passed; 0 failed; ...`), and
+  `run.rs::detect_vacuity` recognizes it. `docket run
+  missing-test-target --corpus fixtures/run-vacuous-missing` prints
+  `vacuous  missing-test-target  test` plus a `VACUOUS (...)` marker
+  line with the captured stdout, and exits **4** — distinct from every
+  other outcome's code.
+- **`run-vacuous-ignored/`** — `[ignored-test-target]`; the marker names
+  a *real*, `#[ignore]`d test, a different shape from the fixture above
+  (cargo does collect it, `running 1 test`, then marks it `ignored`) that
+  still lands on the identical `0 passed; 0 failed` summary counts —
+  proving one recognizer covers both cases rather than needing a second.
+  `docket run ignored-test-target --corpus fixtures/run-vacuous-ignored`
+  also prints `vacuous  ignored-test-target  test` and exits **4**.
+- **`run-vacuous-exempt/`** — `[exempt-target]` (`evaluator: proof`, a
+  stand-in for an evaluator kind — Lean/TLA+/Alloy — the runner has no
+  output recognizer for at all); the marker's id carries a trailing `!`
+  (`docket: exempt-target! :: printf '...'`) whose command's output is
+  deliberately built to match the same vacuity signal the two fixtures
+  above trigger. `docket run exempt-target --corpus
+  fixtures/run-vacuous-exempt` prints `pass  exempt-target  proof` and
+  exits **0** — proving the exemption is read and actually bypasses
+  detection, not merely that no signal happened to match.
 
-All four `docket check --corpus fixtures/run-*` cleanly at exit 0 — the
+All seven `docket check --corpus fixtures/run-*` cleanly at exit 0 — the
 `run` outcomes above are a distinct code path (`main.rs`'s `Command::Run`),
 never a `C`-check.
 
