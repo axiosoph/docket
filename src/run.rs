@@ -121,9 +121,29 @@ impl Outcome {
     }
 }
 
-/// A named recognizer for command output that reports success (exit 0)
-/// without having exercised anything, paired with the literal substring
-/// its stdout carries when that happens.
+/// A named recognizer for a per-binary test summary block, paired with
+/// the substring that marks the start of one such block in a tool's
+/// output and the substring within a block that means "this block
+/// checked nothing."
+///
+/// **Why block-scoped, not whole-output.** `cargo test` on a crate with
+/// both `#[cfg(test)] mod tests` and doc-comment examples runs *two*
+/// binaries in one invocation — the unittest binary, then the doctest
+/// binary — each printing its own `test result: ` summary line.
+/// Matching the vacuity substring against the whole of `stdout` (this
+/// table's original shape) means the doctest binary's legitimate `0
+/// passed; 0 failed` — nothing there to run, or nothing there matching
+/// a name filter — sinks the *entire* invocation to `Vacuous` even when
+/// the unittest binary's block, elsewhere in the same output, reports
+/// real passes. That is most idiomatic Rust libraries, not an edge
+/// case: measured against a real corpus, every marker on a crate with
+/// both kinds of test came back a false-positive `Vacuous`. Segmenting
+/// `stdout` into blocks by `block_marker` and requiring *every*
+/// recognized block to carry `vacuous_marker` (see [`detect_vacuity`])
+/// is what lets "0 tests in the doctest phase, 17 in the unittest
+/// phase" read as `Pass`, the way it should — a `0 tests` block sitting
+/// alongside a block that ran fifteen is normal and expected, not
+/// evidence of anything.
 ///
 /// **Why a table, not a config file.** Every recognizer here is a
 /// substring test — cheap, and precise enough that a fourth tool costs
@@ -150,22 +170,44 @@ impl Outcome {
 /// ran was actually exercised to a verdict — a filtered-to-nothing run
 /// and a filtered-to-only-ignored run both land there, and any run with
 /// at least one real pass or failure never does.
-const VACUITY_SIGNALS: &[(&str, &str)] = &[(
-    "cargo test collected nothing to run (or only #[ignore]d tests)",
-    "0 passed; 0 failed",
-)];
+struct VacuitySignal {
+    name: &'static str,
+    block_marker: &'static str,
+    vacuous_marker: &'static str,
+}
 
-/// Whether `stdout` carries a recognized vacuity signal. `None` means no
-/// known signal matched — which this runner treats as `Pass`, not
-/// `Vacuous` (see the module docs' "Whether an unrecognised tool's
-/// output is a pass or a vacuity" decision): fixtures already prove `sh`
-/// builtins like `true` must still report `Pass`, and those have no
-/// recognizable shape at all.
+const VACUITY_SIGNALS: &[VacuitySignal] = &[VacuitySignal {
+    name: "cargo test collected nothing to run (or only #[ignore]d tests)",
+    block_marker: "test result: ",
+    vacuous_marker: "0 passed; 0 failed",
+}];
+
+/// Whether every recognized summary block in `stdout` shows nothing was
+/// exercised.
+///
+/// - **Zero recognized blocks** (no line contains a known
+///   `block_marker`) is an unrecognized shape, not a vacuity — treated
+///   as `Pass`, same as before this fix (see the module docs'
+///   "Whether an unrecognised tool's output is a pass or a vacuity"
+///   decision): fixtures already prove `sh` builtins like `true` must
+///   still report `Pass`, and those have no recognizable shape at all.
+/// - **One or more recognized blocks, all vacuous-shaped**, is
+///   `Vacuous` — the case this detector exists for.
+/// - **One or more recognized blocks, at least one carrying real
+///   activity** (its line doesn't match `vacuous_marker`), is `Pass` —
+///   a run cannot be downgraded by a block that checked nothing sitting
+///   next to a block that didn't.
 fn detect_vacuity(stdout: &str) -> Option<&'static str> {
-    VACUITY_SIGNALS
-        .iter()
-        .find(|(_, needle)| stdout.contains(needle))
-        .map(|(name, _)| *name)
+    VACUITY_SIGNALS.iter().find_map(|signal| {
+        let mut blocks = stdout
+            .lines()
+            .filter(|line| line.contains(signal.block_marker))
+            .peekable();
+        blocks.peek()?;
+        blocks
+            .all(|line| line.contains(signal.vacuous_marker))
+            .then_some(signal.name)
+    })
 }
 
 /// One marker's command, executed and captured.
@@ -483,6 +525,44 @@ mod tests {
         let result = run_claim(&corpus, "x", Path::new("."), &markers).unwrap();
         assert_eq!(result.outcome, Outcome::Pass);
         assert_eq!(result.markers[0].vacuous, None);
+    }
+
+    #[test]
+    fn a_unittest_block_with_real_passes_outranks_a_vacuous_doctest_block() {
+        // The real-world shape this fix exists for: a single `cargo
+        // test` invocation prints one `test result: ` block per binary.
+        // A crate with both unit tests and doc-comment examples runs
+        // two — the unittest binary here reports 17 real passes, the
+        // doctest binary (measured separately, see run-vacuous-missing)
+        // reports the same `0 passed; 0 failed` shape a renamed/deleted
+        // test does. The claim must still discharge: one block reporting
+        // real activity means the invocation is not vacuous, full stop.
+        let corpus = corpus_with("### [x]\n\n```claim\nkind: constraint\nevaluator: test\n```\n");
+        let output = "running 17 tests\n\
+             test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\
+             \n\
+             running 0 tests\n\
+             \n\
+             test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n";
+        let markers = vec![marker("x", &format!("printf '%s' '{output}'"))];
+        let result = run_claim(&corpus, "x", Path::new("."), &markers).unwrap();
+        assert_eq!(result.outcome, Outcome::Pass);
+        assert_eq!(result.markers[0].vacuous, None);
+    }
+
+    #[test]
+    fn multiple_all_vacuous_blocks_still_report_vacuous() {
+        // The aggregation itself, pinned separately from the
+        // single-block case (run-vacuous-missing/-ignored): two
+        // recognized blocks, neither carrying real activity, must still
+        // downgrade — "many blocks" is not itself grounds for `Pass`,
+        // only a block with real activity is.
+        let corpus = corpus_with("### [x]\n\n```claim\nkind: constraint\nevaluator: test\n```\n");
+        let output = "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\
+             test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s\n";
+        let markers = vec![marker("x", &format!("printf '%s' '{output}'"))];
+        let result = run_claim(&corpus, "x", Path::new("."), &markers).unwrap();
+        assert_eq!(result.outcome, Outcome::Vacuous);
     }
 
     #[test]
