@@ -5,7 +5,7 @@
 use clap::{Parser, Subcommand};
 use docket::model::{CiteRef, anchor_matches};
 use docket::run::{Outcome, RunError, RunResult};
-use docket::{blast, checks, config, corpus, marker, run};
+use docket::{blast, checks, config, contracts, corpus, marker, run};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -30,12 +30,15 @@ enum Command {
         /// Write the index JSON here instead of stdout.
         #[arg(long)]
         out: Option<PathBuf>,
-        /// Path to the register evaluator (contracts/register.ncl),
-        /// resolved relative to the current directory (it's a
-        /// project-level artifact, not per-corpus — see
-        /// docket::checks::DEFAULT_REGISTER_RELATIVE_PATH).
-        #[arg(long, default_value = checks::DEFAULT_REGISTER_RELATIVE_PATH)]
-        register: PathBuf,
+        /// Path to the register evaluator. It ships with docket, not with
+        /// the corpus being checked, so the default is docket's own
+        /// embedded copy rather than anything resolved against the
+        /// current directory. Pass this to use a different evaluator
+        /// (e.g. while developing docket itself); it is resolved
+        /// relative to the current directory, same as any other path
+        /// argument.
+        #[arg(long)]
+        register: Option<PathBuf>,
     },
     /// Print the transitive blast radius of a ref — a claim id or a
     /// `<doc-path>#<anchor>` document anchor (§4.2, §1.3).
@@ -65,7 +68,7 @@ fn main() -> ExitCode {
             corpus: corpus_root,
             out,
             register,
-        } => run_check(&corpus_root, out.as_deref(), &register),
+        } => run_check(&corpus_root, out.as_deref(), register.as_deref()),
         Command::Blast {
             target,
             corpus: corpus_root,
@@ -77,7 +80,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_check(corpus_root: &Path, out: Option<&Path>, register_path: &Path) -> ExitCode {
+fn run_check(corpus_root: &Path, out: Option<&Path>, register_override: Option<&Path>) -> ExitCode {
     let cfg = match config::load_config(corpus_root) {
         Ok(cfg) => cfg,
         Err(e) => return usage_error(&e),
@@ -88,10 +91,26 @@ fn run_check(corpus_root: &Path, out: Option<&Path>, register_path: &Path) -> Ex
         Err(e) => return usage_error(&e),
     };
 
-    // Resolved relative to the current directory, not --corpus: the
-    // register evaluator is a project-level artifact shared across every
-    // corpus root (see docket::checks::DEFAULT_REGISTER_RELATIVE_PATH).
-    let evaluation = match checks::run_checks(&loaded, &cfg, register_path) {
+    // The register evaluator ships with docket, not with --corpus: an
+    // explicit --register (resolved relative to the current directory,
+    // like any other path argument) always wins; absent that, fall back
+    // to docket's own embedded copy rather than anything path-guessed.
+    // `materialized_guard` is only initialized on the fallback branch —
+    // deliberately: `register_path` must not outlive it, since the
+    // materialized directory is removed on drop.
+    let materialized_guard;
+    let register_path: PathBuf = match register_override {
+        Some(p) => p.to_path_buf(),
+        None => {
+            materialized_guard = match contracts::MaterializedContracts::new() {
+                Ok(m) => m,
+                Err(e) => return usage_error(&e),
+            };
+            materialized_guard.register_path()
+        }
+    };
+
+    let evaluation = match checks::run_checks(&loaded, &cfg, &register_path) {
         Ok(evaluation) => evaluation,
         Err(e) => return usage_error(&e),
     };

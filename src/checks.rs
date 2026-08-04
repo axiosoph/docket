@@ -31,13 +31,16 @@ use crate::nickel::{self, NickelError};
 use serde::Serialize;
 use std::path::Path;
 
-/// Where `register.ncl` is expected to live, relative to the current
-/// directory — a project-level artifact shared across every corpus root,
-/// the same discipline `config::DEFAULT_CONFIG_CONTRACT_RELATIVE_PATH`
-/// follows. It statically imports `claim.ncl` from its own directory
-/// (`contracts/`), so — unlike the per-claim contract this replaces —
-/// nothing else needs to be passed in for C1 to run.
-pub const DEFAULT_REGISTER_RELATIVE_PATH: &str = "contracts/register.ncl";
+/// `register.ncl`'s path relative to the crate root. `run_checks` itself
+/// takes an already-resolved path — the CLI defaults it to docket's own
+/// embedded copy (`contracts.rs`, `--register` overrides it) rather than
+/// resolving this string against the current directory, since the
+/// evaluator ships with the tool, not with a corpus. This constant
+/// survives only to let tests load the real `register.ncl`, exercising
+/// the actual evaluator rather than a double — valid because `cargo
+/// test`'s cwd is the crate root, i.e. docket's own checkout.
+#[cfg(test)]
+const DEFAULT_REGISTER_RELATIVE_PATH: &str = "contracts/register.ncl";
 
 #[derive(Debug, thiserror::Error)]
 pub enum RegisterError {
@@ -312,10 +315,10 @@ struct Output {
 }
 
 /// Run the register evaluator over an already-loaded corpus.
-/// `register_path` is `contracts/register.ncl` (see
-/// `DEFAULT_REGISTER_RELATIVE_PATH` for why its location is a documented
-/// assumption rather than a spec fact, following `config.rs`'s
-/// convention for `contracts/docket.ncl`).
+/// `register_path` is an already-resolved `register.ncl` — the CLI
+/// resolves it (docket's own embedded copy by default, `--register` to
+/// override) before calling in; this function has no opinion on where it
+/// came from.
 pub fn run_checks(
     loaded: &LoadedCorpus,
     config: &Config,

@@ -4,12 +4,6 @@ use crate::model::{Kind, Quadrant};
 use crate::nickel::{self, NickelError};
 use std::path::Path;
 
-/// Where the config contract is expected to live, relative to the current
-/// directory — a project-level artifact shared across every corpus root,
-/// the same discipline `checks::DEFAULT_REGISTER_RELATIVE_PATH` follows
-/// for the register evaluator.
-pub const DEFAULT_CONFIG_CONTRACT_RELATIVE_PATH: &str = "contracts/docket.ncl";
-
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("{path} not found — a corpus needs docket.ncl at its root")]
@@ -26,6 +20,12 @@ pub enum ConfigError {
         #[source]
         source: NickelError,
     },
+    /// The config contract ships with the tool (`contracts.rs`), not with
+    /// the corpus — this is an environment failure (e.g. an unwritable
+    /// temp dir) preparing it, not anything about the corpus's
+    /// `docket.ncl`.
+    #[error("could not prepare docket's own contracts: {0}")]
+    Contracts(#[source] std::io::Error),
     /// Glob syntax is not a Nickel-expressible shape — the contract only
     /// guarantees `path` is a non-empty string; compiling it into a
     /// matchable pattern is I/O-adjacent parsing, same as markdown, and
@@ -112,13 +112,19 @@ pub fn load_config(corpus_root: &Path) -> Result<Config, ConfigError> {
         return Err(ConfigError::Missing { path: path_str });
     }
 
-    let contract_path = Path::new(DEFAULT_CONFIG_CONTRACT_RELATIVE_PATH);
-    let value = nickel::export_json_with_contract(&path, contract_path).map_err(|source| {
-        ConfigError::Nickel {
+    // docket.ncl's shape contract ships with the tool, not with the
+    // corpus being checked — a cwd-relative default was only ever
+    // correct when the corpus happened to be docket's own checkout (see
+    // `contracts.rs`). The materialized directory only needs to outlive
+    // this one Nickel invocation.
+    let materialized =
+        crate::contracts::MaterializedContracts::new().map_err(ConfigError::Contracts)?;
+    let value = nickel::export_json_with_contract(&path, &materialized.docket_path()).map_err(
+        |source| ConfigError::Nickel {
             path: path_str.clone(),
             source,
-        }
-    })?;
+        },
+    )?;
 
     let genres_json = value
         .get("genres")
