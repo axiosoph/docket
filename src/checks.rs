@@ -1,83 +1,50 @@
-//! The five checks (MVP.md §3), plus `orphan-claim` (§1.1) and
-//! `orphaned-because` (reference kinds R1, below). No stem-uniqueness
-//! precondition exists: document identifiers are corpus-relative paths
-//! (§1.3) and are therefore unique by construction.
+//! The register evaluator's Rust side: build the corpus+config into the
+//! data shape `contracts/register.ncl` expects, invoke it once, and
+//! convert the validated result back into typed Rust values.
 //!
-//! **Reference kinds** (`.ledger/2026-07-30-reference-kinds-and-document-resolution.md`,
-//! R1): a `depends`/`because` entry is no longer one undifferentiated
-//! `cites`. A dangling `depends` means the claim is broken — C4, `Fail`
-//! severity. A dangling `because` means the claim still stands but its
-//! stated reason is orphaned — a **distinct, lower-severity** result
-//! (`orphaned-because`, `Warn`), because the two remedies are different
-//! (R1) and collapsing them back into one severity would either block
-//! merges on a merely-thin justification or silently swallow real
-//! breakage. A **bare** reference (an undeclared prose link) is checked
-//! by neither: it is never a `CiteRef` in the first place
-//! ([`crate::model::Claim::refs`]), so there is nothing to resolve.
+//! `.ledger/2026-07-30-reference-kinds-and-document-resolution.md`, R6:
+//! "everything downstream of 'here is the set of claims with their typed
+//! references' is pure and belongs in Nickel." C1-C5, `orphan-claim`,
+//! `orphaned-because`, `normative-prose`, `unregistered-definition`, and
+//! the index projection (formerly `index.rs`) all live in
+//! `contracts/register.ncl` now; this module is the seam — serialize,
+//! invoke, deserialize — not a reimplementation of any check.
+//!
+//! **A finding the migration estimate's own line-count table didn't
+//! anticipate**: `model::CiteRef`/`RefKind`/`Claim::refs`/`anchor_matches`
+//! could not move to Nickel with everything else, because `blast.rs` and
+//! `main.rs`'s `run_blast` — both explicitly out of this migration's
+//! scope — depend on them directly (`Corpus.claims[].depends: Vec<CiteRef>`,
+//! `CiteRef::to_string()` as blast's edge key). Moving them would have
+//! meant redesigning blast.rs's graph walk too, which the dispatch
+//! explicitly reserves as separate work. Resolved by leaving model.rs's
+//! shared infrastructure untouched and having `register.ncl`
+//! independently re-derive ref parsing and anchor matching over
+//! `CiteRef::to_string()`'s already-round-tripped strings — the honest
+//! cost of R6's boundary meeting blast.rs's no-touch scope, not a defect
+//! introduced here.
 
 use crate::config::Config;
-use crate::contract::{self, ContractError};
 use crate::corpus::LoadedCorpus;
-use crate::model::{CiteRef, Claim, Document, Kind, anchor_matches};
-use crate::nickel::ContractCheck;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use crate::model::{Index, IndexClaim, IndexDocument};
+use crate::nickel::{self, NickelError};
+use serde::Serialize;
 use std::path::Path;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CheckId {
-    C1,
-    C2,
-    C3,
-    C4,
-    C5,
-    OrphanClaim,
-    /// A genre whose `kinds` is empty permits no RFC-2119 keyword in a
-    /// scanned document's own-voice text (MVP.md §2/§3). Its own
-    /// identifier rather than an extension of C3: C3 judges a
-    /// *registered* claim's `kind` against its genre, while this judges
-    /// text that carries no claim block at all — a disjoint failure mode
-    /// C3's diagnostic ("kind X not permitted") cannot honestly describe.
-    /// Named descriptively rather than numbered, the same convention
-    /// `orphan-claim` already set for a check beyond MVP.md's five.
-    NormativeProse,
-    /// A dangling `because` target (reference kinds R1). Named and
-    /// numbered independently of C4 for the same reason `NormativeProse`
-    /// is independent of C3: C4's diagnostic ("this claim is broken")
-    /// would be a lie here — the claim still stands, only its stated
-    /// reason is gone. Always `Warn` severity; see [`Severity`].
-    OrphanedBecause,
-    /// A recognized id definition (heading- or bold-form, extract.rs)
-    /// with no claim block — the coverage-count deliverable ("bold form
-    /// recognition" dispatch, §2). Reported as a diagnostic rather than a
-    /// bespoke subcommand: the (file, line, id) shape a definition site
-    /// needs is exactly what `Diagnostic` already carries, and a corpus
-    /// with hundreds of these is the normal starting state (dispatch),
-    /// never a reason to fail — always `Warn` severity.
-    UnregisteredDefinition,
+/// Where `register.ncl` is expected to live, relative to the current
+/// directory — a project-level artifact shared across every corpus root,
+/// the same discipline `config::DEFAULT_CONFIG_CONTRACT_RELATIVE_PATH`
+/// follows. It statically imports `claim.ncl` from its own directory
+/// (`contracts/`), so — unlike the per-claim contract this replaces —
+/// nothing else needs to be passed in for C1 to run.
+pub const DEFAULT_REGISTER_RELATIVE_PATH: &str = "contracts/register.ncl";
+
+#[derive(Debug, thiserror::Error)]
+pub enum RegisterError {
+    #[error(transparent)]
+    Nickel(#[from] NickelError),
 }
 
-impl CheckId {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            CheckId::C1 => "C1",
-            CheckId::C2 => "C2",
-            CheckId::C3 => "C3",
-            CheckId::C4 => "C4",
-            CheckId::C5 => "C5",
-            CheckId::OrphanClaim => "orphan-claim",
-            CheckId::NormativeProse => "normative-prose",
-            CheckId::OrphanedBecause => "orphaned-because",
-            CheckId::UnregisteredDefinition => "unregistered-definition",
-        }
-    }
-}
-
-/// R1's severity split, made structural rather than left to a message
-/// string a caller could ignore: `Fail` is what MVP.md §5's exit code 1
-/// means ("one or more checks failed"); `Warn` is reported the same way
-/// but never flips the exit code — the same "reported, never failed on"
-/// treatment README.md already gives an evaluator that discharges no
-/// claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Fail,
@@ -86,12 +53,13 @@ pub enum Severity {
 
 /// MVP.md §3: "Each failure names the file, the line, and the offending
 /// value." Despite the name, a `Diagnostic` is not always a failure —
-/// `severity` says which; kept as one type (rather than two parallel
-/// vectors) so every check pushes into one place and `CheckReport`
-/// doesn't have to merge two collections back into report order.
+/// `severity` says which. `check` is register.ncl's own identifier
+/// string ("C1", "orphan-claim", …) rather than a Rust enum: the set of
+/// checks is now declared in Nickel, and Rust has no exhaustiveness
+/// obligation over it to justify re-declaring the vocabulary here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
-    pub check: CheckId,
+    pub check: String,
     pub severity: Severity,
     pub file: String,
     pub line: usize,
@@ -114,382 +82,297 @@ impl CheckReport {
     }
 }
 
-/// Run every check over an already-loaded corpus. `contract_path` is C1's
-/// Nickel contract (see contract.rs for why its location is a documented
-/// assumption rather than a spec fact).
+/// The register evaluator's full result: the index (MVP.md §4.1) and
+/// every check's diagnostics, both produced by the same Nickel
+/// evaluation.
+#[derive(Debug, Clone)]
+pub struct RegisterResult {
+    pub index: Index,
+    pub report: CheckReport,
+}
+
+// --- input payload: corpus + config, as register.ncl's `Input` -----------
+
+#[derive(Serialize)]
+struct InputClaim {
+    id: String,
+    file: String,
+    heading_line: usize,
+    block_line: usize,
+    /// The claim block's raw YAML, re-parsed to a JSON value — what C1
+    /// validates. `None` (with `raw_error` set) if the YAML itself
+    /// doesn't parse; that is a C1 violation in its own right (MVP.md
+    /// §3), not a distinct Rust error, the same treatment the per-claim
+    /// contract call this replaces already gave it.
+    raw_value: Option<serde_json::Value>,
+    raw_error: Option<String>,
+    /// `Claim::refs`' round-tripped canonical strings
+    /// (`CiteRef::Display`), not the block's raw YAML sequence: the
+    /// best-effort parse into `CiteRef` already happened in extract.rs
+    /// (needed unchanged by blast.rs), so this is a lossless handoff of
+    /// that result, not a second extraction.
+    depends: Vec<String>,
+    because: Vec<String>,
+    prose_links: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct InputHeading {
+    level: u8,
+    text: String,
+    line: usize,
+}
+
+#[derive(Serialize)]
+struct InputDocument {
+    doc_path: String,
+    file: String,
+    genre_path: String,
+    headings: Vec<InputHeading>,
+}
+
+#[derive(Serialize)]
+struct InputGenre {
+    path: String,
+    kinds: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct InputOrphanClaim {
+    file: String,
+    line: usize,
+}
+
+#[derive(Serialize)]
+struct InputNormativeOccurrence {
+    file: String,
+    line: usize,
+    keyword: String,
+}
+
+#[derive(Serialize)]
+struct InputUnregisteredDefinition {
+    file: String,
+    line: usize,
+    id: String,
+}
+
+#[derive(Serialize)]
+struct Input {
+    claims: Vec<InputClaim>,
+    documents: Vec<InputDocument>,
+    genres: Vec<InputGenre>,
+    orphan_claims: Vec<InputOrphanClaim>,
+    normative_occurrences: Vec<InputNormativeOccurrence>,
+    unregistered_definitions: Vec<InputUnregisteredDefinition>,
+}
+
+/// A YAML claim block re-parsed into JSON, for C1 — mirrors what the
+/// per-claim contract call this replaces used to do per claim, done here
+/// once while building the single payload instead.
+fn parse_raw_yaml(yaml: &str) -> (Option<serde_json::Value>, Option<String>) {
+    match serde_norway::from_str::<serde_norway::Value>(yaml) {
+        Ok(value) => {
+            let json = serde_json::to_value(&value)
+                .expect("a parsed YAML value always re-serializes to JSON");
+            (Some(json), None)
+        }
+        Err(e) => (None, Some(e.to_string())),
+    }
+}
+
+fn build_input(loaded: &LoadedCorpus, config: &Config) -> Input {
+    let corpus = &loaded.corpus;
+
+    let claims = corpus
+        .claims
+        .iter()
+        .map(|claim| {
+            let (raw_value, raw_error) = parse_raw_yaml(&claim.raw.yaml);
+            InputClaim {
+                id: claim.id.clone(),
+                file: claim.file.clone(),
+                heading_line: claim.heading_line.0,
+                block_line: claim.block_line.0,
+                raw_value,
+                raw_error,
+                depends: claim.depends.iter().map(|c| c.to_string()).collect(),
+                because: claim.because.iter().map(|c| c.to_string()).collect(),
+                prose_links: claim.prose_links.clone(),
+            }
+        })
+        .collect();
+
+    let documents = corpus
+        .documents
+        .iter()
+        .map(|doc| InputDocument {
+            doc_path: doc.doc_path.clone(),
+            file: doc.file.clone(),
+            genre_path: doc.genre_path.clone(),
+            headings: doc
+                .headings
+                .iter()
+                .map(|h| InputHeading {
+                    level: h.level,
+                    text: h.text.clone(),
+                    line: h.line.0,
+                })
+                .collect(),
+        })
+        .collect();
+
+    let genres = config
+        .genres
+        .iter()
+        .map(|g| InputGenre {
+            path: g.path.clone(),
+            kinds: g.kinds.iter().map(|k| k.as_str().to_string()).collect(),
+        })
+        .collect();
+
+    let orphan_claims = loaded
+        .orphan_claims
+        .iter()
+        .map(|o| InputOrphanClaim {
+            file: o.file.clone(),
+            line: o.line.0,
+        })
+        .collect();
+
+    let normative_occurrences = loaded
+        .normative_occurrences
+        .iter()
+        .map(|o| InputNormativeOccurrence {
+            file: o.file.clone(),
+            line: o.line.0,
+            keyword: o.keyword.to_string(),
+        })
+        .collect();
+
+    let unregistered_definitions = loaded
+        .unregistered_definitions
+        .iter()
+        .map(|d| InputUnregisteredDefinition {
+            file: d.file.clone(),
+            line: d.line.0,
+            id: d.id.clone(),
+        })
+        .collect();
+
+    Input {
+        claims,
+        documents,
+        genres,
+        orphan_claims,
+        normative_occurrences,
+        unregistered_definitions,
+    }
+}
+
+// --- output: register.ncl's `{ index, diagnostics }` ---------------------
+
+#[derive(serde::Deserialize)]
+struct OutputIndexClaim {
+    id: String,
+    file: String,
+    line: usize,
+    kind: String,
+    evaluator: String,
+    depends: Vec<String>,
+    because: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct OutputIndexDocument {
+    doc_path: String,
+    file: String,
+    genre: String,
+}
+
+#[derive(serde::Deserialize)]
+struct OutputIndex {
+    claims: Vec<OutputIndexClaim>,
+    documents: Vec<OutputIndexDocument>,
+}
+
+#[derive(serde::Deserialize)]
+struct OutputDiagnostic {
+    check: String,
+    severity: String,
+    file: String,
+    line: usize,
+    message: String,
+}
+
+#[derive(serde::Deserialize)]
+struct Output {
+    index: OutputIndex,
+    diagnostics: Vec<OutputDiagnostic>,
+}
+
+/// Run the register evaluator over an already-loaded corpus.
+/// `register_path` is `contracts/register.ncl` (see
+/// `DEFAULT_REGISTER_RELATIVE_PATH` for why its location is a documented
+/// assumption rather than a spec fact, following `config.rs`'s
+/// convention for `contracts/docket.ncl`).
 pub fn run_checks(
     loaded: &LoadedCorpus,
     config: &Config,
-    contract_path: &Path,
-) -> Result<CheckReport, ContractError> {
-    let corpus = &loaded.corpus;
-    let mut diagnostics = Vec::new();
+    register_path: &Path,
+) -> Result<RegisterResult, RegisterError> {
+    let input = build_input(loaded, config);
+    let input_json = serde_json::to_string(&input).expect("Input serializes");
+    let value = nickel::evaluate_register(register_path, &input_json)?;
+    let output: Output = serde_json::from_value(value)
+        .expect("register.ncl guarantees the { index, diagnostics } output shape");
 
-    // orphan-claim (§1.1): a claim fence with no preceding bracket-kebab
-    // heading. Extraction already found these; report them directly.
-    for orphan in &loaded.orphan_claims {
-        diagnostics.push(Diagnostic {
-            check: CheckId::OrphanClaim,
-            severity: Severity::Fail,
-            file: orphan.file.clone(),
-            line: orphan.line.0,
-            message: "claim block has no preceding bracket-kebab id heading".to_string(),
-        });
+    let mut index = Index::default();
+    for c in output.index.claims {
+        index.claims.insert(
+            c.id.clone(),
+            IndexClaim {
+                file: c.file,
+                line: c.line,
+                kind: c.kind,
+                evaluator: c.evaluator,
+                depends: c.depends,
+                because: c.because,
+            },
+        );
+    }
+    for d in output.index.documents {
+        index.documents.insert(
+            d.doc_path.clone(),
+            IndexDocument {
+                file: d.file,
+                genre: d.genre,
+            },
+        );
     }
 
-    // C1: every claim block validates against the Nickel contract.
-    for claim in &corpus.claims {
-        match contract::validate_claim_block(contract_path, &claim.raw.yaml)? {
-            ContractCheck::Valid => {}
-            ContractCheck::Violated { diagnostic } => diagnostics.push(Diagnostic {
-                check: CheckId::C1,
-                severity: Severity::Fail,
-                file: claim.file.clone(),
-                line: claim.block_line.0,
-                message: diagnostic,
-            }),
-        }
-    }
-
-    // C2: claim ids are unique corpus-wide.
-    let mut by_id: HashMap<&str, Vec<&Claim>> = HashMap::new();
-    for claim in &corpus.claims {
-        by_id.entry(claim.id.as_str()).or_default().push(claim);
-    }
-    for (id, claims) in &by_id {
-        if claims.len() > 1 {
-            for claim in claims {
-                let others: Vec<String> = claims
-                    .iter()
-                    .filter(|c| c.file != claim.file || c.heading_line != claim.heading_line)
-                    .map(|c| format!("{}:{}", c.file, c.heading_line))
-                    .collect();
-                diagnostics.push(Diagnostic {
-                    check: CheckId::C2,
-                    severity: Severity::Fail,
-                    file: claim.file.clone(),
-                    line: claim.heading_line.0,
-                    message: format!("id {id:?} is also declared at {}", others.join(", ")),
-                });
-            }
-        }
-    }
-
-    // C3: kind is permitted by the genre of the claim's own file.
-    for claim in &corpus.claims {
-        let Some(doc) = corpus.documents.iter().find(|d| d.file == claim.file) else {
-            continue; // extraction invariant: every claim comes from a scanned document
-        };
-        let Some(genre) = config.genres.iter().find(|g| g.path == doc.genre_path) else {
-            continue;
-        };
-        // A missing/unrecognized kind is C1's finding, not C3's.
-        let Some(kind) = claim.raw.kind.as_deref().and_then(parse_kind) else {
-            continue;
-        };
-        if !genre.kinds.contains(&kind) {
-            diagnostics.push(Diagnostic {
-                check: CheckId::C3,
-                severity: Severity::Fail,
-                file: claim.file.clone(),
-                line: claim.block_line.0,
-                message: format!(
-                    "kind {:?} is not permitted by genre {:?} (permits {:?})",
-                    kind.as_str(),
-                    genre.path,
-                    genre.kinds.iter().map(Kind::as_str).collect::<Vec<_>>()
+    let diagnostics = output
+        .diagnostics
+        .into_iter()
+        .map(|d| Diagnostic {
+            check: d.check,
+            severity: match d.severity.as_str() {
+                "fail" => Severity::Fail,
+                "warn" => Severity::Warn,
+                other => panic!(
+                    "register.ncl guarantees severity is \"fail\" or \"warn\", got {other:?}"
                 ),
-            });
-        }
-    }
-
-    let claim_ids: HashSet<&str> = corpus.claims.iter().map(|c| c.id.as_str()).collect();
-
-    // C4: every `depends` target resolves. Dangling ⇒ the claim is
-    // broken (reference kinds R1) — `Fail` severity, MVP.md §5 exit 1.
-    for claim in &corpus.claims {
-        for cite in &claim.depends {
-            if !resolves(cite, &claim_ids, &corpus.documents) {
-                diagnostics.push(Diagnostic {
-                    check: CheckId::C4,
-                    severity: Severity::Fail,
-                    file: claim.file.clone(),
-                    line: claim.block_line.0,
-                    message: format!(
-                        "depends target {cite} does not resolve — this claim is broken: rewire or remove the dependency"
-                    ),
-                });
-            }
-        }
-    }
-
-    // orphaned-because: every `because` target resolves, at `Warn`
-    // severity — the claim still stands, only its stated reason is gone
-    // (R1). Independent of C4 for the same reason `normative-prose` is
-    // independent of C3: C4's "this claim is broken" would misdescribe
-    // this case entirely, not merely under-report its severity.
-    for claim in &corpus.claims {
-        for cite in &claim.because {
-            if !resolves(cite, &claim_ids, &corpus.documents) {
-                diagnostics.push(Diagnostic {
-                    check: CheckId::OrphanedBecause,
-                    severity: Severity::Warn,
-                    file: claim.file.clone(),
-                    line: claim.block_line.0,
-                    message: format!(
-                        "because target {cite} does not resolve — the claim's stated reason is orphaned, not the claim itself: restate the reason, or confirm the claim was vestigial"
-                    ),
-                });
-            }
-        }
-    }
-
-    // C5 (replaced rule — reference kinds R3): every `depends` and
-    // `because` entry carries a prose link; a prose link that is not
-    // declared is a bare reference and asserts nothing, so it is not
-    // required to appear here at all. The requirement is one-directional
-    // — declared ⊆ prose, not the set equality the original C5 required
-    // — restricted to prose targets that are ref-shaped per §1.3, a
-    // SYNTACTIC filter, not a resolution filter (MVP.md §3's boxed note,
-    // preserved unchanged by this replacement): a dangling `depends`
-    // entry with a matching prose link still names the same nonexistent
-    // target either way, so it fails C4 alone, not C4 and C5 both.
-    for claim in &corpus.claims {
-        let prose_set: BTreeSet<CiteRef> = claim
-            .prose_links
-            .iter()
-            .filter_map(|href| normalize_prose_link(href, &claim.file))
-            .filter(is_ref_shaped)
-            .collect();
-
-        let undeclared: Vec<String> = claim
-            .refs()
-            .filter(|(_, cite)| !prose_link_declares(cite, &prose_set))
-            .map(|(kind, cite)| format!("{}:{}", kind.as_str(), cite))
-            .collect();
-
-        if !undeclared.is_empty() {
-            diagnostics.push(Diagnostic {
-                check: CheckId::C5,
-                severity: Severity::Fail,
-                file: claim.file.clone(),
-                line: claim.heading_line.0,
-                message: format!(
-                    "{:?} declares a dependence or reason with no matching prose link: {undeclared:?}",
-                    claim.id
-                ),
-            });
-        }
-    }
-
-    // normative-prose: a genre declaring `kinds = []` already permits no
-    // claim blocks (MVP.md §2) — which means nothing normatively binding
-    // may live in it. An RFC-2119 keyword in such a genre's own-voice
-    // text is a binding assertion that carries no block, which is
-    // exactly how it evades C3: C3 only ever sees a claim that exists.
-    // Derived from `kinds`, not a new config field — a genre that permits
-    // at least one kind is unaffected, since its job is to say MUST.
-    // Extraction (extract.rs) finds every occurrence genre-agnostically;
-    // only here, once genres are in view, is "kinds = []" known.
-    for occurrence in &loaded.normative_occurrences {
-        let Some(doc) = corpus.documents.iter().find(|d| d.file == occurrence.file) else {
-            continue; // extraction invariant: every occurrence comes from a scanned document
-        };
-        let Some(genre) = config.genres.iter().find(|g| g.path == doc.genre_path) else {
-            continue;
-        };
-        if genre.kinds.is_empty() {
-            diagnostics.push(Diagnostic {
-                check: CheckId::NormativeProse,
-                severity: Severity::Fail,
-                file: occurrence.file.clone(),
-                line: occurrence.line.0,
-                message: format!(
-                    "normative keyword {:?} in own-voice prose, but genre {:?} permits no claim kinds",
-                    occurrence.keyword, genre.path
-                ),
-            });
-        }
-    }
-
-    // unregistered-definition: the coverage count (dispatch §2). Every
-    // recognized definition (heading- or bold-form) that no claim block
-    // adopted, reported at `Warn` severity — the normal starting state
-    // for a real corpus, never a reason to flip the exit code.
-    for def in &loaded.unregistered_definitions {
-        diagnostics.push(Diagnostic {
-            check: CheckId::UnregisteredDefinition,
-            severity: Severity::Warn,
-            file: def.file.clone(),
-            line: def.line.0,
-            message: format!("definition {:?} has no claim block — unregistered", def.id),
-        });
-    }
-
-    Ok(CheckReport { diagnostics })
-}
-
-fn parse_kind(s: &str) -> Option<Kind> {
-    match s {
-        "requirement" => Some(Kind::Requirement),
-        "invariant" => Some(Kind::Invariant),
-        "constraint" => Some(Kind::Constraint),
-        _ => None,
-    }
-}
-
-/// Whether a (well-formed, per C1) `depends`/`because` or
-/// normalized-prose-link target resolves. Document identifiers are
-/// corpus-relative paths and
-/// therefore unique by construction (MVP.md §1.3), so — unlike the
-/// retired `duplicate-stem` era — a single `.find()` is enough; there is
-/// no ambiguity to guard against here.
-fn resolves(cite: &CiteRef, claim_ids: &HashSet<&str>, documents: &[Document]) -> bool {
-    match cite {
-        CiteRef::Claim(id) => claim_ids.contains(id.as_str()),
-        CiteRef::DocAnchor { path, anchor } => documents
-            .iter()
-            .find(|d| d.doc_path == *path)
-            .is_some_and(|d| d.headings.iter().any(|h| anchor_matches(&h.text, anchor))),
-    }
-}
-
-/// Whether a declared `depends`/`because` target is covered by some
-/// entry in the claim's normalized prose-link set (C5's `D ⊆ L`).
-///
-/// A doc-anchor declaration requires an exact match — it already carries
-/// its own path and anchor, so nothing else could represent it. A
-/// claim-id declaration is satisfied two ways: an exact bare-id match
-/// (`[…](spine-chain-complete)`), or any doc-anchor prose link whose
-/// **anchor component** equals the id (`[…](#spine-chain-complete)` or
-/// `[…](docs/x.md#spine-chain-complete)`) — the form every markdown
-/// renderer and link checker already understands, and what an author
-/// writes unprompted. The bare form stays accepted rather than retired:
-/// it costs nothing to keep, and this repository's own MVP.md claims
-/// (§1.3, §4.1) already use it (`.ledger/2026-07-30-claim-id-prose-link-breaks-link-checkers.md`).
-fn prose_link_declares(cite: &CiteRef, prose: &BTreeSet<CiteRef>) -> bool {
-    if prose.contains(cite) {
-        return true;
-    }
-    match cite {
-        CiteRef::Claim(id) => prose
-            .iter()
-            .any(|p| matches!(p, CiteRef::DocAnchor { anchor, .. } if anchor == id)),
-        CiteRef::DocAnchor { .. } => false,
-    }
-}
-
-/// Whether a normalized prose-link target is **ref-shaped** per §1.3 —
-/// C5's filter, syntactic only: no corpus lookup, so an entry with a
-/// dangling but well-formed target still counts toward `L`. Mirrors
-/// `contracts/claim.ncl`'s `Ref` predicate (`ClaimIdPattern` /
-/// `DocRefPattern`), which is the shape C1 already enforces on
-/// `depends`/`because` entries themselves.
-fn is_ref_shaped(cite: &CiteRef) -> bool {
-    match cite {
-        CiteRef::Claim(id) => is_kebab_case(id),
-        CiteRef::DocAnchor { path, anchor } => !path.is_empty() && !anchor.is_empty(),
-    }
-}
-
-fn is_kebab_case(s: &str) -> bool {
-    !s.is_empty()
-        && s.split('-').all(|seg| {
-            !seg.is_empty()
-                && seg
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+            },
+            file: d.file,
+            line: d.line,
+            message: d.message,
         })
-}
+        .collect();
 
-/// Normalize a raw markdown link href (§3, C5's `L`) into the same
-/// `<doc-path>#<anchor>` / bare-claim-id vocabulary `depends`/`because`
-/// entries use, so a claim's declared refs can be checked against it. Per
-/// MVP.md §1.3's "Prose-link normalization":
-///
-/// - A fragment-only href (`#6`) refers to the containing document —
-///   normalized against the *citing claim's own file*, minus `.md`.
-/// - Otherwise, the href's path is **resolved against the containing
-///   file's directory** (real relative-link semantics: `../models/x.md`
-///   written from `docs/specs/` means `docs/models/x.md`) to get a
-///   corpus-relative path, which is then stripped of its `.md` extension.
-///   A path that resolves above the corpus root is not ref-shaped and is
-///   dropped (`resolve_relative` returns `None`).
-/// - A path with no anchor at all has no representation in the ref
-///   syntax `depends`/`because` share (there is no "whole document, no
-///   anchor" ref form), so it's excluded from `L` rather than guessed at.
-/// - A bare token with no anchor, no `/`, and no `.md` suffix can only be
-///   a claim-id reference: every corpus document has a `.md` extension
-///   (§2), so a same-directory reference lacking both an anchor and that
-///   extension can't name a document. This check runs *before* path
-///   resolution specifically so a claim id (which has no path shape at
-///   all) is never accidentally joined onto a directory.
-fn normalize_prose_link(href: &str, claiming_file: &str) -> Option<CiteRef> {
-    let (path_part, anchor) = match href.split_once('#') {
-        Some((p, a)) => (p, Some(a)),
-        None => (href, None),
-    };
-    let anchor = anchor.filter(|a| !a.is_empty());
-
-    if path_part.is_empty() {
-        let path = strip_md_extension(claiming_file);
-        return anchor.map(|a| CiteRef::DocAnchor {
-            path,
-            anchor: a.to_string(),
-        });
-    }
-
-    if anchor.is_none() && !path_part.contains('/') && !path_part.ends_with(".md") {
-        return Some(CiteRef::Claim(path_part.to_string()));
-    }
-
-    let resolved = resolve_relative(dir_of(claiming_file), path_part)?;
-
-    anchor.map(|a| CiteRef::DocAnchor {
-        path: strip_md_extension(&resolved),
-        anchor: a.to_string(),
+    Ok(RegisterResult {
+        index,
+        report: CheckReport { diagnostics },
     })
-}
-
-fn dir_of(path: &str) -> &str {
-    match path.rsplit_once('/') {
-        Some((dir, _file)) => dir,
-        None => "",
-    }
-}
-
-fn strip_md_extension(path: &str) -> String {
-    path.strip_suffix(".md").unwrap_or(path).to_string()
-}
-
-/// Lexically resolve `relative` against `base_dir` — `.` and empty
-/// segments are dropped, `..` pops the last pushed segment. Returns
-/// `None` if a `..` would need to pop past the corpus root (MVP.md
-/// §1.3: "A link that escapes the corpus root is not ref-shaped and is
-/// ignored"). A leading `/` in `relative` is treated as corpus-root-relative
-/// rather than joined onto `base_dir` — not addressed by MVP.md's worked
-/// example, but the natural reading of an absolute-style link in a corpus
-/// that has no filesystem root of its own to escape to.
-fn resolve_relative(base_dir: &str, relative: &str) -> Option<String> {
-    let (base_dir, relative) = match relative.strip_prefix('/') {
-        Some(root_relative) => ("", root_relative),
-        None => (base_dir, relative),
-    };
-    let mut parts: Vec<&str> = if base_dir.is_empty() {
-        Vec::new()
-    } else {
-        base_dir.split('/').collect()
-    };
-    for seg in relative.split('/') {
-        match seg {
-            "" | "." => {}
-            ".." => {
-                parts.pop()?;
-            }
-            other => parts.push(other),
-        }
-    }
-    Some(parts.join("/"))
 }
 
 #[cfg(test)]
@@ -529,28 +412,26 @@ mod tests {
         TempDir(dir)
     }
 
-    const TEST_CONTRACT: &str = r#"
-{
-  kind | std.contract.from_predicate (fun v => std.array.elem v ["requirement", "invariant", "constraint"]),
-  evaluator | std.contract.from_predicate (fun v => std.array.elem v ["proof", "model-check", "property-test", "test", "example", "none"]),
-  depends | Array String | default = [],
-  because | Array String | default = [],
-}
-"#;
-
-    fn write_test_contract(dir: &TempDir) -> std::path::PathBuf {
-        dir.write("contracts/claim.ncl", TEST_CONTRACT);
-        dir.path().join("contracts/claim.ncl")
+    /// The real project `contracts/register.ncl`, resolved the same way
+    /// `config::load_config` resolves `contracts/docket.ncl` — relative
+    /// to the process's current directory, which `cargo test` sets to
+    /// the crate root. Unlike the per-claim contract this replaces,
+    /// there is no minimal test double to substitute: the checks under
+    /// test *are* register.ncl's logic, so exercising anything smaller
+    /// would test something other than the real behaviour.
+    fn register_path() -> std::path::PathBuf {
+        std::path::PathBuf::from(DEFAULT_REGISTER_RELATIVE_PATH)
     }
 
     fn run(dir: &TempDir) -> CheckReport {
         let config = load_config(dir.path()).unwrap();
         let loaded = load_corpus(dir.path(), &config).unwrap();
-        let contract = write_test_contract(dir);
-        run_checks(&loaded, &config, &contract).unwrap()
+        run_checks(&loaded, &config, &register_path())
+            .unwrap()
+            .report
     }
 
-    fn only(report: &CheckReport, check: CheckId) -> Vec<&Diagnostic> {
+    fn only<'a>(report: &'a CheckReport, check: &str) -> Vec<&'a Diagnostic> {
         report
             .diagnostics
             .iter()
@@ -585,7 +466,55 @@ mod tests {
             "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ntypo: oops\n```\n",
         );
         let report = run(&dir);
-        assert_eq!(only(&report, CheckId::C1).len(), 1);
+        assert_eq!(only(&report, "C1").len(), 1);
+    }
+
+    #[test]
+    fn c1_reports_every_malformed_claim_in_one_evaluation() {
+        // The property the C1 collapse must not lose: a contract applied
+        // to an array aborts at the first violating element (verified
+        // directly against Nickel 1.17.0), so register.ncl's C1 is a
+        // hand-rolled batch validator instead. Two malformed claims, two
+        // C1 diagnostics.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "### [a]\n\n```claim\nkind: constraint\nevaluator: test\ntypo: oops\n```\n",
+        );
+        dir.write(
+            "docs/specs/b.md",
+            "### [b]\n\n```claim\nkind: constraint\nevaluator: vibes\n```\n",
+        );
+        let report = run(&dir);
+        assert_eq!(only(&report, "C1").len(), 2, "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn c1_fails_on_yaml_that_does_not_even_parse() {
+        // A YAML document that doesn't parse at all is itself a C1
+        // violation (MVP.md §3: "malformed or unknown field"), reported
+        // the same way a contract-rejected value is.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\n```claim\nkind: [unterminated\n```\n",
+        );
+        let report = run(&dir);
+        let failures = only(&report, "C1");
+        assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
+        assert!(
+            failures[0].message.contains("invalid YAML"),
+            "{:?}",
+            failures[0].message
+        );
     }
 
     #[test]
@@ -604,7 +533,7 @@ mod tests {
             "### [dup]\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
         );
         let report = run(&dir);
-        assert_eq!(only(&report, CheckId::C2).len(), 2);
+        assert_eq!(only(&report, "C2").len(), 2);
     }
 
     #[test]
@@ -619,7 +548,7 @@ mod tests {
             "### [normative-leak]\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
         );
         let report = run(&dir);
-        assert_eq!(only(&report, CheckId::C3).len(), 1);
+        assert_eq!(only(&report, "C3").len(), 1);
     }
 
     #[test]
@@ -634,7 +563,7 @@ mod tests {
             "### [ok]\n\n```claim\nkind: invariant\nevaluator: test\n```\n",
         );
         let report = run(&dir);
-        assert!(only(&report, CheckId::C3).is_empty());
+        assert!(only(&report, "C3").is_empty());
     }
 
     #[test]
@@ -649,7 +578,7 @@ mod tests {
             "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [does-not-exist]\n```\n",
         );
         let report = run(&dir);
-        let failures = only(&report, CheckId::C4);
+        let failures = only(&report, "C4");
         assert_eq!(failures.len(), 1);
         // Criterion 2: the message says the claim is broken, not merely
         // "does not resolve" — the severity split (R1) is only real if a
@@ -680,12 +609,8 @@ mod tests {
             "### [x]\n\nSee [related work](does-not-exist).\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [does-not-exist]\n```\n",
         );
         let report = run(&dir);
-        assert_eq!(only(&report, CheckId::C4).len(), 1);
-        assert!(
-            only(&report, CheckId::C5).is_empty(),
-            "{:#?}",
-            report.diagnostics
-        );
+        assert_eq!(only(&report, "C4").len(), 1);
+        assert!(only(&report, "C5").is_empty(), "{:#?}", report.diagnostics);
     }
 
     #[test]
@@ -704,7 +629,7 @@ mod tests {
             "### [x]\n\nSee [the old reason](does-not-exist).\n\n```claim\nkind: constraint\nevaluator: test\nbecause: [does-not-exist]\n```\n",
         );
         let report = run(&dir);
-        let warnings = only(&report, CheckId::OrphanedBecause);
+        let warnings = only(&report, "orphaned-because");
         assert_eq!(warnings.len(), 1, "{:#?}", report.diagnostics);
         assert_eq!(warnings[0].severity, Severity::Warn);
         assert!(
@@ -717,7 +642,7 @@ mod tests {
             "must not use C4's wording — the claim itself still stands: {:?}",
             warnings[0].message
         );
-        assert!(only(&report, CheckId::C4).is_empty());
+        assert!(only(&report, "C4").is_empty());
         assert!(
             report.passed(),
             "a Warn-only report must still pass: {:#?}",
@@ -771,11 +696,7 @@ mod tests {
             "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/composition-model#6]\n```\n",
         );
         let report = run(&dir);
-        assert!(
-            only(&report, CheckId::C4).is_empty(),
-            "{:#?}",
-            report.diagnostics
-        );
+        assert!(only(&report, "C4").is_empty(), "{:#?}", report.diagnostics);
     }
 
     #[test]
@@ -796,7 +717,7 @@ mod tests {
             "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/m#6]\n```\n",
         );
         let report = run(&dir);
-        assert_eq!(only(&report, CheckId::C4).len(), 1);
+        assert_eq!(only(&report, "C4").len(), 1);
     }
 
     #[test]
@@ -821,11 +742,7 @@ mod tests {
             "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/lean/README#1, docs/models/tla/README#1]\n```\n",
         );
         let report = run(&dir);
-        assert!(
-            only(&report, CheckId::C4).is_empty(),
-            "{:#?}",
-            report.diagnostics
-        );
+        assert!(only(&report, "C4").is_empty(), "{:#?}", report.diagnostics);
     }
 
     #[test]
@@ -846,11 +763,7 @@ mod tests {
             "### [x]\n\nSee [the fact-set](../models/composition-model.md#6).\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/composition-model#6]\n```\n",
         );
         let report = run(&dir);
-        assert!(
-            only(&report, CheckId::C5).is_empty(),
-            "{:#?}",
-            report.diagnostics
-        );
+        assert!(only(&report, "C5").is_empty(), "{:#?}", report.diagnostics);
     }
 
     #[test]
@@ -874,11 +787,7 @@ mod tests {
             "### [x]\n\nSee [the fact-set](../models/composition-model.md#6).\n\n```claim\nkind: constraint\nevaluator: test\nbecause: [docs/models/composition-model#6]\n```\n",
         );
         let report = run(&dir);
-        assert!(
-            only(&report, CheckId::C5).is_empty(),
-            "{:#?}",
-            report.diagnostics
-        );
+        assert!(only(&report, "C5").is_empty(), "{:#?}", report.diagnostics);
     }
 
     #[test]
@@ -901,7 +810,7 @@ mod tests {
             "### [x]\n\nNo links here.\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/composition-model#6]\n```\n",
         );
         let report = run(&dir);
-        let failures = only(&report, CheckId::C5);
+        let failures = only(&report, "C5");
         assert_eq!(failures.len(), 1);
         assert!(
             failures[0].message.contains("depends:"),
@@ -928,7 +837,7 @@ mod tests {
             "### [x]\n\nNo links here.\n\n```claim\nkind: constraint\nevaluator: test\nbecause: [docs/models/composition-model#6]\n```\n",
         );
         let report = run(&dir);
-        let failures = only(&report, CheckId::C5);
+        let failures = only(&report, "C5");
         assert_eq!(failures.len(), 1);
         assert!(
             failures[0].message.contains("because:"),
@@ -952,11 +861,7 @@ mod tests {
             "### [x]\n\nSee [context, not a dependency](https://example.com/context).\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
         );
         let report = run(&dir);
-        assert!(
-            only(&report, CheckId::C5).is_empty(),
-            "{:#?}",
-            report.diagnostics
-        );
+        assert!(only(&report, "C5").is_empty(), "{:#?}", report.diagnostics);
     }
 
     #[test]
@@ -971,11 +876,7 @@ mod tests {
             "### [x]\n\nSee [the web](https://example.com) and [escaping the root](../../outside.md).\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
         );
         let report = run(&dir);
-        assert!(
-            only(&report, CheckId::C5).is_empty(),
-            "{:#?}",
-            report.diagnostics
-        );
+        assert!(only(&report, "C5").is_empty(), "{:#?}", report.diagnostics);
     }
 
     #[test]
@@ -997,11 +898,7 @@ mod tests {
              ```claim\nkind: constraint\nevaluator: test\ndepends: [target-claim]\n```\n",
         );
         let report = run(&dir);
-        assert!(
-            only(&report, CheckId::C5).is_empty(),
-            "{:#?}",
-            report.diagnostics
-        );
+        assert!(only(&report, "C5").is_empty(), "{:#?}", report.diagnostics);
     }
 
     #[test]
@@ -1029,11 +926,7 @@ mod tests {
              ```claim\nkind: invariant\nevaluator: test\ndepends: [target-claim]\n```\n",
         );
         let report = run(&dir);
-        assert!(
-            only(&report, CheckId::C5).is_empty(),
-            "{:#?}",
-            report.diagnostics
-        );
+        assert!(only(&report, "C5").is_empty(), "{:#?}", report.diagnostics);
     }
 
     #[test]
@@ -1054,13 +947,108 @@ mod tests {
              ```claim\nkind: constraint\nevaluator: test\ndepends: [target-claim]\n```\n",
         );
         let report = run(&dir);
-        let failures = only(&report, CheckId::C5);
+        let failures = only(&report, "C5");
         assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
         assert!(
             failures[0].message.contains("depends:target-claim"),
             "{:?}",
             failures[0].message
         );
+    }
+
+    // --- normalize_prose_link edge cases, now internal to register.ncl --
+    // (formerly direct Rust unit tests on `checks::normalize_prose_link`;
+    // that function has no Rust form to unit-test anymore, so its shape
+    // rules are pinned here through C4/C5's observable behaviour instead.)
+
+    #[test]
+    fn c5_resolves_a_bare_sibling_token_with_an_anchor_in_the_same_directory() {
+        // "sibling#3": no `/`, but an anchor is present, so this is a
+        // document-anchor reference resolved against the citing file's
+        // own directory, not a claim id.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write("docs/specs/sibling.md", "## 3. Something\n");
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nSee [nearby](sibling#3).\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/specs/sibling#3]\n```\n",
+        );
+        let report = run(&dir);
+        assert!(only(&report, "C4").is_empty(), "{:#?}", report.diagnostics);
+        assert!(only(&report, "C5").is_empty(), "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn c5_does_not_accept_a_whole_document_link_with_no_anchor() {
+        // A path with no anchor has no representation in the ref syntax
+        // depends/because share, so it never joins C5's `L` — a
+        // `depends` entry naming an anchor still fails C5 even though
+        // the prose links the same document.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write("docs/specs/other.md", "## 1. Heading\n");
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nSee [the whole doc](other.md).\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/specs/other#1]\n```\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, "C4").is_empty(),
+            "the depends target itself still resolves: {:#?}",
+            report.diagnostics
+        );
+        assert_eq!(only(&report, "C5").len(), 1, "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn c5_does_not_accept_a_prose_link_that_escapes_the_corpus_root() {
+        // A `..` that would pop past the corpus root drops the link
+        // entirely (MVP.md §1.3) — it must not count toward C5's `L`
+        // even when its anchor happens to match a real depends target.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write("docs/specs/target.md", "## 1. Heading\n");
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nSee [nope](../../../outside.md#1).\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/specs/target#1]\n```\n",
+        );
+        let report = run(&dir);
+        assert!(only(&report, "C4").is_empty(), "{:#?}", report.diagnostics);
+        assert_eq!(only(&report, "C5").len(), 1, "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn c5_accepts_a_leading_slash_link_as_corpus_root_relative() {
+        // Not addressed by MVP.md's worked example — this project's own
+        // judgment call: a leading `/` is corpus-root-relative rather
+        // than joined onto the citing file's own directory.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
+              ],
+            }"#,
+        );
+        dir.write("docs/models/composition-model.md", "## 6. The fact-set\n");
+        dir.write(
+            "docs/specs/deep/nested/x.md",
+            "### [x]\n\nSee [cm](/docs/models/composition-model.md#6).\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/composition-model#6]\n```\n",
+        );
+        let report = run(&dir);
+        assert!(only(&report, "C4").is_empty(), "{:#?}", report.diagnostics);
+        assert!(only(&report, "C5").is_empty(), "{:#?}", report.diagnostics);
     }
 
     // --- normative-prose ---------------------------------------------
@@ -1080,7 +1068,7 @@ mod tests {
         );
         let report = run(&dir);
         assert_eq!(
-            only(&report, CheckId::NormativeProse).len(),
+            only(&report, "normative-prose").len(),
             1,
             "{:#?}",
             report.diagnostics
@@ -1103,7 +1091,7 @@ mod tests {
         );
         let report = run(&dir);
         assert!(
-            only(&report, CheckId::NormativeProse).is_empty(),
+            only(&report, "normative-prose").is_empty(),
             "{:#?}",
             report.diagnostics
         );
@@ -1124,7 +1112,7 @@ mod tests {
         );
         let report = run(&dir);
         assert!(
-            only(&report, CheckId::NormativeProse).is_empty(),
+            only(&report, "normative-prose").is_empty(),
             "{:#?}",
             report.diagnostics
         );
@@ -1142,7 +1130,7 @@ mod tests {
             "# ADR\n\nline2\n\nThis SHALL NOT be reopened.\n",
         );
         let report = run(&dir);
-        let failures = only(&report, CheckId::NormativeProse);
+        let failures = only(&report, "normative-prose");
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0].file, "docs/adr/x.md");
         assert_eq!(failures[0].line, 5);
@@ -1162,7 +1150,7 @@ mod tests {
             "## Notes\n\n```claim\nkind: constraint\n```\n",
         );
         let report = run(&dir);
-        assert_eq!(only(&report, CheckId::OrphanClaim).len(), 1);
+        assert_eq!(only(&report, "orphan-claim").len(), 1);
     }
 
     // --- bold-form recognizer: C2 across recognizers, coverage count ------
@@ -1172,7 +1160,7 @@ mod tests {
         // Criterion 5: two definitions of one id, arriving via DIFFERENT
         // recognizers (heading-form in one file, bold-form in another),
         // must still be caught as a single C2 duplicate naming both
-        // sites — C2 groups by `Claim::id` alone, so this needs no new
+        // sites — C2 groups by claim id alone, so this needs no new
         // logic, only proof it actually holds.
         let dir = tempdir();
         dir.write(
@@ -1188,7 +1176,7 @@ mod tests {
             "**[dup-across-forms]**: A second definition, bold-form this time.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
         );
         let report = run(&dir);
-        let failures = only(&report, CheckId::C2);
+        let failures = only(&report, "C2");
         // One diagnostic per site (existing C2 shape), each naming the
         // OTHER site in its message — together the pair names both
         // locations, exactly what the dispatch's criterion 5 asks for.
@@ -1212,7 +1200,7 @@ mod tests {
             "**[not-yet-registered]**: A real definition with no block yet.\n",
         );
         let report = run(&dir);
-        let warnings = only(&report, CheckId::UnregisteredDefinition);
+        let warnings = only(&report, "unregistered-definition");
         assert_eq!(warnings.len(), 1, "{:#?}", report.diagnostics);
         assert_eq!(warnings[0].severity, Severity::Warn);
         assert!(warnings[0].message.contains("not-yet-registered"));
@@ -1243,87 +1231,68 @@ mod tests {
         let report = run(&dir);
         assert!(report.passed(), "{:#?}", report.diagnostics);
         assert!(
-            only(&report, CheckId::UnregisteredDefinition).is_empty(),
+            only(&report, "unregistered-definition").is_empty(),
             "{:#?}",
             report.diagnostics
         );
     }
 
-    #[test]
-    fn normalize_prose_link_resolves_a_relative_path_against_the_citing_directory() {
-        assert_eq!(
-            normalize_prose_link("../models/composition-model.md#6", "docs/specs/x.md"),
-            Some(CiteRef::DocAnchor {
-                path: "docs/models/composition-model".into(),
-                anchor: "6".into()
-            })
-        );
-    }
+    // --- the index -------------------------------------------------------
 
     #[test]
-    fn normalize_prose_link_fragment_only_means_the_containing_document() {
-        assert_eq!(
-            normalize_prose_link("#6", "docs/specs/x.md"),
-            Some(CiteRef::DocAnchor {
-                path: "docs/specs/x".into(),
-                anchor: "6".into()
-            })
+    fn the_index_matches_the_mvp_example_shape() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
+                { path = "docs/architecture/**", kinds = ["invariant"], quadrant = "reference" },
+              ],
+            }"#,
         );
-    }
+        dir.write(
+            "docs/specs/lock-file-schema.md",
+            "### [lock-groundness]\n\nEvery lock value MUST be ground: names bound to content identities and exact version strings.\n\nSee [the fact-set](../models/composition-model.md#6) and [execution](../architecture/execution-model.md#2.4).\n\n```claim\nkind: constraint\nevaluator: property-test\ndepends: [docs/models/composition-model#6, docs/architecture/execution-model#2.4]\n```\n",
+        );
+        dir.write(
+            "docs/models/composition-model.md",
+            "## 6. The fact-set: the substrate's only state\n",
+        );
+        dir.write(
+            "docs/architecture/execution-model.md",
+            "## 2.4 Identity discipline\n",
+        );
 
-    #[test]
-    fn normalize_prose_link_bare_token_with_no_anchor_is_a_claim_id_candidate() {
-        assert_eq!(
-            normalize_prose_link("lock-groundness", "docs/specs/x.md"),
-            Some(CiteRef::Claim("lock-groundness".into()))
-        );
-    }
+        let config = load_config(dir.path()).unwrap();
+        let loaded = load_corpus(dir.path(), &config).unwrap();
+        let result = run_checks(&loaded, &config, &register_path()).unwrap();
+        assert!(result.report.passed(), "{:#?}", result.report.diagnostics);
 
-    #[test]
-    fn normalize_prose_link_bare_token_with_anchor_resolves_in_the_same_directory() {
-        // No `/`, but an anchor is present, so this is a document-anchor
-        // reference resolved relative to x.md's own directory — not a
-        // claim id (claim ids never carry a `#`).
+        let claim = result
+            .index
+            .claims
+            .get("lock-groundness")
+            .expect("claim indexed");
+        assert_eq!(claim.file, "docs/specs/lock-file-schema.md");
+        assert_eq!(claim.kind, "constraint");
+        assert_eq!(claim.evaluator, "property-test");
         assert_eq!(
-            normalize_prose_link("sibling#3", "docs/specs/x.md"),
-            Some(CiteRef::DocAnchor {
-                path: "docs/specs/sibling".into(),
-                anchor: "3".into()
-            })
+            claim.depends,
+            vec![
+                "docs/models/composition-model#6",
+                "docs/architecture/execution-model#2.4"
+            ]
         );
-    }
+        assert!(claim.because.is_empty());
 
-    #[test]
-    fn normalize_prose_link_whole_document_with_no_anchor_is_unrepresentable() {
-        assert_eq!(
-            normalize_prose_link("composition-model.md", "docs/specs/x.md"),
-            None
-        );
-    }
-
-    #[test]
-    fn normalize_prose_link_escaping_the_corpus_root_is_dropped() {
-        assert_eq!(
-            normalize_prose_link("../../../etc/passwd#1", "docs/specs/x.md"),
-            None
-        );
-    }
-
-    #[test]
-    fn normalize_prose_link_leading_slash_is_corpus_root_relative() {
-        // Not addressed by MVP.md's worked example — this crate's own
-        // judgment call, documented on resolve_relative: an
-        // absolute-style href is root-relative rather than joined onto
-        // the citing file's directory.
-        assert_eq!(
-            normalize_prose_link(
-                "/docs/models/composition-model.md#6",
-                "docs/specs/deep/nested/x.md"
-            ),
-            Some(CiteRef::DocAnchor {
-                path: "docs/models/composition-model".into(),
-                anchor: "6".into()
-            })
-        );
+        let doc = result
+            .index
+            .documents
+            .get("docs/specs/lock-file-schema")
+            .expect("document indexed");
+        assert_eq!(doc.file, "docs/specs/lock-file-schema.md");
+        assert_eq!(doc.genre, "docs/specs/**");
     }
 }

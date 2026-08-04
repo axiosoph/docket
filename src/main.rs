@@ -5,7 +5,7 @@
 use clap::{Parser, Subcommand};
 use docket::model::{CiteRef, anchor_matches};
 use docket::run::{Outcome, RunError, RunResult};
-use docket::{blast, checks, config, contract, corpus, index, marker, run};
+use docket::{blast, checks, config, corpus, marker, run};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -30,11 +30,12 @@ enum Command {
         /// Write the index JSON here instead of stdout.
         #[arg(long)]
         out: Option<PathBuf>,
-        /// Path to the claim-block Nickel contract's apply shim, resolved
-        /// relative to the current directory (it's a project-level
-        /// artifact, not per-corpus — see docket::contract).
-        #[arg(long, default_value = contract::DEFAULT_CONTRACT_RELATIVE_PATH)]
-        contract: PathBuf,
+        /// Path to the register evaluator (contracts/register.ncl),
+        /// resolved relative to the current directory (it's a
+        /// project-level artifact, not per-corpus — see
+        /// docket::checks::DEFAULT_REGISTER_RELATIVE_PATH).
+        #[arg(long, default_value = checks::DEFAULT_REGISTER_RELATIVE_PATH)]
+        register: PathBuf,
     },
     /// Print the transitive blast radius of a ref — a claim id or a
     /// `<doc-path>#<anchor>` document anchor (§4.2, §1.3).
@@ -63,8 +64,8 @@ fn main() -> ExitCode {
         Command::Check {
             corpus: corpus_root,
             out,
-            contract,
-        } => run_check(&corpus_root, out.as_deref(), &contract),
+            register,
+        } => run_check(&corpus_root, out.as_deref(), &register),
         Command::Blast {
             target,
             corpus: corpus_root,
@@ -76,7 +77,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_check(corpus_root: &Path, out: Option<&Path>, contract_path: &Path) -> ExitCode {
+fn run_check(corpus_root: &Path, out: Option<&Path>, register_path: &Path) -> ExitCode {
     let cfg = match config::load_config(corpus_root) {
         Ok(cfg) => cfg,
         Err(e) => return usage_error(&e),
@@ -88,15 +89,15 @@ fn run_check(corpus_root: &Path, out: Option<&Path>, contract_path: &Path) -> Ex
     };
 
     // Resolved relative to the current directory, not --corpus: the
-    // contract is a project-level artifact shared across every corpus
-    // root (see docket::contract::DEFAULT_CONTRACT_RELATIVE_PATH).
-    let report = match checks::run_checks(&loaded, &cfg, contract_path) {
-        Ok(report) => report,
+    // register evaluator is a project-level artifact shared across every
+    // corpus root (see docket::checks::DEFAULT_REGISTER_RELATIVE_PATH).
+    let evaluation = match checks::run_checks(&loaded, &cfg, register_path) {
+        Ok(evaluation) => evaluation,
         Err(e) => return usage_error(&e),
     };
+    let report = evaluation.report;
 
-    let idx = index::build_index(&loaded.corpus);
-    let json = serde_json::to_string_pretty(&idx).expect("Index serializes");
+    let json = serde_json::to_string_pretty(&evaluation.index).expect("Index serializes");
     match out {
         Some(path) => {
             if let Err(e) = std::fs::write(path, &json) {
@@ -114,10 +115,7 @@ fn run_check(corpus_root: &Path, out: Option<&Path>, contract_path: &Path) -> Ex
         };
         eprintln!(
             "{severity}: {}: {}:{}: {}",
-            diagnostic.check.as_str(),
-            diagnostic.file,
-            diagnostic.line,
-            diagnostic.message
+            diagnostic.check, diagnostic.file, diagnostic.line, diagnostic.message
         );
     }
 
