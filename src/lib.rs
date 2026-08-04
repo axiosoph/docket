@@ -1,10 +1,8 @@
 pub mod blast;
 pub mod checks;
 pub mod config;
-pub mod contract;
 pub mod corpus;
 pub mod extract;
-pub mod index;
 pub mod marker;
 pub mod model;
 pub mod nickel;

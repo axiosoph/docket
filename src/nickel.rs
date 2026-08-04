@@ -62,36 +62,32 @@ pub fn export_json_with_contract(
     serde_json::from_slice(&output.stdout).map_err(NickelError::InvalidJson)
 }
 
-/// The outcome of applying a Nickel contract to a value: either the
-/// contract held, or it didn't, with Nickel's own diagnostic — which
-/// names the file, line, and offending value per MVP.md §3, so it is
-/// passed through rather than re-derived.
-pub enum ContractCheck {
-    Valid,
-    Violated { diagnostic: String },
-}
-
-/// Validate `value_json` against the Nickel contract at `contract_path`.
+/// Evaluate `register_path`'s `evaluate` function against `input_json` —
+/// the register evaluator (`.ledger/2026-07-30-reference-kinds-and-document-resolution.md`,
+/// R6): one Nickel evaluation that computes the index and every check's
+/// diagnostics over an already-extracted corpus, replacing what was N
+/// per-claim `nickel export` invocations (C1) plus a Rust-native pass for
+/// every other check.
 ///
-/// `value_json` is written to a temp file (Nickel's `import` needs a real
-/// path); the driver expression that imports both the data and the
-/// contract and applies one to the other is piped over stdin, so this
-/// needs exactly one temp file rather than two.
-pub fn check_contract(
-    contract_path: &Path,
-    value_json: &str,
-) -> Result<ContractCheck, NickelError> {
-    let data_path = write_temp_json(value_json).map_err(NickelError::Io)?;
+/// `input_json` is written to a temp file (Nickel's `import` needs a real
+/// path); the driver expression that imports both the data and
+/// `register.ncl` and applies one to the other is piped over stdin, the
+/// same mechanism this module already uses for a contract check.
+pub fn evaluate_register(
+    register_path: &Path,
+    input_json: &str,
+) -> Result<serde_json::Value, NickelError> {
+    let data_path = write_temp_json(input_json).map_err(NickelError::Io)?;
     let result = (|| {
         // Absolute paths only: the driver expression arrives over stdin,
         // not as a file, so Nickel has no directory to resolve a
         // relative `import` against ("looked in []" is the diagnostic
         // when this is gotten wrong).
-        let contract_abs = std::path::absolute(contract_path).map_err(NickelError::Io)?;
+        let register_abs = std::path::absolute(register_path).map_err(NickelError::Io)?;
         let driver = format!(
-            "(import \"{data}\") | (import \"{contract}\")",
+            "(import \"{register}\").evaluate (import \"{data}\")",
+            register = escape_nickel_string_literal(&register_abs.to_string_lossy()),
             data = escape_nickel_string_literal(&data_path.to_string_lossy()),
-            contract = escape_nickel_string_literal(&contract_abs.to_string_lossy()),
         );
 
         let mut child = Command::new("nickel")
@@ -113,13 +109,13 @@ pub fn check_contract(
 
         let output = child.wait_with_output().map_err(NickelError::Spawn)?;
 
-        Ok(if output.status.success() {
-            ContractCheck::Valid
+        if output.status.success() {
+            serde_json::from_slice(&output.stdout).map_err(NickelError::InvalidJson)
         } else {
-            ContractCheck::Violated {
-                diagnostic: String::from_utf8_lossy(&output.stderr).into_owned(),
-            }
-        })
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let diagnostic = stderr.strip_prefix("error: ").unwrap_or(&stderr);
+            Err(NickelError::Failed(diagnostic.to_string()))
+        }
     })();
 
     let _ = std::fs::remove_file(&data_path);

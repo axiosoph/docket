@@ -6,8 +6,8 @@ use std::path::Path;
 
 /// Where the config contract is expected to live, relative to the current
 /// directory — a project-level artifact shared across every corpus root,
-/// the same discipline `contract::DEFAULT_CONTRACT_RELATIVE_PATH` follows
-/// for the claim-block contract.
+/// the same discipline `checks::DEFAULT_REGISTER_RELATIVE_PATH` follows
+/// for the register evaluator.
 pub const DEFAULT_CONFIG_CONTRACT_RELATIVE_PATH: &str = "contracts/docket.ncl";
 
 #[derive(Debug, thiserror::Error)]

@@ -8,7 +8,7 @@
 #
 # Configure (optional, git config):
 #   docket.bin       path to the docket binary            (default: docket on PATH)
-#   docket.contract  path to contracts/claim_apply.ncl    (default: contracts/claim_apply.ncl)
+#   docket.register  path to contracts/register.ncl       (default: contracts/register.ncl)
 #   docket.blast     true|false — print blast radius      (default: true)
 #
 # To TEST this hook without configuring anything, put the binary on PATH for
@@ -39,15 +39,15 @@ if ! command -v "$bin" >/dev/null 2>&1 && [ ! -x "$bin" ]; then
   exit 0
 fi
 
-# Resolve the contract relative to THIS HOOK, not to the corpus being checked.
-# The contract ships with docket, so a path relative to the corpus is only ever
-# correct when the corpus happens to be docket's own checkout. Every other
-# consumer gets an unresolvable import — and the failure is invisible until the
-# corpus grows its first claim, because with no claims there is nothing for C1
-# to validate and the missing file is never opened.
+# Resolve the register evaluator relative to THIS HOOK, not to the corpus
+# being checked. It ships with docket, so a path relative to the corpus is
+# only ever correct when the corpus happens to be docket's own checkout.
+# Every other consumer gets an unresolvable import — and the failure is
+# invisible until the corpus grows its first claim, because with no claims
+# there is nothing for C1 to validate and the missing file is never opened.
 self="$(readlink -f "${BASH_SOURCE[0]}")"
-contract="$(git config --get docket.contract || true)"
-contract="${contract:-$(dirname "$self")/../contracts/claim_apply.ncl}"
+register="$(git config --get docket.register || true)"
+register="${register:-$(dirname "$self")/../contracts/register.ncl}"
 
 # ---------------------------------------------------------------------------
 # The gate. Run against the working tree rather than a staged snapshot:
@@ -64,7 +64,7 @@ trap 'rm -f "$index"' EXIT
 # `exit 1` masked that for as long as nobody read the variable. Same defect
 # class as reading a status through a pipe: a construct between the command and
 # `$?` silently substitutes its own result.
-"$bin" check --corpus . --contract "$contract" >"$index" 2>/tmp/docket-hook-err
+"$bin" check --corpus . --register "$register" >"$index" 2>/tmp/docket-hook-err
 code=$?
 if [ "$code" -ne 0 ]; then
   echo >&2
