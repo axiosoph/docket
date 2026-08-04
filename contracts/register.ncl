@@ -421,7 +421,7 @@ let c5_diagnostics = fun claims =>
             file = c.file,
             line = c.heading_line,
             message =
-              "\"%{c.id}\" declares a dependence or reason with no matching prose link: [%{std.string.join ", " (std.array.map (fun r => "%{r.kind}:%{ref_to_string r.cite}") undeclared)}]",
+              "\"%{c.id}\" declares a dependence or reason with no matching prose link: [%{std.string.join ", " (std.array.map (fun r => "\"%{r.kind}:%{ref_to_string r.cite}\"") undeclared)}]",
           }
         ]
     )
