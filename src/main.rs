@@ -225,13 +225,19 @@ fn run_run(corpus_root: &Path, claim_id: &str) -> ExitCode {
 
     print_run_result(&result);
 
-    // 0 pass/none, 1 fail, 2 usage error (above), 3 absent, 4 vacuous —
-    // see run.rs's module docs for why each gets its own code rather
-    // than sharing another's: a reader gating CI on this exit code can
-    // tell "write the marker" from "the evaluator regressed" from "the
-    // evaluator ran but checked nothing" without parsing stdout.
+    // 0 pass/none/review, 1 fail, 2 usage error (above), 3 absent, 4
+    // vacuous — see run.rs's module docs for why each gets its own code
+    // rather than sharing another's: a reader gating CI on this exit
+    // code can tell "write the marker" from "the evaluator regressed"
+    // from "the evaluator ran but checked nothing" without parsing
+    // stdout. `Review` shares `Pass`/`None`'s code rather than getting
+    // its own: like a pass, it is a claim CI should treat as discharged
+    // and not block on — the distinction from `None` (asserted true vs.
+    // asserted absent) is a claim about the world, not about whether CI
+    // should gate on it, so it is carried in the outcome text
+    // (`print_run_result`), not the exit code.
     match result.outcome {
-        Outcome::Pass | Outcome::None => ExitCode::SUCCESS,
+        Outcome::Pass | Outcome::None | Outcome::Review => ExitCode::SUCCESS,
         Outcome::Fail => ExitCode::FAILURE,
         Outcome::Absent => ExitCode::from(3),
         Outcome::Vacuous => ExitCode::from(4),

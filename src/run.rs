@@ -6,8 +6,8 @@
 //! claim is the verdict register, explicitly out of this dispatch's
 //! scope ("Build only the runner").
 //!
-//! **Three outcomes for a claim that names a real evaluator, one more
-//! for a claim that doesn't:**
+//! **Three outcomes for a claim that names a real evaluator, two more
+//! for a claim that doesn't run anything at all:**
 //!
 //! - [`Outcome::Absent`] — no marker for this claim id exists anywhere
 //!   in the corpus. A broken *grade*: the claim asserts a kind of
@@ -22,6 +22,14 @@
 //!   an honest and common state, not a missing field," so this case
 //!   never touches the marker scan and needs nothing executable to be
 //!   reported — the marker index isn't even consulted.
+//! - [`Outcome::Review`] — `evaluator: review`. Mechanically treated the
+//!   same way as `none` (the marker index isn't consulted — there is
+//!   nothing to run), but **not** the same claim about the world:
+//!   `none` asserts nothing has been done, `review` asserts a human or
+//!   agent read the claim against its target and it holds
+//!   (`.ledger/log/2026-07-29-review-is-the-vouch.md`). Kept a distinct
+//!   variant, distinct printed outcome, so a reader (or a script parsing
+//!   `docket run`'s output) can never mistake a vouch for a gap.
 //! - [`Outcome::Vacuous`] — every marker's command exited zero, but at
 //!   least one of them **checked nothing**: the exit status says
 //!   success, but the runner recognizes the output's own shape as
@@ -65,7 +73,7 @@
 //! has a well-understood meaning would make `Fail` itself lie half the
 //! time.
 //!
-//! **Exit codes** (see `main.rs`): `0` pass/none, `1` fail, `2` usage
+//! **Exit codes** (see `main.rs`): `0` pass/none/review, `1` fail, `2` usage
 //! error (unknown claim id, corpus/config failed to load — the existing
 //! meaning MVP.md §5 and `blast`'s own "ref does not resolve" already
 //! give exit 2), `3` absent, `4` vacuous. `check` deliberately does not
@@ -102,6 +110,12 @@ pub enum Outcome {
     Fail,
     Absent,
     None,
+    /// `evaluator: review` — a human or agent read the claim and it
+    /// holds. Distinct from `None`: this asserts the claim is true,
+    /// `None` asserts nothing has been attempted. Distinct from `Pass`:
+    /// this is testimony (a vouch), not a re-runnable check
+    /// (a corroboration) — see the module docs.
+    Review,
     /// Every marker's command exited zero, but at least one of them is
     /// recognized as having verified nothing — see [`detect_vacuity`].
     /// Distinct from `Pass`: a command that ran and checked nothing is
@@ -116,6 +130,7 @@ impl Outcome {
             Outcome::Fail => "fail",
             Outcome::Absent => "absent",
             Outcome::None => "none",
+            Outcome::Review => "review",
             Outcome::Vacuous => "vacuous",
         }
     }
@@ -233,8 +248,9 @@ pub struct RunResult {
     pub claim_id: ClaimId,
     pub evaluator: String,
     pub outcome: Outcome,
-    /// Empty for [`Outcome::Absent`] (nothing ran) and [`Outcome::None`]
-    /// (nothing was even looked for). One entry per matching marker for
+    /// Empty for [`Outcome::Absent`] (nothing ran) and
+    /// [`Outcome::None`]/[`Outcome::Review`] (nothing was even looked
+    /// for). One entry per matching marker for
     /// [`Outcome::Pass`]/[`Outcome::Fail`].
     pub markers: Vec<MarkerOutcome>,
 }
@@ -270,6 +286,23 @@ pub fn run_claim(
             claim_id: claim.id.clone(),
             evaluator,
             outcome: Outcome::None,
+            markers: Vec::new(),
+        });
+    }
+
+    // `review`: testimony, not a re-runnable check (module docs, and
+    // `.ledger/log/2026-07-29-review-is-the-vouch.md`) — there is nothing
+    // for this runner to execute, by definition, so the marker index is
+    // never consulted, mirroring `none`'s short-circuit above. The
+    // outcome is deliberately its own variant rather than reusing `None`:
+    // a `review` claim is asserted TRUE (a vouch), while `none` asserts
+    // nothing has been attempted — collapsing them would erase exactly
+    // the distinction this evaluator exists to add.
+    if evaluator == "review" {
+        return Ok(RunResult {
+            claim_id: claim.id.clone(),
+            evaluator,
+            outcome: Outcome::Review,
             markers: Vec::new(),
         });
     }
@@ -414,6 +447,32 @@ mod tests {
         let result = run_claim(&corpus, "x", Path::new("."), &markers).unwrap();
         assert_eq!(result.outcome, Outcome::None);
         assert!(result.markers.is_empty());
+    }
+
+    #[test]
+    fn evaluator_review_never_consults_markers() {
+        let corpus =
+            corpus_with("### [x]\n\n```claim\nkind: requirement\nevaluator: review\n```\n");
+        // A marker for `x` exists but must never be looked at — same
+        // shape as `evaluator_none_never_consults_markers`, but `review`
+        // must report its own outcome, not `None`'s.
+        let markers = vec![marker("x", "false")];
+        let result = run_claim(&corpus, "x", Path::new("."), &markers).unwrap();
+        assert_eq!(result.outcome, Outcome::Review);
+        assert!(result.markers.is_empty());
+    }
+
+    #[test]
+    fn evaluator_review_is_distinct_from_none() {
+        // The whole point of the grade: `none` and `review` must never
+        // collapse to the same outcome, even with no marker in sight for
+        // either.
+        let corpus =
+            corpus_with("### [x]\n\n```claim\nkind: requirement\nevaluator: review\n```\n");
+        let result = run_claim(&corpus, "x", Path::new("."), &[]).unwrap();
+        assert_eq!(result.outcome, Outcome::Review);
+        assert_ne!(result.outcome, Outcome::None);
+        assert_eq!(result.evaluator, "review");
     }
 
     #[test]
