@@ -99,7 +99,7 @@ count is exactly the number that effort exists to move.
 | field | required | type |
 |:---|:--|:---|
 | `kind` | yes | one of `requirement`, `invariant`, `constraint` |
-| `evaluator` | yes | one of `proof`, `model-check`, `type`, `property-test`, `test`, `example`, `none` |
+| `evaluator` | yes | one of `proof`, `model-check`, `type`, `property-test`, `test`, `example`, `review`, `none` |
 | `depends` | no (default `[]`) | array of refs |
 | `because` | no (default `[]`) | array of refs |
 
@@ -603,16 +603,24 @@ depends: [reference-syntax]
 docket run <claim-id>
 ```
 
-Executes `<claim-id>`'s declared evaluator and reports one of five
+Executes `<claim-id>`'s declared evaluator and reports one of six
 outcomes:
 
 | outcome | means |
 |:---|:---|
 | `pass` | every marker naming this claim exited zero, and none of them checked nothing |
 | `fail` | a marker naming this claim exited non-zero |
-| `absent` | the claim declares an evaluator other than `none`, but no marker names this claim id anywhere in the corpus |
+| `absent` | the claim declares an evaluator other than `none`/`review`, but no marker names this claim id anywhere in the corpus |
 | `none` | the claim declares `evaluator: none` — an honest, unimplemented state; no marker is even looked for |
+| `review` | the claim declares `evaluator: review` — a human or agent read the claim against its target and it holds; no marker is even looked for |
 | `vacuous` | every marker naming this claim exited zero, but at least one of them is recognized as having checked nothing |
+
+`review` and `none` are both never-runs-a-marker outcomes, but they are
+not the same claim: `none` says nothing has been attempted; `review`
+says a claim was checked, by testimony rather than by a command this
+tool can re-execute. Collapsing the two would erase the one distinction
+this evaluator exists to add — see README.md, "Why review is
+irreducible."
 
 `absent` and `fail` are kept apart rather than folded into one
 "not discharged" result: they send the reader in opposite directions —
@@ -672,10 +680,11 @@ recognized success; a command whose output matches no known shape is
 reports `pass` (every matching command exited zero and none checked
 nothing), `fail` (any matching command exited non-zero), `absent` (the
 claim names a real evaluator but no marker exists for it anywhere in the
-corpus), `none` (the claim declares `evaluator: none`), or `vacuous`
-(every matching command exited zero but at least one is recognized as
-having checked nothing). A marker's id may carry a trailing `!` to opt
-that marker out of vacuity detection.
+corpus), `none` (the claim declares `evaluator: none`), `review` (the
+claim declares `evaluator: review`), or `vacuous` (every matching
+command exited zero but at least one is recognized as having checked
+nothing). A marker's id may carry a trailing `!` to opt that marker out
+of vacuity detection.
 
 ```claim
 kind: constraint
@@ -693,7 +702,7 @@ still exits 0.
 | `check` | 0 | all checks pass (`Warn`-only reports included) |
 | `check` | 1 | one or more `Fail`-severity checks failed |
 | `check`, `blast`, `run` | 2 | usage or configuration error (bad `docket.ncl`, unreadable path, unknown claim id, a `blast` ref or `run` claim id that doesn't resolve) |
-| `run` | 0 | outcome `pass` or `none` |
+| `run` | 0 | outcome `pass`, `none`, or `review` |
 | `run` | 1 | outcome `fail` |
 | `run` | 3 | outcome `absent` |
 | `run` | 4 | outcome `vacuous` |

@@ -36,10 +36,10 @@
   # runner itself is out of MVP scope (README.md "MVP scope") — only the
   # name is recorded and validated here.
   #
-  # The values are a PREFERENCE ORDER, not an unordered set (README.md,
-  # "The hierarchy is normative, not merely descriptive"):
+  # The mechanical values are a PREFERENCE ORDER, not an unordered set
+  # (README.md, "The hierarchy is normative, not merely descriptive"):
   #
-  #   proof > type > property-test > test > example > none
+  #   proof > model-check > type > property-test > test > example > none
   #
   # `type` means the claim is enforced by construction — the violation
   # cannot be written, rather than being caught when written. That is a
@@ -47,6 +47,16 @@
   # elegantly reachable it should be preferred. Its honesty limit: the
   # machine confirms the marked item exists and builds, never that the type
   # enforces what the claim says, so faithfulness is review-established.
+  #
+  # `review` sits OUTSIDE that order — never insert it as a weaker rung
+  # below `none` or anywhere else in the chain
+  # (`.ledger/log/2026-07-29-review-is-the-vouch.md`, "Why review is
+  # irreducible"). It means a human or agent read the claim against its
+  # target and it holds: an assertion that the claim is TRUE, backed by
+  # testimony rather than a re-runnable check — a **vouch**, the
+  # register's other evidence species, not a corroboration one grade
+  # short of `example`. `none` asserts the opposite: nothing has been
+  # done. The two are not comparable on the mechanical scale at all.
   EvaluatorPred = fun v =>
     v == 'proof          || v == "proof"
     || v == 'model-check   || v == "model-check"
@@ -54,6 +64,7 @@
     || v == 'property-test || v == "property-test"
     || v == 'test          || v == "test"
     || v == 'example       || v == "example"
+    || v == 'review        || v == "review"
     || v == 'none          || v == "none",
   Evaluator = std.contract.from_predicate EvaluatorPred,
 

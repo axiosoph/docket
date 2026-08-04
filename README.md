@@ -9,7 +9,7 @@ number with an enumerated residue, instead of a feeling.
 > plus three further diagnostics (`orphan-claim`, `normative-prose`,
 > `unregistered-definition`); `blast` computes the citation graph and its
 > transitive closure; `run` executes a claim's evaluator and reports one
-> of five outcomes (see "Tying claims to the evaluators that discharge
+> of six outcomes (see "Tying claims to the evaluators that discharge
 > them," below). The coverage index, the verdict register, and the
 > stability metric described later in this document are not built —
 > "Out of MVP scope" marks what's still missing. Name is provisional.
@@ -375,11 +375,18 @@ means to violate it. A verdict with no boolean conversion does not test that
 its residue is non-erasable; erasure fails to compile.
 
 So the register records a **grade**, not a boolean, along the standard
-hierarchy:
+hierarchy for evidence that is re-runnable:
 
 ```
-proof  >  type  >  property test  >  example test  >  linter  >  review
+proof  >  type  >  property test  >  example test  >  linter
 ```
+
+`review` is not this chain's weakest rung, and does not appear in it at
+all — it is a different evidence species entirely ("Why review is
+irreducible," below), so ranking it below `linter` would misstate what
+it is. The claim block's own `evaluator` field (MVP.md §1.2) is exactly
+this hierarchy plus `review` named as its own value, not its bottom one,
+and `none` for "not yet discharged."
 
 Mechanically this is the same marker in the same place, which is the point
 — one mechanism, two capabilities:
@@ -439,10 +446,10 @@ enhancement, not a precondition.
 *Argued, not proved — falsifiable, and untested against a real register.*
 
 The grade hierarchy above — proof, type, property test, example test,
-linter, review — is not five mechanical checks plus a human fallback for
-whatever nothing mechanical covers. It is two different *species* of
-evidence, and naming the difference is what makes review a first-class
-grade rather than an embarrassment to eliminate.
+linter — plus `review` is not five mechanical checks plus a human
+fallback for whatever nothing mechanical covers. It is two different
+*species* of evidence, and naming the difference is what makes review a
+first-class grade rather than an embarrassment to eliminate.
 
 A **corroboration** is a re-verification of an artifact against its own
 content — a check anyone else could re-run: a proof, a type, a test. A
@@ -490,7 +497,7 @@ what makes the human side of the loop tractable.
 
 This needs the evaluator runner as a prerequisite, and the runner has
 since shipped: `docket run <claim-id>` executes a claim's marker and
-reports `pass`/`fail`/`absent`/`none`/`vacuous` (see MVP.md's "Run"
+reports `pass`/`fail`/`absent`/`none`/`review`/`vacuous` (see MVP.md's "Run"
 section). What has **not** shipped is this section's own feature — a
 whole-corpus coverage index reporting per-kind conformance, generated
 from every claim's discharge — which is a table over every claim's `run`

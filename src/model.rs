@@ -60,15 +60,26 @@ impl Quadrant {
     }
 }
 
-/// MVP.md §1.2: the six permitted evaluator names.
+/// MVP.md §1.2: the eight permitted evaluator names. Unused today — every
+/// call site (extract.rs, checks.rs, run.rs) carries `evaluator` as the
+/// raw `String` MVP.md's contract already validates, so this mirror has
+/// no consumer; kept in step with the contract anyway rather than left to
+/// drift further out of sync (it was already missing `Type` before this
+/// change touched it).
+///
+/// `Review` is not a lower variant than `None`: see `claim.ncl`'s
+/// `EvaluatorPred` doc comment for why review is a different evidence
+/// species (a vouch) rather than a seventh rung on the mechanical scale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Evaluator {
     Proof,
     ModelCheck,
+    Type,
     PropertyTest,
     Test,
     Example,
+    Review,
     None,
 }
 
