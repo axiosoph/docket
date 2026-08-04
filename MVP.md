@@ -94,6 +94,26 @@ register does not yet cover. Reported as `unregistered-definition`
 to carry many of these on the day a registration effort begins; the
 count is exactly the number that effort exists to move.
 
+**Malformed ids.** A bracketed token that sits in definition position —
+line-start `**[...]**` immediately followed by definitional punctuation,
+or a heading whose entire text is `[...]` — but whose inner content is
+not lowercase kebab-case is not recognized as a definition at all: it
+becomes neither a claim nor an `unregistered-definition`, which means it
+would otherwise produce **no diagnostic whatsoever** — the same silence
+a correctly handled definition produces. Reported instead as
+`malformed-id` (`Warn` severity, §5), under its own diagnostic rather
+than folded into `unregistered-definition`: the remedies differ (rename
+the id, versus write a claim block), and a malformed id is more likely a
+mistake than a coincidence — prose rarely opens a line with a bolded
+bracketed kebab-ish token followed by a colon. The id itself is never
+normalized or auto-corrected; the grammar stays exactly what §1.1
+already states, only violations of it become visible.
+
+A bracket whose inner content carries whitespace is not treated as a
+malformed id — it reads as an ordinary sentence (`**[Note to
+reader]**: ...`), not an attempted identifier, so it produces no
+diagnostic of any kind.
+
 ### 1.2 Fields
 
 | field | required | type |
@@ -450,6 +470,20 @@ with no block is real corpus content this register does not yet cover.
 `Warn` severity, like `orphaned-because` — never failed on, since a
 corpus is expected to carry many of these on the day a registration
 effort begins.
+
+**`malformed-id`, likewise derived, not a numbered check.** §1.1's
+recognizers require an id's inner text to be lowercase kebab-case; a
+bracketed token that satisfies every other structural property of a
+definition (line-start, the wrapper, immediately-following punctuation
+for bold form; the whole heading text for heading form) but fails the
+grammar is not a recognized definition, and so was previously silent —
+not a claim, not `unregistered-definition`, not anything. `Warn`
+severity, same as `unregistered-definition`: the remedy is a rename an
+author makes, not a defect that should block a commit already in
+flight. The id grammar itself is unchanged and is never relaxed to
+accept what this check flags — accepting it silently would make
+uniqueness (C2) case-insensitive in effect, which is exactly the
+collision class C2 exists to catch.
 
 **`normative-prose`, derived from `kinds = []`, not a sixth numbered
 check.** §2's `kinds = []` already means a genre may hold no claim

@@ -3,7 +3,7 @@
 //! not scanned" (MVP.md §2).
 
 use crate::config::{AmbiguousGenre, Config};
-use crate::extract::{self, NormativeOccurrence, OrphanClaim, UnregisteredDefinition};
+use crate::extract::{self, MalformedId, NormativeOccurrence, OrphanClaim, UnregisteredDefinition};
 use crate::model::{Corpus, Document};
 use std::path::{Path, PathBuf};
 
@@ -38,6 +38,10 @@ pub struct LoadedCorpus {
     /// claim block — the coverage count. Collected corpus-wide the same
     /// way `orphan_claims` is.
     pub unregistered_definitions: Vec<UnregisteredDefinition>,
+    /// Every bracketed token in definition position whose inner content
+    /// fails the id grammar — the `malformed-id` diagnostic. Collected
+    /// corpus-wide the same way `orphan_claims` is.
+    pub malformed_ids: Vec<MalformedId>,
 }
 
 /// Load every genre-matched file under `corpus_root`.
@@ -46,6 +50,7 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
     let mut orphan_claims = Vec::new();
     let mut normative_occurrences = Vec::new();
     let mut unregistered_definitions = Vec::new();
+    let mut malformed_ids = Vec::new();
 
     for path in walk_files(corpus_root)? {
         let relative = path
@@ -97,6 +102,7 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
         orphan_claims.extend(result.orphan_claims);
         normative_occurrences.extend(result.normative_occurrences);
         unregistered_definitions.extend(result.unregistered_definitions);
+        malformed_ids.extend(result.malformed_ids);
     }
 
     Ok(LoadedCorpus {
@@ -104,6 +110,7 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
         orphan_claims,
         normative_occurrences,
         unregistered_definitions,
+        malformed_ids,
     })
 }
 
@@ -312,6 +319,28 @@ mod tests {
         assert_eq!(loaded.corpus.claims.len(), 0);
         assert_eq!(loaded.orphan_claims.len(), 1);
         assert_eq!(loaded.orphan_claims[0].file, "docs/orphan.md");
+    }
+
+    #[test]
+    fn collects_malformed_ids_across_the_corpus() {
+        // `.ledger/2026-08-04-malformed-ids-are-silently-invisible.md`:
+        // the wiring layer between extract.rs and checks.rs, mirroring
+        // `collects_orphan_claims_across_the_corpus` above for the new
+        // field.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write("docs/a.md", "**[boundary-L1-concerns]**: L1 owns things.\n");
+
+        let config = load_config(dir.path()).unwrap();
+        let loaded = load_corpus(dir.path(), &config).unwrap();
+
+        assert_eq!(loaded.corpus.claims.len(), 0);
+        assert_eq!(loaded.malformed_ids.len(), 1);
+        assert_eq!(loaded.malformed_ids[0].file, "docs/a.md");
+        assert_eq!(loaded.malformed_ids[0].id, "boundary-L1-concerns");
     }
 
     #[test]

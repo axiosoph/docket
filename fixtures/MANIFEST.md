@@ -50,6 +50,7 @@ called out below.
 | `bold-form-false-positives/` | — (all pass) | Not a check fixture — see below. The false-positive floor: ordinary bold text, a mid-sentence citation, a line-start bracket with no adjacent punctuation, and a list-embedded bracket — none recognized as a definition. |
 | `c2-duplicate-across-forms/` | `C2` | `docs/specs/a.md` declares `[dup-across-forms]` in heading form, `docs/specs/b.md` declares the same id in bold form. Proves a duplicate arising from two *different* recognizers is still one C2 finding pair, each naming the other's site. |
 | `unregistered-definition/` | `unregistered-definition` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition with no `claim` block, plus one registered heading-form definition for contrast. Exits **0** — `Warn` severity, the coverage count. |
+| `malformed-id/` | `malformed-id` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition whose id fails the kebab-case grammar (both the real-corpus shape: an otherwise-kebab id with one stray uppercase segment), a bracketed-but-multi-word false positive that must not fire, and one registered heading-form definition for contrast. Exits **0** — `Warn` severity, never blocking. |
 
 **`duplicate-stem/` is retired**, not just its row here. MVP.md §1.3 was
 amended once a real corpus produced three `README.md` files under one
@@ -414,6 +415,42 @@ files were scanned.
   --corpus fixtures/unregistered-definition` exits **0** with exactly
   two `unregistered-definition` warnings on stderr, naming the file,
   line, and id of each.
+
+## `malformed-id/`
+
+`.ledger/2026-08-04-malformed-ids-are-silently-invisible.md`: a bracketed
+token that satisfies every *structural* property of a definition — line
+start, the wrapper, immediately-following punctuation for bold form; the
+whole heading text for heading form — but whose inner content fails the
+lowercase-kebab grammar was previously invisible to every check at once:
+not a claim, not `unregistered-definition`, not anything. Reported now as
+`malformed-id` (`Warn` severity, same treatment as
+`unregistered-definition`), under its own diagnostic because the remedy
+differs from `unregistered-definition`'s: rename the id, not write a
+claim block.
+
+`docs/specs/a.md` carries four definitions:
+
+- `**[boundary-L1-concerns]**` (bold form) and `### [Daemon-Discovery]`
+  (heading form) — both structurally complete definitions whose id
+  carries an uppercase segment, the exact real-corpus shape the ledger
+  entry measured (`boundary-L1-concerns` through `boundary-L5-concerns`,
+  `daemon-discovery-vN`). Neither is a claim, and neither ever could be
+  a valid claim id — `malformed-id` is the only diagnostic naming them.
+- `**[Note to reader]**` — the false-positive floor: a bracket whose
+  inner content carries whitespace reads as an ordinary sentence, not an
+  attempted id, and must produce **no** diagnostic at all (not
+  `malformed-id`, not `unregistered-definition`).
+- `### [registered-claim]` — a normal, well-formed, registered
+  definition, present only for contrast: it stays completely silent, the
+  same as any other passing claim.
+
+`docket check --corpus fixtures/malformed-id` exits **0** with exactly
+two `malformed-id` warnings on stderr, naming the file, line, and
+offending id of each — never touching the index (`registered-claim` is
+the only entry) and never producing `unregistered-definition` for the
+two malformed sites, since a malformed id was never a recognized
+definition to begin with.
 
 ## Judgment calls made while writing these fixtures
 

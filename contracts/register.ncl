@@ -1,8 +1,8 @@
 # The register evaluator (.ledger/2026-07-30-reference-kinds-and-document-resolution.md,
 # R6): given an already-extracted corpus as data, compute the index
 # (MVP.md §4.1) and every check's diagnostics — C1-C5, orphan-claim,
-# orphaned-because, normative-prose, unregistered-definition — in one
-# pure evaluation.
+# orphaned-because, normative-prose, unregistered-definition,
+# malformed-id — in one pure evaluation.
 #
 # Rust does the extraction (extract.rs/corpus.rs: markdown to a document
 # tree, filesystem walking) and src/checks.rs serializes the result into
@@ -502,6 +502,26 @@ let unregistered_definition_diagnostics = fun defs =>
     defs
 in
 
+# --- malformed-id: a bracketed token in definition position that fails --
+# the id grammar (`.ledger/2026-08-04-malformed-ids-are-silently-invisible.md`).
+# `Warn` severity, like `unregistered-definition`: real corpora are
+# expected to carry some of these on the day this check ships, and the
+# remedy is a rename an author makes, not a gate that should block a
+# commit already in flight.
+
+let malformed_id_diagnostics = fun ids =>
+  std.array.map
+    (fun m => {
+      check = "malformed-id",
+      severity = "warn",
+      file = m.file,
+      line = m.line,
+      message =
+        "bracketed token \"%{m.id}\" is in definition position but is not valid kebab-case — rename it (a malformed id is neither claimed nor counted as unregistered)",
+    })
+    ids
+in
+
 # --- the index (MVP.md §4.1): a pure projection. ------------------------
 
 let index_claims = fun claims =>
@@ -559,7 +579,8 @@ let evaluate_impl = fun input =>
       @ (orphaned_because_diagnostics claim_ids input.documents input.claims)
       @ (c5_diagnostics input.claims)
       @ (normative_prose_diagnostics input.documents input.genres input.normative_occurrences)
-      @ (unregistered_definition_diagnostics input.unregistered_definitions),
+      @ (unregistered_definition_diagnostics input.unregistered_definitions)
+      @ (malformed_id_diagnostics input.malformed_ids),
   }
 in
 { evaluate = evaluate_impl }
