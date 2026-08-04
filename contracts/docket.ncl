@@ -27,24 +27,34 @@ let Quadrant = (import "quadrant.ncl").Quadrant in
 # under-report — three unlabelled genres would read as three empty
 # quadrants, indistinguishable from a corpus that genuinely has no
 # tutorial/how-to/reference/explanation content there.
-#
-# The derived rule — a genre whose `quadrant` is `"explanation"` and
-# whose `kinds` is non-empty is a configuration error — is NOT enforced
-# here. `docket check` never applies this contract to `docket.ncl` (it
-# re-derives the same shape directly in Rust, config.rs, because that is
-# also where cross-corpus glob/kind semantics already live); this file
-# exists for the documented manual-verification path (`nickel export
-# docket.ncl --apply-contract contracts/docket.ncl`). Enforcing the rule
-# in two places — a Nickel predicate here and a Rust check there — would
-# be exactly the duplication surface this project's own design principles
-# forbid, so it has exactly one home: `config::load_config`
-# (`ConfigError::ExplanationForbidsKinds`).
 let Genre = {
   path     | NonEmptyString,
   kinds    | Array Kind,
   quadrant | Quadrant,
 } in
 
+# The derived rule: a genre whose `quadrant` is `"explanation"` and whose
+# `kinds` is non-empty is a configuration error — explanation carries
+# rationale, not checkable claims. Named per-offender so the diagnostic
+# says which genre entry is wrong, matching what a hand-written check
+# would report. `docket check` applies this contract directly
+# (`config::load_config`) — this is now the single, sole home for the
+# config's shape and its derived rules; Rust converts the validated JSON
+# into typed values but does not re-check any of it.
+let GenresValid = std.contract.from_validator (fun genres =>
+  let offenders = std.array.filter
+    (fun g => g.quadrant == "explanation" && std.array.length g.kinds > 0)
+    genres
+  in
+  if std.array.length offenders == 0 then
+    'Ok
+  else
+    let g = std.array.first offenders in
+    'Error {
+      message = "genre \"%{g.path}\" has quadrant \"explanation\" but permits kinds [%{std.string.join ", " g.kinds}] — explanation carries rationale, not checkable claims",
+    }
+) in
+
 {
-  genres | Array Genre,
+  genres | Array Genre | GenresValid,
 }

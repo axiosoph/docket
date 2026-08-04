@@ -19,29 +19,44 @@ pub enum NickelError {
     Io(#[source] std::io::Error),
     #[error("nickel produced output that wasn't valid JSON: {0}")]
     InvalidJson(#[source] serde_json::Error),
+    /// `nickel export` exited non-zero — either the file doesn't evaluate
+    /// (syntax error, missing import, …) or, when a contract was applied,
+    /// the value doesn't satisfy it. Nickel's own diagnostic (stderr)
+    /// already names the file, line, and offending value, so it is
+    /// surfaced near-verbatim rather than re-derived — only its leading
+    /// `error: ` is stripped, since every caller wraps this in its own
+    /// `error: {e}` (main.rs's `usage_error`) and the two would otherwise
+    /// double up.
+    #[error("{0}")]
+    Failed(String),
 }
 
-/// Evaluate and export a Nickel file as JSON. Used to read `docket.ncl`.
-pub fn export_json(nickel_path: &Path) -> Result<serde_json::Value, NickelError> {
+/// Evaluate `nickel_path` and validate it against `contract_path` in one
+/// step, returning the validated value as JSON.
+///
+/// Used to read `docket.ncl`: `contracts/docket.ncl` is the sole
+/// authority for the config's shape (genre `path`/`kinds`/`quadrant`, the
+/// `Kind`/`Quadrant` enums, and the explanation-forbids-kinds derived
+/// rule) — callers must not re-derive any of it, only convert the
+/// already-validated JSON into typed values.
+pub fn export_json_with_contract(
+    nickel_path: &Path,
+    contract_path: &Path,
+) -> Result<serde_json::Value, NickelError> {
     let output = Command::new("nickel")
         .arg("export")
         .arg("--format")
         .arg("json")
         .arg(nickel_path)
+        .arg("--apply-contract")
+        .arg(contract_path)
         .output()
         .map_err(NickelError::Spawn)?;
 
     if !output.status.success() {
-        return Err(NickelError::InvalidJson(
-            // Not actually a JSON error, but export_json's callers only
-            // distinguish "ok" from "failed"; the real diagnostic is in
-            // stderr, surfaced via the Display impl below.
-            serde_json::from_str::<serde_json::Value>(&format!(
-                "nickel export failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ))
-            .unwrap_err(),
-        ));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let diagnostic = stderr.strip_prefix("error: ").unwrap_or(&stderr);
+        return Err(NickelError::Failed(diagnostic.to_string()));
     }
 
     serde_json::from_slice(&output.stdout).map_err(NickelError::InvalidJson)

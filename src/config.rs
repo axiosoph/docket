@@ -4,44 +4,38 @@ use crate::model::{Kind, Quadrant};
 use crate::nickel::{self, NickelError};
 use std::path::Path;
 
+/// Where the config contract is expected to live, relative to the current
+/// directory — a project-level artifact shared across every corpus root,
+/// the same discipline `contract::DEFAULT_CONTRACT_RELATIVE_PATH` follows
+/// for the claim-block contract.
+pub const DEFAULT_CONFIG_CONTRACT_RELATIVE_PATH: &str = "contracts/docket.ncl";
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("{path} not found — a corpus needs docket.ncl at its root")]
     Missing { path: String },
-    #[error("failed to evaluate {path}: {source}")]
+    /// Covers both "doesn't evaluate" and "evaluates but fails
+    /// `contracts/docket.ncl`" — the contract is the single authority for
+    /// the config's shape and its derived rules (genre fields, the
+    /// `Kind`/`Quadrant` enums, explanation-forbids-kinds), so Rust does
+    /// not re-check any of that and has nothing to add beyond what
+    /// `source` already reports.
+    #[error("{path}: {source}")]
     Nickel {
         path: String,
         #[source]
         source: NickelError,
     },
-    #[error("{path}: expected a `genres` array of {{ path, kinds }} records: {detail}")]
-    Shape { path: String, detail: String },
-    #[error("{path}: genre kind {kind:?} is not one of requirement, invariant, constraint")]
-    UnknownKind { path: String, kind: String },
-    #[error(
-        "{path}: genre quadrant {quadrant:?} is not one of tutorial, how-to, reference, explanation"
-    )]
-    UnknownQuadrant { path: String, quadrant: String },
+    /// Glob syntax is not a Nickel-expressible shape — the contract only
+    /// guarantees `path` is a non-empty string; compiling it into a
+    /// matchable pattern is I/O-adjacent parsing, same as markdown, and
+    /// stays in Rust (MVP.md §7 draws the line at "checking Nickel could
+    /// do", not "checking of any kind").
     #[error("{path}: genre path pattern {pattern:?} is not a valid glob: {detail}")]
     InvalidPattern {
         path: String,
         pattern: String,
         detail: String,
-    },
-    /// The derived rule (MVP.md §2): explanation carries rationale, not
-    /// checkable claims — a claim is a checkable assertion, so a genre
-    /// declaring `quadrant = "explanation"` and a non-empty `kinds` is a
-    /// contradiction in the config itself, not a corpus-content failure.
-    /// Raised at config-load time (exit 2), alongside `UnknownKind` and
-    /// `InvalidPattern` — like them, it needs nothing but `docket.ncl`'s
-    /// own fields to detect.
-    #[error(
-        "{path}: genre {pattern:?} has quadrant \"explanation\" but permits kinds {kinds:?} — explanation carries rationale, not checkable claims"
-    )]
-    ExplanationForbidsKinds {
-        path: String,
-        pattern: String,
-        kinds: Vec<String>,
     },
 }
 
@@ -104,8 +98,12 @@ impl Config {
     }
 }
 
-/// Load and validate `<corpus_root>/docket.ncl` by invoking Nickel — never
-/// reimplementing its checking (MVP.md §7).
+/// Load and validate `<corpus_root>/docket.ncl` against
+/// `contracts/docket.ncl` by invoking Nickel — never reimplementing its
+/// checking (MVP.md §7). By the time this returns `Ok`, `value` has
+/// already satisfied the contract's shape and its derived rules; the loop
+/// below only converts trusted JSON into typed `Genre`s and compiles glob
+/// patterns, the one piece the contract cannot check.
 pub fn load_config(corpus_root: &Path) -> Result<Config, ConfigError> {
     let path = corpus_root.join("docket.ncl");
     let path_str = path.display().to_string();
@@ -114,75 +112,54 @@ pub fn load_config(corpus_root: &Path) -> Result<Config, ConfigError> {
         return Err(ConfigError::Missing { path: path_str });
     }
 
-    let value = nickel::export_json(&path).map_err(|source| ConfigError::Nickel {
-        path: path_str.clone(),
-        source,
+    let contract_path = Path::new(DEFAULT_CONFIG_CONTRACT_RELATIVE_PATH);
+    let value = nickel::export_json_with_contract(&path, contract_path).map_err(|source| {
+        ConfigError::Nickel {
+            path: path_str.clone(),
+            source,
+        }
     })?;
 
     let genres_json = value
         .get("genres")
         .and_then(|g| g.as_array())
-        .ok_or_else(|| ConfigError::Shape {
-            path: path_str.clone(),
-            detail: "missing or non-array top-level `genres` field".to_string(),
-        })?;
+        .expect("contracts/docket.ncl guarantees a top-level `genres` array");
 
     let mut genres = Vec::with_capacity(genres_json.len());
     for entry in genres_json {
         let genre_path = entry
             .get("path")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ConfigError::Shape {
-                path: path_str.clone(),
-                detail: "a genre entry is missing a string `path`".to_string(),
-            })?
+            .expect("contracts/docket.ncl guarantees each genre has a non-empty string `path`")
             .to_string();
 
         let kinds_json = entry
             .get("kinds")
             .and_then(|v| v.as_array())
-            .ok_or_else(|| ConfigError::Shape {
-                path: path_str.clone(),
-                detail: format!("genre {genre_path:?} is missing an array `kinds`"),
-            })?;
-
-        let mut kinds = Vec::with_capacity(kinds_json.len());
-        for k in kinds_json {
-            let k_str = k.as_str().ok_or_else(|| ConfigError::Shape {
-                path: path_str.clone(),
-                detail: format!("genre {genre_path:?} has a non-string entry in `kinds`"),
-            })?;
-            kinds.push(parse_kind(k_str).ok_or_else(|| ConfigError::UnknownKind {
-                path: path_str.clone(),
-                kind: k_str.to_string(),
-            })?);
-        }
+            .expect("contracts/docket.ncl guarantees each genre has an array `kinds`");
+        let kinds: Vec<Kind> = kinds_json
+            .iter()
+            .map(|k| {
+                let k_str = k
+                    .as_str()
+                    .expect("contracts/docket.ncl guarantees kinds are strings");
+                parse_kind(k_str).unwrap_or_else(|| {
+                    panic!(
+                        "contracts/docket.ncl guarantees kind is requirement/invariant/constraint, got {k_str:?}"
+                    )
+                })
+            })
+            .collect();
 
         let quadrant_str = entry
             .get("quadrant")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ConfigError::Shape {
-                path: path_str.clone(),
-                detail: format!("genre {genre_path:?} is missing a string `quadrant`"),
-            })?;
-        let quadrant =
-            parse_quadrant(quadrant_str).ok_or_else(|| ConfigError::UnknownQuadrant {
-                path: path_str.clone(),
-                quadrant: quadrant_str.to_string(),
-            })?;
-
-        // Derived rule (MVP.md §2): a claim is a checkable assertion, and
-        // explanation's job is rationale — so a genre that is explanation
-        // and still permits claims is a contradiction in its own config,
-        // not a matter of style. Checked here, at config-load time,
-        // because both fields it needs live on this one genre entry.
-        if quadrant == Quadrant::Explanation && !kinds.is_empty() {
-            return Err(ConfigError::ExplanationForbidsKinds {
-                path: path_str.clone(),
-                pattern: genre_path.clone(),
-                kinds: kinds.iter().map(|k| k.as_str().to_string()).collect(),
-            });
-        }
+            .expect("contracts/docket.ncl guarantees each genre has a string `quadrant`");
+        let quadrant = parse_quadrant(quadrant_str).unwrap_or_else(|| {
+            panic!(
+                "contracts/docket.ncl guarantees quadrant is tutorial/how-to/reference/explanation, got {quadrant_str:?}"
+            )
+        });
 
         let compiled =
             glob::Pattern::new(&genre_path).map_err(|e| ConfigError::InvalidPattern {
@@ -266,10 +243,11 @@ mod tests {
         let dir = tempdir();
         write_docket_ncl(
             dir.path(),
-            r#"{ genres = [ { path = "docs/**", kinds = ["opinion"] } ] }"#,
+            r#"{ genres = [ { path = "docs/**", kinds = ["opinion"], quadrant = "reference" } ] }"#,
         );
         let err = load_config(dir.path()).unwrap_err();
-        assert!(matches!(err, ConfigError::UnknownKind { .. }));
+        assert!(matches!(err, ConfigError::Nickel { .. }));
+        assert!(err.to_string().contains("kinds"));
     }
 
     #[test]
@@ -280,7 +258,8 @@ mod tests {
             r#"{ genres = [ { path = "docs/**", kinds = ["constraint"], quadrant = "opinion" } ] }"#,
         );
         let err = load_config(dir.path()).unwrap_err();
-        assert!(matches!(err, ConfigError::UnknownQuadrant { .. }));
+        assert!(matches!(err, ConfigError::Nickel { .. }));
+        assert!(err.to_string().contains("quadrant"));
     }
 
     #[test]
@@ -291,7 +270,8 @@ mod tests {
             r#"{ genres = [ { path = "docs/**", kinds = ["constraint"] } ] }"#,
         );
         let err = load_config(dir.path()).unwrap_err();
-        assert!(matches!(err, ConfigError::Shape { .. }));
+        assert!(matches!(err, ConfigError::Nickel { .. }));
+        assert!(err.to_string().contains("quadrant"));
     }
 
     #[test]
@@ -299,14 +279,33 @@ mod tests {
         // The derived rule (MVP.md §2): explanation carries rationale, not
         // checkable claims — a genre claiming both is a contradiction in
         // docket.ncl itself, caught at config-load time rather than
-        // treated as a corpus-content check.
+        // treated as a corpus-content check. Enforced by
+        // contracts/docket.ncl's `GenresValid` validator now, not by Rust.
         let dir = tempdir();
         write_docket_ncl(
             dir.path(),
             r#"{ genres = [ { path = "docs/adr/**", kinds = ["requirement"], quadrant = "explanation" } ] }"#,
         );
         let err = load_config(dir.path()).unwrap_err();
-        assert!(matches!(err, ConfigError::ExplanationForbidsKinds { .. }));
+        assert!(matches!(err, ConfigError::Nickel { .. }));
+        let message = err.to_string();
+        assert!(message.contains("docs/adr/**"));
+        assert!(message.contains("explanation carries rationale, not checkable claims"));
+    }
+
+    #[test]
+    fn invalid_glob_pattern_is_a_config_error() {
+        // Glob syntax is not a Nickel-expressible shape (the contract
+        // only guarantees `path` is a non-empty string), so this stays a
+        // Rust-side check — the one piece load_config still performs
+        // itself after the contract has validated everything else.
+        let dir = tempdir();
+        write_docket_ncl(
+            dir.path(),
+            r#"{ genres = [ { path = "docs/[", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        let err = load_config(dir.path()).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidPattern { .. }));
     }
 
     #[test]
