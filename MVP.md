@@ -37,13 +37,22 @@ kebab-case token:
 
 **Bold form.** A `**…**` span, at the very start of a line, wrapping
 exactly a bracketed kebab-case token, immediately followed by
-definitional punctuation — a colon, or a parenthetical then a colon
-(the parenthetical's content is unconstrained, e.g. a formula label):
+definitional punctuation: a colon, or a single inline aside — a
+parenthetical, an italicized note, or any other balanced inline markup
+span — then a colon. The aside's own content is unconstrained (a formula
+label, a revision note, even a bracketed id cited in passing) and may
+itself contain a colon; what closes the definition is the first colon
+that is not inside the aside. The aside is bounded to 128 bytes and may
+not cross a line break — "immediately followed" does not survive
+crossing one.
 
 ```markdown
 **[lock-groundness]**: Every lock value MUST be ground.
 
 **[lock-groundness]** (P8): Every lock value MUST be ground.
+
+**[lock-groundness]** _(amended 2026-07-14 — retitled from
+lock-nonzero)_: Every lock value MUST be ground.
 ```
 
 Both forms exist because corpora do: a specification-first corpus
@@ -226,6 +235,22 @@ unprompted, so it is required to work. The bare form stays *accepted*
 rather than retired: retiring it would be a breaking migration for no
 correctness gain, and this document's own claims (§4.1, §4.2 below) use
 it already.
+
+Accepting only one form is not a smaller version of this rule; it is a
+different, broken one. A corpus restricted to the bare form ships links
+no renderer or checker accepts, which a documentation corpus cannot
+tolerate. A corpus restricted to the anchor form fares no better in the
+other direction: the anchor form normalizes to a *document* anchor
+(`<doc-path>#<id>`), which does not equal a bare claim-id declaration
+under exact-target matching, so every claim-id reference written the way
+an author and a link checker both expect would fail this check. A real
+corpus that hit exactly this — required to choose one form, unable to
+satisfy both this check and its own link-checking gate with either —
+registered claims for eight references and kept zero edges in the
+resulting graph, dropping every declaration rather than break either
+gate. Accepting both is what makes a claim-id declaration reachable
+regardless of which of the two legitimate authoring styles a writer
+reaches for.
 
 #### [reference-syntax]
 
@@ -500,9 +525,10 @@ a collision there overwrites rather than errors.
 Worth stating why it survived a draft. §1.3 changed identifiers from basenames
 to paths and gave the reasoning, but the worked example three sections later
 was not re-derived from it, so the document held its own rule and a violation
-of that rule simultaneously. Nothing in docket catches this, because `MVP.md`
-carries no claim blocks — which is a precise statement of the gap, and the
-argument for closing it.
+of that rule simultaneously. Nothing in docket catches this, because the
+worked example above is a `json` fence, not a `claim` block — outside
+anything the checks inspect, however many claim blocks the rest of this
+document carries.
 
 #### [index-shape]
 
@@ -571,29 +597,148 @@ evaluator: test
 depends: [reference-syntax]
 ```
 
+### 4.3 Run
+
+```
+docket run <claim-id>
+```
+
+Executes `<claim-id>`'s declared evaluator and reports one of five
+outcomes:
+
+| outcome | means |
+|:---|:---|
+| `pass` | every marker naming this claim exited zero, and none of them checked nothing |
+| `fail` | a marker naming this claim exited non-zero |
+| `absent` | the claim declares an evaluator other than `none`, but no marker names this claim id anywhere in the corpus |
+| `none` | the claim declares `evaluator: none` — an honest, unimplemented state; no marker is even looked for |
+| `vacuous` | every marker naming this claim exited zero, but at least one of them is recognized as having checked nothing |
+
+`absent` and `fail` are kept apart rather than folded into one
+"not discharged" result: they send the reader in opposite directions —
+`absent` means write the marker, `fail` means fix what the marker
+checks. `vacuous` is kept apart from both for the same reason: a command
+that exits zero having checked nothing is neither a missing marker nor a
+real failure — it means fix the marker's target (most commonly, a
+renamed or deleted test), a third direction rather than a flavor of
+either of the other two.
+
+A claim can have more than one marker naming it. All must exit zero for
+the claim to pass; if any exits non-zero the outcome is `fail`; if none
+fails but at least one is recognized as vacuous, the outcome is
+`vacuous`.
+
+**Evaluator markers.** A marker is a line, anywhere in the corpus tree,
+containing the literal text `docket:` followed by a claim id and a
+command:
+
+```
+// docket: lock-groundness :: cargo test ground_values_only -- --exact
+\* docket: spine-chain-complete :: tlc -config Model.cfg Model.tla
+-- docket: no-double-spend :: alloy exec -c Model.als NoDoubleSpend
+```
+
+**The scanner never parses the comment leader.** `//`, `\*`, `--`, or
+anything else preceding `docket:` is not recognized syntax — only the
+literal token `docket:` is matched, wherever it appears on a line. This
+is deliberate and language-agnostic: a corpus's evaluators are not all
+one language (proofs in Lean, model checks in TLA+ and Alloy, tests in
+whatever the implementation uses), and a comment lexer would have to be
+written per language. Matching the token alone works identically across
+all of them, at the cost of never inferring a marker's language from its
+leader — the marker's own command is what runs, and it is `sh -c`'d in
+the corpus root, so it can be written the way its author would type it
+at a prompt.
+
+**The vacuity opt-out.** A marker's id may carry a trailing `!`,
+immediately after the id and before any whitespace —
+`docket: <id>! :: <command>` — exempting that marker from vacuity
+detection: its exit status alone is trusted, unconditionally. This
+exists for an evaluator kind the runner has no output recognizer for, so
+that evaluator can still report a genuine `pass`. It is a deliberate,
+once-written assertion an author makes explicitly, never a default any
+marker gets silently.
+
+**Vacuity detection today recognizes `cargo test`'s output shape**: a
+`test result: …` summary line reading `0 passed; 0 failed` — the exact
+shape a typo'd, renamed, deleted, or `#[ignore]`d test name prints even
+though the command still exits zero. Detection only ever *downgrades* a
+recognized success; a command whose output matches no known shape is
+`pass`, not `vacuous`.
+
+#### [run-outcomes]
+
+`docket run <claim-id>` executes every marker naming that claim id and
+reports `pass` (every matching command exited zero and none checked
+nothing), `fail` (any matching command exited non-zero), `absent` (the
+claim names a real evaluator but no marker exists for it anywhere in the
+corpus), `none` (the claim declares `evaluator: none`), or `vacuous`
+(every matching command exited zero but at least one is recognized as
+having checked nothing). A marker's id may carry a trailing `!` to opt
+that marker out of vacuity detection.
+
+```claim
+kind: constraint
+evaluator: test
+```
+
 ## 5. Exit codes
 
-| code | meaning |
-|:--|:---|
-| 0 | all checks pass |
-| 1 | one or more checks failed |
-| 2 | usage or configuration error (bad `docket.ncl`, unreadable path) |
+`check`'s exit code tracks its report's severity: a report holding only
+`Warn`-severity diagnostics (`orphaned-because`, `unregistered-definition`)
+still exits 0.
+
+| command | code | meaning |
+|:---|:--:|:---|
+| `check` | 0 | all checks pass (`Warn`-only reports included) |
+| `check` | 1 | one or more `Fail`-severity checks failed |
+| `check`, `blast`, `run` | 2 | usage or configuration error (bad `docket.ncl`, unreadable path, unknown claim id, a `blast` ref or `run` claim id that doesn't resolve) |
+| `run` | 0 | outcome `pass` or `none` |
+| `run` | 1 | outcome `fail` |
+| `run` | 3 | outcome `absent` |
+| `run` | 4 | outcome `vacuous` |
+
+A caller gating CI on `run`'s exit code can tell "write the marker" from
+"the evaluator regressed" from "the evaluator ran but checked nothing"
+without parsing stdout — the same reasoning §3's severity split gives
+`orphaned-because` against `C4` doesn't carry over to `run` unchanged:
+`run` reports on exactly one claim, and its outcome already *is* the
+whole severity; there is nothing left to aggregate the way `check`
+aggregates many diagnostics into one process exit.
 
 Suitable as a CI gate with no wrapper.
 
 ## 6. Deliberately out of scope
 
-The evaluator runner, the verdict register, the stability metric,
-generated reference output, and signing. Each needs the index to exist
-first, and none of them changes the shape above.
+The verdict register, the stability metric, generated reference output,
+and signing. Each needs the index (and, for the register, the runner) to
+exist first, and none of them changes the shape above.
+
+**The evaluator runner itself has shipped** — §4.3's `docket run` — and
+is no longer out of scope. What remains out of scope is the
+*whole-corpus* accounting built on top of it: a table over every claim's
+`run` outcome, aggregated per kind into the conformance fractions
+README.md's "Tying claims to the evaluators that discharge them"
+describes. `run` answers "is this one claim discharged"; the register
+would answer "is the corpus."
 
 ## 7. Implementation notes
 
 - **Language:** the repository's choice; no constraint from this spec. The
   checks are pure functions over parsed input, so the natural shape is a
   library plus a thin CLI.
-- **Nickel is required** for the contract and `docket.ncl`. Validation
-  should invoke Nickel rather than reimplementing its checking.
+- **Nickel is required** for the contract and `docket.ncl` — today, that
+  is its whole scope. `docket check` validates a claim block's YAML and
+  a repository's `docket.ncl` by invoking `nickel export` against
+  `contracts/*.ncl` (`docket::contract`) rather than reimplementing
+  Nickel's own checking; the five checks themselves (§3) are plain Rust
+  functions over the parsed corpus, not Nickel contracts. The longer-term
+  intent is for the evaluator layer itself — the pure computations over
+  the reference graph (reachability, orphan completeness, what becomes
+  unreachable on a deletion) — to move into Nickel, with Rust reduced to
+  parsing, filesystem walking, and the CLI surface. That migration has
+  not happened; this spec describes what is built, not that intent, and
+  "Nickel is required" should not be read as "Nickel evaluates claims."
 - **The extractor must not use regular expressions over prose.** Parse
   markdown to a document tree, then walk it. Fenced blocks and heading
   levels are structure, and regex over structure is the brittleness this
