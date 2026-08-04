@@ -115,10 +115,7 @@ fn run_check(corpus_root: &Path, out: Option<&Path>, register_path: &Path) -> Ex
         };
         eprintln!(
             "{severity}: {}: {}:{}: {}",
-            diagnostic.check,
-            diagnostic.file,
-            diagnostic.line,
-            diagnostic.message
+            diagnostic.check, diagnostic.file, diagnostic.line, diagnostic.message
         );
     }
 
