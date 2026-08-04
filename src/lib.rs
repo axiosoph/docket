@@ -1,6 +1,7 @@
 pub mod blast;
 pub mod checks;
 pub mod config;
+pub mod contracts;
 pub mod corpus;
 pub mod extract;
 pub mod marker;
