@@ -5,10 +5,10 @@
 //! `.ledger/2026-07-30-reference-kinds-and-document-resolution.md`, R6:
 //! "everything downstream of 'here is the set of claims with their typed
 //! references' is pure and belongs in Nickel." C1-C5, `orphan-claim`,
-//! `orphaned-because`, `normative-prose`, `unregistered-definition`, and
-//! the index projection (formerly `index.rs`) all live in
-//! `contracts/register.ncl` now; this module is the seam — serialize,
-//! invoke, deserialize — not a reimplementation of any check.
+//! `orphaned-because`, `normative-prose`, `unregistered-definition`,
+//! `malformed-id`, and the index projection (formerly `index.rs`) all
+//! live in `contracts/register.ncl` now; this module is the seam —
+//! serialize, invoke, deserialize — not a reimplementation of any check.
 //!
 //! **A finding the migration estimate's own line-count table didn't
 //! anticipate**: `model::CiteRef`/`RefKind`/`Claim::refs`/`anchor_matches`
@@ -161,6 +161,13 @@ struct InputUnregisteredDefinition {
 }
 
 #[derive(Serialize)]
+struct InputMalformedId {
+    file: String,
+    line: usize,
+    id: String,
+}
+
+#[derive(Serialize)]
 struct Input {
     claims: Vec<InputClaim>,
     documents: Vec<InputDocument>,
@@ -168,6 +175,7 @@ struct Input {
     orphan_claims: Vec<InputOrphanClaim>,
     normative_occurrences: Vec<InputNormativeOccurrence>,
     unregistered_definitions: Vec<InputUnregisteredDefinition>,
+    malformed_ids: Vec<InputMalformedId>,
 }
 
 /// A YAML claim block re-parsed into JSON, for C1 — mirrors what the
@@ -263,6 +271,16 @@ fn build_input(loaded: &LoadedCorpus, config: &Config) -> Input {
         })
         .collect();
 
+    let malformed_ids = loaded
+        .malformed_ids
+        .iter()
+        .map(|m| InputMalformedId {
+            file: m.file.clone(),
+            line: m.line.0,
+            id: m.id.clone(),
+        })
+        .collect();
+
     Input {
         claims,
         documents,
@@ -270,6 +288,7 @@ fn build_input(loaded: &LoadedCorpus, config: &Config) -> Input {
         orphan_claims,
         normative_occurrences,
         unregistered_definitions,
+        malformed_ids,
     }
 }
 
@@ -1212,6 +1231,79 @@ mod tests {
             "unregistered-definition must never flip the exit code: {:#?}",
             report.diagnostics
         );
+    }
+
+    #[test]
+    fn malformed_id_is_reported_at_warn_severity_and_never_fails_the_report() {
+        // `.ledger/2026-08-04-malformed-ids-are-silently-invisible.md`'s
+        // exact real-corpus shape: an otherwise-kebab id with one stray
+        // uppercase segment, at Warn severity like `unregistered-definition`
+        // — advisory, never blocking a commit already in flight.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "**[boundary-L1-concerns]**: L1 (atom) owns content addressing.\n",
+        );
+        let report = run(&dir);
+        let warnings = only(&report, "malformed-id");
+        assert_eq!(warnings.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(warnings[0].severity, Severity::Warn);
+        assert!(warnings[0].message.contains("boundary-L1-concerns"));
+        assert!(
+            report.passed(),
+            "malformed-id must never flip the exit code: {:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn malformed_id_is_distinct_from_unregistered_definition() {
+        // The remedies differ (rename vs. write a claim block), so a
+        // malformed id must never also surface as
+        // `unregistered-definition` — it was never a recognized
+        // definition at all.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "**[daemon-discovery-vN]**: In future versions, ion MAY support\nadditional discovery mechanisms.\n",
+        );
+        let report = run(&dir);
+        assert_eq!(
+            only(&report, "malformed-id").len(),
+            1,
+            "{:#?}",
+            report.diagnostics
+        );
+        assert!(
+            only(&report, "unregistered-definition").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_multi_word_bracket_never_fires_malformed_id_through_the_register() {
+        // The false-positive floor, exercised end-to-end through the real
+        // register.ncl rather than only at extract.rs's unit level.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "**[Note to reader]**: this is prose, not an id.\n",
+        );
+        let report = run(&dir);
+        assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
     }
 
     #[test]

@@ -49,6 +49,21 @@ pub struct UnregisteredDefinition {
     pub id: ClaimId,
 }
 
+/// A bracketed token in a recognized definition position (heading- or
+/// bold-form) whose inner content fails the id grammar — see
+/// [`malformed_bracket_id`] for the exact predicate and why it exists.
+/// Distinct from [`UnregisteredDefinition`]: the remedy here is renaming
+/// the id, not writing a claim block, so it gets its own diagnostic
+/// (`.ledger/2026-08-04-malformed-ids-are-silently-invisible.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MalformedId {
+    pub file: String,
+    pub line: Line,
+    /// The bracket's raw inner text — not a [`ClaimId`], since by
+    /// definition it failed the grammar that type implies.
+    pub id: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ExtractResult {
     pub headings: Vec<Heading>,
@@ -56,6 +71,7 @@ pub struct ExtractResult {
     pub orphan_claims: Vec<OrphanClaim>,
     pub normative_occurrences: Vec<NormativeOccurrence>,
     pub unregistered_definitions: Vec<UnregisteredDefinition>,
+    pub malformed_ids: Vec<MalformedId>,
 }
 
 /// Byte-offset -> 1-indexed line number, built once per document.
@@ -80,20 +96,60 @@ impl LineIndex {
     }
 }
 
-/// Whether `text` is exactly a bracketed kebab-case token, e.g. `[my-id]`.
-/// Returns the inner id, without brackets.
-fn bracket_kebab_id(text: &str) -> Option<String> {
+/// Whether `text` is exactly a bracketed token, e.g. `[my-id]` — the
+/// structural half of a definition (brackets, non-empty), independent of
+/// whether the inner content is valid kebab-case. Returns the inner text,
+/// without brackets. Shared by [`bracket_kebab_id`] (a real definition) and
+/// [`malformed_bracket_id`] (one that fails the id grammar) so the two
+/// stay structurally identical apart from the grammar check itself.
+fn bracket_token(text: &str) -> Option<&str> {
     let inner = text.strip_prefix('[')?.strip_suffix(']')?;
-    if inner.is_empty() {
-        return None;
-    }
-    let is_kebab = inner.split('-').all(|seg| {
+    (!inner.is_empty()).then_some(inner)
+}
+
+/// MVP.md §1.1's id grammar: lowercase-kebab, every segment non-empty and
+/// restricted to ASCII lowercase letters and digits.
+fn is_kebab_case(inner: &str) -> bool {
+    inner.split('-').all(|seg| {
         !seg.is_empty()
             && seg
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-    });
-    is_kebab.then(|| inner.to_string())
+    })
+}
+
+/// Whether `text` is exactly a bracketed kebab-case token, e.g. `[my-id]`.
+/// Returns the inner id, without brackets.
+fn bracket_kebab_id(text: &str) -> Option<String> {
+    let inner = bracket_token(text)?;
+    is_kebab_case(inner).then(|| inner.to_string())
+}
+
+/// Whether `text` is a bracketed token in definition position that FAILS
+/// the id grammar — the `malformed-id` diagnostic's predicate
+/// (`.ledger/2026-08-04-malformed-ids-are-silently-invisible.md`).
+///
+/// Structurally identical to [`bracket_kebab_id`] (bracket-wrapped,
+/// non-empty) but for the grammar check itself, plus one further filter:
+/// the inner text must carry **no whitespace**. That filter is what keeps
+/// this from crying wolf on ordinary bracketed prose — `**[Note to
+/// reader]**: ...` reads as a sentence, not an attempted id, and the
+/// real-corpus defect this exists to catch (`[boundary-L1-concerns]`,
+/// `[daemon-discovery-vN]`) never has a space in it: an id-shaped token
+/// with a stray uppercase letter, underscore, or dot still reads as one
+/// *word*. A multi-word bracket is prose; a one-word bracket that isn't
+/// lowercase-kebab is far more likely a typo'd id than a coincidence
+/// (MVP.md §1.1's own reasoning for the diagnostic: "prose rarely opens a
+/// line with a bolded bracketed kebab-ish token followed by a colon").
+/// Returns the offending inner text — not a [`ClaimId`], since by
+/// definition it isn't one.
+fn malformed_bracket_id(text: &str) -> Option<&str> {
+    let inner = bracket_token(text)?;
+    if is_kebab_case(inner) || inner.contains(char::is_whitespace) {
+        None
+    } else {
+        Some(inner)
+    }
 }
 
 /// Bound, in source bytes, on the interstitial between a bold-form
@@ -318,6 +374,28 @@ struct RawBoldDef {
     id: ClaimId,
 }
 
+/// A line-start `**[...]**` bold span whose inner bracket text failed the
+/// id grammar, once its definitional punctuation has confirmed it sits in
+/// definition position — the bold-form analogue of [`RawBoldDef`], for
+/// the `malformed-id` diagnostic rather than a real definition. `start` is
+/// the opening `**`'s byte offset, used only to derive the line for
+/// [`MalformedId`].
+struct RawMalformedBold {
+    start: usize,
+    id: String,
+}
+
+/// What a closed line-start `**[...]**` bold span resolves to once its
+/// definitional punctuation confirms it: a real id ([`RawBoldDef`]) or one
+/// that fails the grammar ([`RawMalformedBold`], the `malformed-id`
+/// diagnostic). Both share the same punctuation-hunting state machine
+/// ([`PendingBold`]) — the id grammar is the only thing that decides which
+/// outcome a given candidate resolves to.
+enum BoldCandidate {
+    Definition(ClaimId),
+    Malformed(String),
+}
+
 /// A closed line-start `**[id]**` still hunting for its definitional
 /// colon, carried across however many adjacent inline events the
 /// interstitial spans. A colon-bearing `Event::Text` immediately after
@@ -336,7 +414,7 @@ struct PendingBold {
     /// non-adjacent event, or an event kind that can't continue the
     /// interstitial) abandons this candidate.
     cursor: usize,
-    id: ClaimId,
+    candidate: BoldCandidate,
     /// `>0` while inside a balanced inline wrapper whose whole span was
     /// already pre-consumed by jumping `cursor` to its `Start` event's
     /// `range.end` — pulldown-cmark's offset iterator gives a container's
@@ -380,6 +458,7 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
     let mut raw_links: Vec<RawLink> = Vec::new();
     let mut raw_blocks: Vec<RawBlock> = Vec::new();
     let mut raw_bold_defs: Vec<RawBoldDef> = Vec::new();
+    let mut raw_malformed_bold: Vec<RawMalformedBold> = Vec::new();
 
     // pulldown-cmark's offset iterator gives Start and End the same full
     // element range, so we capture level/start/end at Start and only
@@ -420,13 +499,19 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
                         let budget =
                             MAX_INTERSTITIAL_LEN.saturating_sub(pb.cursor - pb.interstitial_start);
                         match scan_interstitial_chunk(t, budget) {
-                            InterstitialStep::ResolvedAt(rel) => {
-                                raw_bold_defs.push(RawBoldDef {
+                            InterstitialStep::ResolvedAt(rel) => match pb.candidate {
+                                BoldCandidate::Definition(id) => raw_bold_defs.push(RawBoldDef {
                                     start: pb.start,
                                     end: range.start + rel + 1,
-                                    id: pb.id,
-                                });
-                            }
+                                    id,
+                                }),
+                                BoldCandidate::Malformed(id) => {
+                                    raw_malformed_bold.push(RawMalformedBold {
+                                        start: pb.start,
+                                        id,
+                                    });
+                                }
+                            },
                             InterstitialStep::Continue => {
                                 pb.cursor = range.end;
                                 pending_bold = Some(pb);
@@ -503,16 +588,23 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
                 cur_strong = line_start.then(|| (range.start, range.end, String::new()));
             }
             Event::End(TagEnd::Strong) => {
-                if let Some((start, end, text)) = cur_strong.take()
-                    && let Some(id) = bracket_kebab_id(text.trim())
-                {
-                    pending_bold = Some(PendingBold {
-                        start,
-                        interstitial_start: end,
-                        cursor: end,
-                        id,
-                        skip_depth: 0,
-                    });
+                if let Some((start, end, text)) = cur_strong.take() {
+                    let trimmed = text.trim();
+                    let candidate = if let Some(id) = bracket_kebab_id(trimmed) {
+                        Some(BoldCandidate::Definition(id))
+                    } else {
+                        malformed_bracket_id(trimmed)
+                            .map(|id| BoldCandidate::Malformed(id.to_string()))
+                    };
+                    if let Some(candidate) = candidate {
+                        pending_bold = Some(PendingBold {
+                            start,
+                            interstitial_start: end,
+                            cursor: end,
+                            candidate,
+                            skip_depth: 0,
+                        });
+                    }
                 }
             }
             Event::Start(Tag::Link { dest_url, .. }) => {
@@ -701,12 +793,45 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
         })
         .collect();
 
+    // `malformed-id` (`.ledger/2026-08-04-malformed-ids-are-silently-invisible.md`):
+    // a bracketed token in definition position that fails the id grammar,
+    // heading-form and bold-form together — position-ordered the same way
+    // `id_anchors` is, for a deterministic, reading-order diagnostic list.
+    let mut malformed_ids: Vec<(usize, MalformedId)> = raw_headings
+        .iter()
+        .filter_map(|h| {
+            malformed_bracket_id(&h.text).map(|inner| {
+                (
+                    h.start,
+                    MalformedId {
+                        file: file.to_string(),
+                        line: line_index.line_of(h.start),
+                        id: inner.to_string(),
+                    },
+                )
+            })
+        })
+        .chain(raw_malformed_bold.iter().map(|b| {
+            (
+                b.start,
+                MalformedId {
+                    file: file.to_string(),
+                    line: line_index.line_of(b.start),
+                    id: b.id.clone(),
+                },
+            )
+        }))
+        .collect();
+    malformed_ids.sort_by_key(|(start, _)| *start);
+    let malformed_ids = malformed_ids.into_iter().map(|(_, m)| m).collect();
+
     ExtractResult {
         headings,
         claims,
         orphan_claims,
         normative_occurrences,
         unregistered_definitions,
+        malformed_ids,
     }
 }
 
@@ -1221,5 +1346,186 @@ mod tests {
         got.sort_unstable();
         assert_eq!(got, vec!["direct", "italic", "paren"]);
         assert!(res.orphan_claims.is_empty(), "{:#?}", res.orphan_claims);
+    }
+
+    // --- malformed-id -------------------------------------------------
+    //
+    // `.ledger/2026-08-04-malformed-ids-are-silently-invisible.md`: a
+    // bracketed token in definition position that fails the id grammar
+    // used to produce no diagnostic at all — the same silence a correctly
+    // handled definition produces. `malformed_bracket_id`'s own doc
+    // comment states the predicate; these tests pin its boundary,
+    // negative cases first since a false positive here would make the
+    // diagnostic ignorable.
+
+    fn malformed_ids(res: &ExtractResult) -> Vec<&str> {
+        res.malformed_ids.iter().map(|m| m.id.as_str()).collect()
+    }
+
+    #[test]
+    fn malformed_bracket_id_pins_the_predicate_directly() {
+        // The exact real-corpus shapes
+        // (`.ledger/2026-08-04-malformed-ids-are-silently-invisible.md`):
+        // an otherwise-kebab token with one stray uppercase segment.
+        assert_eq!(
+            malformed_bracket_id("[boundary-L1-concerns]"),
+            Some("boundary-L1-concerns")
+        );
+        assert_eq!(
+            malformed_bracket_id("[daemon-discovery-vN]"),
+            Some("daemon-discovery-vN")
+        );
+        // Other non-kebab characters the dispatch names explicitly:
+        // underscore, dot — both still id-shaped (one word, no
+        // whitespace), so they fire too.
+        assert_eq!(
+            malformed_bracket_id("[lock_groundness]"),
+            Some("lock_groundness")
+        );
+        assert_eq!(malformed_bracket_id("[v1.2]"), Some("v1.2"));
+        // A valid kebab id is never malformed.
+        assert_eq!(malformed_bracket_id("[lock-groundness]"), None);
+        // Not bracket-shaped at all.
+        assert_eq!(malformed_bracket_id("lock-groundness"), None);
+        // An empty bracket carries no id-shaped signal at all — likely
+        // link/checkbox syntax, not an attempted id.
+        assert_eq!(malformed_bracket_id("[]"), None);
+        // Whitespace is the prose signal: a multi-word bracket reads as
+        // a sentence, not a typo'd id, so it must not fire.
+        assert_eq!(malformed_bracket_id("[Note to reader]"), None);
+        assert_eq!(malformed_bracket_id("[trailing space ]"), None);
+    }
+
+    #[test]
+    fn a_malformed_bold_form_id_is_reported_with_the_real_corpus_shape() {
+        // The exact shape from the sibling corpus's `layer-boundaries.md`:
+        // a bold-form definition whose id carries an uppercase segment.
+        let src = "**[boundary-L1-concerns]**: L1 (atom) owns content\naddressing and lock verification.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(malformed_ids(&res), vec!["boundary-L1-concerns"]);
+        // Not a recognized definition at all — no claim, no
+        // unregistered-definition either, matching the ledger's "not
+        // reported as malformed, not reported as unregistered" complaint
+        // about the OLD (silent) behavior; that gap is now filled by
+        // `malformed_ids` specifically, not by widening the other two.
+        assert!(res.claims.is_empty());
+        assert!(res.unregistered_definitions.is_empty(), "{:#?}", res);
+    }
+
+    #[test]
+    fn a_malformed_bold_form_id_with_a_parenthetical_is_still_reported() {
+        let src = "**[daemon-discovery-vN]** (P8): In future versions, ion\nMAY support additional discovery mechanisms.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(malformed_ids(&res), vec!["daemon-discovery-vN"]);
+    }
+
+    #[test]
+    fn a_malformed_heading_form_id_is_also_reported() {
+        // The predicate generalizes across both forms, the same way
+        // `unregistered-definition` does.
+        let src = "### [Boundary-L1]\n\nSome prose.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(malformed_ids(&res), vec!["Boundary-L1"]);
+        assert!(res.claims.is_empty());
+    }
+
+    #[test]
+    fn a_malformed_id_leaves_its_claim_block_orphaned_not_silently_owned() {
+        // The defect's real cost: a claim block after a malformed
+        // definition, with no other real anchor preceding it, still
+        // becomes `orphan-claim` (unchanged behavior — a malformed token
+        // was never a valid anchor) — but now the malformed-id diagnostic
+        // fires alongside it, naming the actual cause instead of leaving
+        // a bare orphan-claim for someone to puzzle over.
+        let src = "**[boundary-L1-concerns]**: L1 owns things.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.claims.is_empty());
+        assert_eq!(res.orphan_claims.len(), 1);
+        assert_eq!(malformed_ids(&res), vec!["boundary-L1-concerns"]);
+    }
+
+    #[test]
+    fn an_empty_bracket_in_bold_form_position_is_not_reported() {
+        let src = "**[]**: whatever this is.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(malformed_ids(&res).is_empty(), "{:#?}", res.malformed_ids);
+    }
+
+    #[test]
+    fn a_multi_word_bracket_reads_as_prose_not_a_malformed_id() {
+        // The false-positive floor's central case: a bracket that is
+        // plainly a sentence, not a typo'd id — the exact ambiguity the
+        // dispatch flagged as needing a boundary decision.
+        let src = "**[Note to reader]**: this is prose, not an id.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(malformed_ids(&res).is_empty(), "{:#?}", res.malformed_ids);
+        // Also not a real definition — this must not silently become one
+        // either, which `bold_form_ordinary_bold_text_without_brackets_is_not_a_definition`
+        // already covers for the no-bracket case; this pins the
+        // bracket-but-prose case the same way.
+        assert!(res.claims.is_empty());
+        assert_eq!(res.orphan_claims.len(), 0);
+    }
+
+    #[test]
+    fn ordinary_bold_text_without_brackets_still_reports_no_malformed_id() {
+        let src = "**Note**: this is emphasis, not an id definition.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(malformed_ids(&res).is_empty(), "{:#?}", res.malformed_ids);
+    }
+
+    #[test]
+    fn a_malformed_looking_bracket_not_line_start_is_not_reported() {
+        // Mirrors `bold_form_mid_sentence_citation_of_a_real_id_is_not_a_second_definition`:
+        // the same false-positive floor must hold for a malformed-looking
+        // token cited mid-sentence, not just a well-formed one.
+        let src = "**[boundary-L1-concerns]**: L1 owns things.\n\nAs discussed in **[boundary-L1-concerns]** above, the caller\nMUST retry.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        // Exactly one report — the line-start definition — not two.
+        assert_eq!(malformed_ids(&res), vec!["boundary-L1-concerns"]);
+    }
+
+    #[test]
+    fn a_malformed_looking_bracket_inside_a_list_item_is_not_reported() {
+        // Mirrors `bold_form_inside_a_list_item_is_not_line_start`: a list
+        // marker precedes the bold span on the same line, so it is never
+        // line-start, independent of the id's grammar.
+        let src = "- **[Boundary-L1]** MUST be enforced: things happen.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(malformed_ids(&res).is_empty(), "{:#?}", res.malformed_ids);
+    }
+
+    #[test]
+    fn a_malformed_looking_bracket_with_no_adjacent_punctuation_is_not_reported() {
+        // Mirrors `bold_form_line_start_bracket_with_no_adjacent_punctuation_is_not_a_definition`:
+        // the definitional-punctuation floor applies identically here —
+        // without it, ordinary prose that happens to open a line with a
+        // bracket would false-positive.
+        let src =
+            "**[Boundary-L1]** appears here but is not\nimmediately followed by punctuation.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(malformed_ids(&res).is_empty(), "{:#?}", res.malformed_ids);
+    }
+
+    #[test]
+    fn a_heading_with_prose_around_a_malformed_bracket_is_not_reported() {
+        // Heading-form's own structural floor: the check applies only
+        // when the ENTIRE heading text is the bracketed token, exactly
+        // like `bracket_kebab_id` already requires for a real
+        // definition — a heading that merely mentions a bracket in
+        // passing is not a definition attempt.
+        let src = "## About [Boundary-L1] and other things\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(malformed_ids(&res).is_empty(), "{:#?}", res.malformed_ids);
+    }
+
+    #[test]
+    fn a_valid_kebab_id_is_never_also_reported_as_malformed() {
+        // Regression floor: every existing recognized-definition path
+        // (registered or unregistered, either form) must produce zero
+        // malformed-id diagnostics.
+        let src = "### [heading-claim]\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n**[bold-claim]**: A second claim, this time bold-form.\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n**[unregistered-bold]**: no block follows.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.malformed_ids.is_empty(), "{:#?}", res.malformed_ids);
     }
 }
