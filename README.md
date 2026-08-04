@@ -5,8 +5,14 @@ invariants, and constraints get an identifier, exactly one home, and a
 named evaluator — so that *"is this project stable?"* becomes a computed
 number with an enumerated residue, instead of a feeling.
 
-> Status: **pre-MVP.** This README is the design; the tool does not exist
-> yet. Name is provisional.
+> Status: **implemented.** `check` runs the five structural checks below
+> plus three further diagnostics (`orphan-claim`, `normative-prose`,
+> `unregistered-definition`); `blast` computes the citation graph and its
+> transitive closure; `run` executes a claim's evaluator and reports one
+> of five outcomes (see "Tying claims to the evaluators that discharge
+> them," below). The coverage index, the verdict register, and the
+> stability metric described later in this document are not built —
+> "Out of MVP scope" marks what's still missing. Name is provisional.
 
 ---
 
@@ -75,6 +81,49 @@ it holds.** One that carries diagrams, boundaries, and pointers cannot
 contradict anything. One that restates invariants will, and its readers
 will trust the stale copy.
 
+### Why exactly three kinds
+
+*This is an argued correspondence, not a proved one — a working
+hypothesis, and a genuinely fourth-kind claim would be evidence against
+it rather than a bug to route around.*
+
+Three kinds is not an arbitrary taxonomy. Each corresponds to a different
+question a corpus's own artifacts must answer about a claim:
+
+| kind | genre | bounds |
+|:---|:---|:---|
+| `requirement` | architecture overview | **determination** — is this settled by the system's own record at all? |
+| `invariant` | formal model | **certifiability** — is it checkable, and at what power? |
+| `constraint` | specification | **monotonicity** — what is true and must *remain* true as the system grows |
+
+The strongest evidence for the correspondence is that each kind's
+natural evaluator is exactly what its axis demands — chosen for
+independent reasons, before anyone noticed the pattern. Determination is
+a scoping question: a requirement carries no proof and no test, only a
+check that it is *about* something the system actually produces.
+Certifiability is proof or model-check — the exact machinery formal
+models carry and nothing else in a corpus does. Monotonicity is *a test
+that must keep passing as the system grows*, and a regression suite is
+precisely that: "this was true and has stayed true across every commit
+since." A property test is the same claim quantified harder.
+
+That specifications get tests and models get proofs is normally treated
+as an engineering convention. Under this reading it is forced by which
+axis each genre bounds — which also predicts something about the grade
+hierarchy below: a claim quantified over all inputs (monotonicity,
+pushed to its limit) will never reach type-grade discharge, however the
+API is designed, because a type can only rule out what it can represent,
+not what must remain true across an unbounded future.
+
+The prediction that keeps this honest: **a claim that genuinely fits
+none of the three kinds refutes the correspondence.** User-documentation
+claims (discharged by an executable example) are the obvious test —
+if their natural axis turns out to be monotonicity ("an example that
+must keep running"), they are constraints in a different genre, not a
+fourth kind. Decision records, which hold no claims at all, are
+consistent for the same reason: a decision is not a claim about the
+system, so it bounds nothing.
+
 ## The claim block
 
 Prose stays prose. Machine-tractable metadata rides alongside it in a
@@ -89,7 +138,7 @@ exact version strings.
 ```claim
 kind: constraint
 evaluator: property-test
-cites: [composition-model#6, execution-model#2.4]
+depends: [composition-model#6, execution-model#2.4]
 ```
 ````
 
@@ -106,7 +155,7 @@ equally safe to operate on either side.
 
 | in the document | in the generated register |
 |:---|:---|
-| `id`, `kind`, `evaluator` **name**, `cites` | the evaluator's **verdict** |
+| `id`, `kind`, `evaluator` **name**, `depends`, `because` | the evaluator's **verdict** |
 | stable across runs | recomputed every run |
 
 **Verdicts are never written.** The register is produced by running the
@@ -116,16 +165,54 @@ because nothing claims anything about reality.
 
 The register is a pure projection and is therefore **not committed**.
 
-## Links are data
+## References are typed, and a third kind is load-bearing
 
-`cites` is the graph edge; a markdown link in prose is presentation. A
-lint checks they agree, so they cannot diverge — and a normative change's
-**blast radius** is computed over `cites`, never by pattern-matching
-prose. A `cites` entry names either a claim or a document section
-directly, so the query runs the same way from either end: change a
-claim, or change the prose a claim depends on without yet giving that
-prose its own claim, and the set of documents that must be re-checked is
-a query result either way.
+A reference is not one undifferentiated `cites`. Deleting the target of a
+reference means something different depending on *why* the reference was
+made, so the block declares two kinds explicitly and leaves a third
+undeclared:
+
+| kind | meaning | on deletion of the target |
+|:---|:---|:---|
+| `depends` | the claim's truth or meaning requires the target | the claim is **broken** — rewire or remove |
+| `because` | the claim's justification is the target | the claim **still stands**, under-justified — restate the reason, or discover it was vestigial |
+| bare reference | context; asserts no dependence | nothing |
+
+The closest analogue is a runtime versus a build dependency: a missing
+runtime dependency means the artifact doesn't work; a missing build
+dependency means it still works but can no longer be *derived*. That maps
+the remedies exactly, which is the test of an analogy — not that the
+words fit, but that the consequences do.
+
+**The third kind is not optional.** Without it, an author has only one
+field to reach for, and reaches for it every time a citation is merely
+informative. Every deletion then manufactures false breakage — an
+incidental mention treated as load-bearing — or, worse, teaches authors
+to stop declaring references at all to avoid the noise. A register
+nobody trusts is worse than none, because its silence reads as safety.
+Bareness gets no field of its own: it is the *absence* of a declaration,
+and a field that let an author assert it would be a declaration of
+absence, which is incoherent.
+
+**These declarations are not verifiable.** Nobody can prove a claim
+really depends on a target rather than merely mentioning it — a `depends`
+written where a `because` belongs is a review finding, not something a
+gate can catch. The register exists to **bound the review surface, not
+eliminate it**, which is the argument for keeping the vocabulary this
+small (two declared kinds, not a weighted or graded dependence) rather
+than trying to be clever about intent.
+
+A markdown link in prose is presentation; `depends` and `because` are the
+graph edges a lint checks it against, so declaration and prose cannot
+diverge. A normative change's **blast radius** is computed over the
+declared edges, never by pattern-matching prose — and both kinds enter
+the same graph, walked identically: a reviewer must re-check a dependent
+claim and a justified-by claim alike, since a claim depending on a
+changed target may now be wrong and a claim justified by it may now need
+a new reason. The kinds differ in what deletion means, not in whether a
+downstream change matters. A reference names either a claim or a
+document section directly, so the walk runs the same way from either
+end.
 
 ## "Stable", defined honestly
 
@@ -266,10 +353,10 @@ the low-level surface; this measures whether the *high-level declarations*
 are checked — and per-kind is the only shape in which that question has an
 answer.
 
-If the correspondence between kinds and the three axes of the verification
-ceiling holds (see this repository's ledger), then per-kind conformance
-reads as **which axis is under-closed**, which makes that correspondence
-actionable rather than decorative.
+If the correspondence between kinds and their three axes holds ("Why
+exactly three kinds," above), then per-kind conformance reads as **which
+axis is under-closed**, which makes that correspondence actionable
+rather than decorative.
 
 ### The same marker reaches load-bearing API surface — at a higher grade
 
@@ -347,6 +434,43 @@ A partial machine check is possible per language — confirming the marked
 item is a type rather than a function — but it is a per-language
 enhancement, not a precondition.
 
+### Why review is irreducible
+
+*Argued, not proved — falsifiable, and untested against a real register.*
+
+The grade hierarchy above — proof, type, property test, example test,
+linter, review — is not five mechanical checks plus a human fallback for
+whatever nothing mechanical covers. It is two different *species* of
+evidence, and naming the difference is what makes review a first-class
+grade rather than an embarrassment to eliminate.
+
+A **corroboration** is a re-verification of an artifact against its own
+content — a check anyone else could re-run: a proof, a type, a test. A
+**vouch** is a judgment binding the artifact to the person who made it —
+testimony, which no one else can re-run. Every mechanical evaluator above
+is a corroboration; review is this register's vouch, by definition
+rather than resemblance.
+
+That partition predicts something about a stable corpus: **a claim needs
+both, not either-or.** A claim with a passing test that nobody has read
+for *whether the test tests the right thing* is corroboration with no
+vouch — the green-by-construction failure an adversarial test-surface
+review exists to catch. A reviewed claim with no evaluator is a vouch
+with no corroboration — testimony standing in for a check that was never
+built. Neither closes a claim alone; a stable corpus wants both columns
+per claim, not one.
+
+This is also the argument for building a register over documentation at
+all, rather than trusting vigilance. Exhaustiveness is the one property
+generation cannot self-verify: an omission is invisible from inside, so
+there is no gradient toward completeness, and a confident partial answer
+is indistinguishable from a complete one to whoever wrote it. Review is
+also the most expensive evaluator after proof, so the only way to have
+it *at all* is to bound what needs it — which a deterministic enumerator
+does and vigilance cannot. Locate the residue, name it, and stop
+pretending it isn't there: that is the justification for computing a
+register over documents in the first place, not a footnote to it.
+
 ### Why a deterministic index rather than careful reading
 
 *"Which API surfaces enforce which invariants"* is an exhaustive
@@ -364,10 +488,16 @@ what makes the human side of the loop tractable.
 
 ### Out of MVP scope, but it disturbs nothing
 
-This needs the evaluator runner, so it lands after the index. It requires
-**no change to the claim block** — the block declares an expected evaluator
-kind; discharge is discovered separately. The MVP's format is
-forward-compatible as written.
+This needs the evaluator runner as a prerequisite, and the runner has
+since shipped: `docket run <claim-id>` executes a claim's marker and
+reports `pass`/`fail`/`absent`/`none`/`vacuous` (see MVP.md's "Run"
+section). What has **not** shipped is this section's own feature — a
+whole-corpus coverage index reporting per-kind conformance, generated
+from every claim's discharge — which is a table over every claim's `run`
+result, not a single invocation of it. It requires **no change to the
+claim block** — the block declares an expected evaluator kind; discharge
+is discovered separately. The MVP's format is forward-compatible as
+written.
 
 ## Generality
 
@@ -389,18 +519,21 @@ need something to measure; the writing pass needs only tractability.
 
 1. A Nickel contract for the claim block.
 2. An extractor: pull fenced `claim` blocks from markdown.
-3. An index: `id → (file, kind, evaluator, cites)`.
+3. An index: `id → (file, kind, evaluator, depends, because)`.
 4. Five checks:
    - blocks validate against the contract
    - ids are unique corpus-wide
    - **`kind` is permitted by the genre its path declares**
-   - every `cites` target resolves
-   - prose links agree with `cites`
+   - every `depends` target resolves
+   - every `depends`/`because` entry has a matching prose link
 5. A blast-radius query: given a claim id or a document anchor, what
-   cites it, transitively.
+   depends on or is justified by it, transitively.
 
-**Out, until there is something to measure:** the evaluator runner, the
-verdict register, the metric, generated reference output, signing.
+**Out, until there is something to measure:** the verdict register, the
+metric, generated reference output, signing. (The evaluator runner
+itself — `docket run` — has since shipped; see MVP.md's "Run" section.
+The register and metric described above are a whole-corpus table over
+many `run` invocations, and that table still doesn't exist.)
 
 Check 3 carries most of the value. It makes the genre hierarchy
 **mechanically enforced** rather than editorially intended — and with it,
