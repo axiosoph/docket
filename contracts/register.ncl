@@ -4,17 +4,17 @@
 # orphaned-because, normative-prose, unregistered-definition — in one
 # pure evaluation.
 #
-# Rust (src/register.rs) does the extraction (markdown to a document
-# tree, filesystem walking, git) and hands the result here as data;
-# nothing downstream of "here is the set of claims with their typed
-# references" happens in Rust. One `nickel export` invocation of
-# `evaluate` replaces what was N invocations (one per claim, C1) plus a
-# separate Rust-native pass for every other check.
+# Rust does the extraction (extract.rs/corpus.rs: markdown to a document
+# tree, filesystem walking) and src/checks.rs serializes the result into
+# the shape this file expects; nothing downstream of "here is the set of
+# claims with their typed references" happens in Rust. One `nickel
+# export` invocation of `evaluate` replaces what was N invocations (one
+# per claim, C1) plus a separate Rust-native pass for every other check.
 #
 # Usage: `evaluate <input>` where `<input>` is the record documented at
 # `Input` below. Driven from Rust via a small expression piped over
-# stdin (see `nickel.rs::evaluate_register`), the same mechanism
-# `check_contract` already uses for C1's predecessor.
+# stdin (see `nickel.rs::evaluate_register`), the same mechanism the
+# retired per-claim contract call used.
 #
 # claim.ncl's predicates are imported directly rather than re-declared —
 # duplicating a validity rule between the single-claim contract and this
@@ -31,6 +31,20 @@ let claim = import "claim.ncl" in
 # this migration's scope, and both depend on the parsed `CiteRef` type
 # directly. That boundary, not a choice made here, is why the same small
 # grammar has two implementations in two languages rather than one.
+#
+# PROVISIONAL, pending a head decision: `anchor_matches`'s prefix rule
+# and the bare-id prose-link form (`normalize_prose_link`'s
+# no-anchor/no-slash branch, `prose_link_declares`'s bare-token match)
+# are both invented syntax, conflict with the standard GitHub-slug
+# anchors every other tool in this project resolves, and are a likely
+# collapse to a single ordinary-markdown-link form. Kept isolated in
+# this section on purpose — `anchor_matches` is the one function to
+# replace with real slug computation; `normalize_prose_link`/
+# `prose_link_declares` would each lose one branch — so that decision,
+# if made, touches a bounded, named surface rather than something
+# threaded through every check. Not collapsed here: the decision isn't
+# made, and `model::anchor_matches` (Rust) would need the same change in
+# lockstep for `docket blast` to keep resolving anchors consistently.
 # ---------------------------------------------------------------------
 
 # Split `s` on the FIRST occurrence of `sep` only (matches Rust's
