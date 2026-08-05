@@ -342,6 +342,13 @@ the implementation language, examples in CLI transcripts. A Rust attribute
 cannot mark a Lean theorem or a TLA+ module; a line comment can mark all of
 them.
 
+This bare form — the marker with nothing after the id — is real grammar
+(MVP.md §4.3): `docket run` locates it like any other. What it does with
+what it finds differs by grade. A `test` claim like this one still needs
+a command to actually run (`docket run` reports `absent` on a bare marker
+here, the same as no marker at all, until one names `cargo test
+ground_values_only`); a `type` claim does not, for the reason below.
+
 *This does not contradict "no regular expressions over prose."* A marker is
 **structure** — an exact token in a known position. The prohibition is on
 inferring structure from prose, which is a different thing.
@@ -419,12 +426,24 @@ Mechanically this is the same marker in the same place, which is the point
 pub struct Czd<T>(…);
 ```
 
+Here the bare form is the *whole* check, not a stand-in for a missing
+command: `type` is discharged by the marked item's existence, so there is
+nothing to run, and `docket run` reports `pass` on locating it — no
+command spawned, no shell involved. That asymmetry with the `test`
+example above is deliberate, not an oversight: a bare marker counts as
+evidence exactly where the grade needs nothing more than existence
+(MVP.md §4.3, "The bare form"); everywhere else it stays inert to `run`
+until a command is added, same as no marker at all.
+
 **Two things this buys that a boolean cannot.** It distinguishes *how
 strongly* each claim is held. And it surfaces a refactoring signal no tool
 gives today: **a claim discharged at a lower grade than it could be** — a
 constraint guarded by a test where a type could make the violation
 unrepresentable. That is a queryable list rather than an insight someone
-has to happen to have.
+has to happen to have — the query itself is future work (see "Out of MVP
+scope, but it disturbs nothing," below): the marker grammar and `docket
+run`'s per-claim treatment of it are both real today; the whole-corpus
+scan that would surface every such gap automatically is not.
 
 ### The hierarchy is normative, not merely descriptive
 

@@ -50,9 +50,10 @@ enum Command {
         #[arg(long, default_value = ".")]
         corpus: PathBuf,
     },
-    /// Execute a claim's evaluator (a `@docket: <id> :: <command>` marker
-    /// found anywhere in the corpus tree) and report pass / fail /
-    /// absent (see docket::run).
+    /// Execute a claim's evaluator (a `@docket: <id> :: <command>` marker,
+    /// or a bare `@docket: <id>` for a `type`-graded claim, found anywhere
+    /// in the corpus tree) and report pass / fail / absent (see
+    /// docket::run).
     Run {
         /// The claim id to run the evaluator for.
         claim: String,
@@ -279,10 +280,20 @@ fn print_run_result(result: &RunResult) {
     );
 
     if result.outcome == Outcome::Absent {
-        println!(
-            "  no `@docket: {} :: <command>` marker found under the corpus",
-            result.claim_id
-        );
+        // A `type`-graded claim also accepts the bare form (marker.rs);
+        // every other grade needs a command, so the message only promises
+        // what that grade actually accepts.
+        if result.evaluator == "type" {
+            println!(
+                "  no `@docket: {}` marker (bare, or `:: <command>`) found under the corpus",
+                result.claim_id
+            );
+        } else {
+            println!(
+                "  no `@docket: {} :: <command>` marker found under the corpus",
+                result.claim_id
+            );
+        }
         return;
     }
 
@@ -290,7 +301,11 @@ fn print_run_result(result: &RunResult) {
         let status = if let Some(signal) = m.vacuous {
             format!("VACUOUS ({signal})")
         } else if m.success {
-            "ok".to_string()
+            if m.marker.command.is_none() {
+                "ok (bare — located)".to_string()
+            } else {
+                "ok".to_string()
+            }
         } else {
             match m.exit_code {
                 Some(code) => format!("FAIL (exit {code})"),
@@ -299,7 +314,9 @@ fn print_run_result(result: &RunResult) {
         };
         println!(
             "  {status}\t{}:{}\t{}",
-            m.marker.file, m.marker.line, m.marker.command
+            m.marker.file,
+            m.marker.line,
+            m.marker.command.as_deref().unwrap_or("<bare>")
         );
         // Terse on genuine success — the command and its exit status
         // already say everything a passing marker needs to; captured

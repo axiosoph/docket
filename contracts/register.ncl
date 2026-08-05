@@ -574,6 +574,80 @@ let stale_absence_marker_diagnostics = fun markers =>
     markers
 in
 
+# --- dangling-reference: a document-wide link with no target. ----------
+# (`.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`,
+# `.ledger/2026-08-05-references-that-leave-the-register.md` O4's
+# "dangles" condition.) `input.links` is the whole corpus's link
+# surface — every markdown href in every scanned document, independent
+# of any claim's C5 prose-link scope (a document with zero claims still
+# has links; C5 itself is untouched and stays claim-scoped, since a
+# link elsewhere in the document must never satisfy a declaration it
+# isn't next to). Reuses `normalize_prose_link`/`resolves` exactly as
+# C4/C5 do — this is the same reference grammar and the same resolution
+# question, only asked over a wider set of links than "the ones a claim
+# declared."
+#
+# `Warn`, not `Fail`: an undeclared link is a **bare** reference (§1.2)
+# — it asserts no dependence, so its target missing is a finding, not a
+# broken claim. A `depends`/`because` entry whose matching prose link
+# also dangles is C4/`orphaned-because`'s finding, at their own
+# severity — excluded here (`declared`, below) so the same broken
+# target isn't reported twice under two different diagnoses. A link
+# that resolves but is gitignored is `unreachable-reference`'s finding,
+# not this one — also excluded (`already_unreachable`, below), per the
+# dispatch: reuse that check's notion rather than duplicating it. A
+# link naming a whole document with no anchor, or one that escapes the
+# corpus root, has no representation in this ref grammar at all
+# (`normalize_prose_link` returns `null`) — silently out of scope here,
+# same as it already is for C5.
+#
+# `resolves` alone is not enough here, and extending it (rather than
+# wrapping it) would be touching the anchor-matching rule the dispatch
+# reserves: `resolves` checks a doc-anchor citation only against the
+# TARGET DOCUMENT's own headings via `anchor_matches`, so the anchor
+# form of a claim-id citation (`[…](#claim-id)`, §1.3, "Which link forms
+# satisfy a declaration") never resolves through it — a claim id is
+# never itself a heading's prefix text. `prose_link_declares` already
+# carries the fix for this, scoped to C5's declared-refs question; the
+# same already-decided rule (a doc-anchor whose anchor equals a real
+# claim id, regardless of which document it names) applies here too, so
+# `link_resolves` mirrors it rather than reinventing it — this is prior
+# art already ratified in this file, not new design.
+let link_resolves = fun claim_ids documents cite =>
+  resolves claim_ids documents cite
+  || (cite.tag == 'doc_anchor && std.array.elem cite.anchor claim_ids)
+in
+
+let dangling_reference_diagnostics = fun claim_ids documents declared unreachable links =>
+  std.array.flat_map
+    (fun l =>
+      let cite = normalize_prose_link l.dest l.file in
+      if cite == null || !is_ref_shaped cite then
+        []
+      else if link_resolves claim_ids documents cite then
+        []
+      else
+        let already_unreachable =
+          std.array.any (fun u => u.file == l.file && u.line == l.line && u.dest == l.dest) unreachable
+        in
+        let is_declared = std.array.any (fun d => ref_eq cite d) declared in
+        if already_unreachable || is_declared then
+          []
+        else
+          [
+            {
+              check = "dangling-reference",
+              severity = "warn",
+              file = l.file,
+              line = l.line,
+              message =
+                "link \"%{l.dest}\" does not resolve to anything in the corpus — a bare reference, not a broken claim",
+            }
+          ]
+    )
+    links
+in
+
 # --- the index (MVP.md §4.1): a pure projection. ------------------------
 
 let index_claims = fun claims =>
@@ -617,6 +691,15 @@ in
 # recursion", confirmed directly rather than assumed.
 let evaluate_impl = fun input =>
   let claim_ids = std.array.map (fun c => c.id) input.claims in
+  # Every depends/because target, corpus-wide, parsed once — the set
+  # `dangling_reference_diagnostics` excludes so a target already
+  # governed by C4/`orphaned-because` isn't also reported as a bare
+  # dangling link.
+  let declared_refs =
+    std.array.flat_map
+      (fun c => (std.array.map parse_ref c.depends) @ (std.array.map parse_ref c.because))
+      input.claims
+  in
   {
     index = {
       claims = index_claims input.claims,
@@ -634,6 +717,13 @@ let evaluate_impl = fun input =>
       @ (unregistered_definition_diagnostics input.unregistered_definitions)
       @ (malformed_id_diagnostics input.malformed_ids)
       @ (unreachable_reference_diagnostics input.unreachable_references)
+      @ (dangling_reference_diagnostics
+        claim_ids
+        input.documents
+        declared_refs
+        input.unreachable_references
+        input.links
+      )
       @ (stale_absence_marker_diagnostics input.stale_absence_markers),
   }
 in
