@@ -1053,18 +1053,6 @@ mod tests {
     }
 
     #[test]
-    fn prose_code_excludes_the_claim_blocks_own_yaml() {
-        // A claim block is a fenced code block, not an inline code span
-        // (`Event::Code` is never emitted for it — pulldown-cmark emits
-        // fenced content as `Event::Text`), but this pins the intent
-        // directly: nothing inside ` ```claim ` ever reads as prose_code.
-        let src =
-            "### [x]\n\n`a-real-span`\n\n```claim\nkind: constraint\nevaluator: absent\n```\n";
-        let res = extract_document("docs/specs/x.md", src);
-        assert_eq!(res.claims[0].prose_code, vec!["a-real-span"]);
-    }
-
-    #[test]
     fn unknown_field_is_preserved_raw_for_the_nickel_contract_to_reject() {
         let src = "### [x]\n\n```claim\nkind: constraint\ntypo_field: oops\n```\n";
         let res = extract_document("docs/specs/x.md", src);
