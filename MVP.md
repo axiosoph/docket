@@ -1301,6 +1301,97 @@ evaluator: test
 depends: [reference-syntax, blast-semantics]
 ```
 
+### 4.5 Rename
+
+```
+docket rename <old-id> <new-id> [--write]
+```
+
+Renames a claim id and every reference to it, across the corpus: the id's
+own definition (any of the three forms, §1.1), every bare `depends`/`because`
+entry naming it (§1.2 — a document-anchor entry whose anchor happens to
+equal the id, `path#old-id`, names a *section* and is left alone), and
+every prose link naming it (§1.3's two claim-id forms — the bare id as the
+href, and the anchor form). `check`'s register never computes a citation
+graph over anything else, so this is exactly the set §3's checks already
+treat as "a reference to this claim" — `rename` performs the edit `check`
+could previously only audit.
+
+**Closed by construction.** The writer's only primitive is *replace byte
+range `[s,e)` with `new-id`*, where every range is a byte-exact span
+located by the same recognizer pass extraction already runs — never a
+region wide enough to touch surrounding prose or a claim block's other
+fields. Ordinary prose that happens to contain the id as a word (not in
+one of the recognized positions above) is left untouched; only a *reference*
+moves, never a *mention*.
+
+**Default is a dry run.** Without `--write`, `rename` computes and
+prints the plan — every touched file and how many sites in it — and
+writes nothing. `--write` applies it.
+
+**Staged, not incremental.** Every edit across the whole corpus is
+computed and applied to in-memory copies first; the register is then
+re-run over that in-memory corpus and compared against the original,
+modulo the old→new id substitution — the same `{index, diagnostics}`
+output §4.1's index and §3's checks already produce, plus every claim's
+`prose_links`/`prose_code` (the index alone would miss a diagnostic it
+never carries, and the anchor form's prose scope depends on `prose_code`
+that isn't in the index either). Disk is touched only if that comparison
+finds no divergence; a divergence is reported and nothing is written.
+
+**`rename` never touches an `@docket:` evaluator marker (§4.3).** A
+marker is not one of the reference kinds §1.2/§1.3 define — it lives
+outside the documentation corpus entirely (any file in the tree, source
+code included) and is resolved by a wholly separate scan. Renaming a
+claim id whose evaluator marker names it by that same string will leave
+the marker pointing at the old id; the corpus-side rename itself stays
+correct (the register's citation graph never includes markers), but
+`docket run <new-id>` will report `absent` until the marker is updated by
+hand. Out of this command's scope, not an oversight — the same boundary
+`git checkout .`-as-undo already draws between "documents `rename` may
+edit" and "everything else."
+
+**Refuses rather than guesses**, in four cases:
+
+- `<old-id>` does not resolve to a claim anywhere in the corpus — most
+  likely a typo; silently succeeding on a no-op would be this project's
+  own dominant failure mode again ("References are typed," above), so
+  this is a usage error, not a legitimate empty rename.
+- `<new-id>` is not well-formed (§1.1's kebab-case grammar) — never
+  normalized, only reported; `rename` places and renames ids, it does
+  not invent or reshape one (this document's own writing convention,
+  restated for a write path).
+- `<new-id>` already names a definition anywhere in the corpus — checked
+  against every recognized definition (registered or not, §1.1's
+  `unregistered-definition`), not only against a claim with a block;
+  `rename` never overwrites an existing id.
+- the working tree is dirty (`--write` only — a dry-run plan makes no
+  changes and needs no undo path). A dry run never checks this; `--write`
+  refuses before computing anything, so `git checkout .` stays a complete
+  undo of every `--write` this tool ever performs.
+
+`rename` never stages or commits anything — git is the review surface for
+what it writes, exactly the same boundary every other write this project
+could ever perform must respect.
+
+#### [rename-semantics]
+
+`docket rename <old-id> <new-id>` renames the id's own definition (any of
+the three forms) and every bare `depends`/`because`/prose-link reference
+to it — the same [reference syntax](reference-syntax) every other check
+in this document resolves against — computed and verified against an
+in-memory copy of the register before anything is written; `--write` is
+required to apply the plan to disk, and a dirty working tree, an unknown
+`old-id`, a malformed `new-id`, an already-taken `new-id`, or a post-edit
+divergence from the verified plan each refuse rather than write a partial
+or guessed result.
+
+```claim
+kind: constraint
+evaluator: test
+depends: [reference-syntax]
+```
+
 ## 5. Exit codes
 
 `check`'s exit code tracks its report's severity: a report holding only
@@ -1311,12 +1402,13 @@ depends: [reference-syntax, blast-semantics]
 |:---|:--:|:---|
 | `check` | 0 | all checks pass (`Warn`-only reports included) |
 | `check` | 1 | one or more `Fail`-severity checks failed |
-| `check`, `blast`, `run`, `signals` | 2 | usage or configuration error (bad `docket.ncl`, unreadable path, unknown claim id, a `blast` ref or `run` claim id that doesn't resolve) |
+| `check`, `blast`, `run`, `signals`, `rename` | 2 | usage or configuration error (bad `docket.ncl`, unreadable path, unknown claim id, a `blast` ref or `run` claim id that doesn't resolve, or any `rename` refusal — §4.5) |
 | `run` | 0 | outcome `pass`, `none`, or `review` |
 | `run` | 1 | outcome `fail` |
 | `run` | 3 | outcome `absent` |
 | `run` | 4 | outcome `vacuous` |
 | `signals` | 0 | always, once the corpus loads — every signal is a candidate for a reader to weigh, never a failure (§4.4) |
+| `rename` | 0 | the plan was computed (and, with `--write`, applied) with no divergence |
 
 A caller gating CI on `run`'s exit code can tell "write the marker" from
 "the evaluator regressed" from "the evaluator ran but checked nothing"

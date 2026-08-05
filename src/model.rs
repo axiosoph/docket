@@ -88,6 +88,21 @@ pub enum Evaluator {
     None,
 }
 
+/// MVP.md §1.1's id grammar: lowercase-kebab, every segment non-empty and
+/// restricted to ASCII lowercase letters and digits. The single source of
+/// truth for "is this a well-formed claim id" — `extract.rs`'s recognizers
+/// and `rename.rs`'s new-id validation both call this rather than each
+/// keeping their own copy, so the grammar can never drift between "what a
+/// definition may declare" and "what a rename may create."
+pub fn is_valid_claim_id(inner: &str) -> bool {
+    inner.split('-').all(|seg| {
+        !seg.is_empty()
+            && seg
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    })
+}
+
 /// MVP.md §1.3: a `depends`/`because` entry is either a claim id or a
 /// document anchor.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -718,7 +733,7 @@ pub struct Corpus {
 
 // --- §4.1 index output shape -------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct IndexClaim {
     pub file: String,
     pub line: usize,
@@ -728,13 +743,18 @@ pub struct IndexClaim {
     pub because: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct IndexDocument {
     pub file: String,
     pub genre: String,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+// `PartialEq`/`Eq` on the three types above and this one are additive for
+// `rename.rs`'s staged invariant (`.ledger`-worthy design note lives
+// there): comparing the register's full `{index, diagnostics}` output
+// before and after a rename, modulo the id substitution, needs structural
+// equality on the index as a whole, not merely on individual fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct Index {
     pub claims: BTreeMap<ClaimId, IndexClaim>,
     pub documents: BTreeMap<DocPath, IndexDocument>,

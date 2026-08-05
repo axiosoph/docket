@@ -21,9 +21,16 @@ number with an enumerated residue, instead of a feeling.
 > reports derived graph properties over the same edges — out-degree,
 > in-degree, and blast-radius size per claim — headlined by every claim
 > nothing cites, a candidate list for superseded-and-unnoticed rather than
-> a verdict (MVP.md §4.4). The coverage index, the verdict register, and
-> the stability metric described later in this document are not built —
-> "Out of MVP scope" marks what's still missing. Name is provisional.
+> a verdict (MVP.md §4.4). `rename` gives the tool its first write path:
+> a claim id and every reference to it (its definition, in any of the
+> three forms; every bare `depends`/`because` entry; every prose link)
+> renamed corpus-wide, staged and verified against an in-memory re-run of
+> the register before anything reaches disk, and refused rather than
+> guessed on a dirty tree, an unresolvable source id, or a malformed or
+> already-taken target id (MVP.md §4.5). The coverage index, the verdict
+> register, and the stability metric described later in this document
+> are not built — "Out of MVP scope" marks what's still missing. Name is
+> provisional.
 
 ---
 
