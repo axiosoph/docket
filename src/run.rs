@@ -333,7 +333,9 @@ fn detect_vacuity(stdout: &str) -> Option<&'static str> {
 pub struct MarkerOutcome {
     pub marker: Marker,
     pub success: bool,
-    /// exiting (`std::process::ExitStatus::code()`'s own contract), or
+    /// `Some(code)` when the command's process ran and reported a code;
+    /// `None` when the process was instead terminated by a signal rather
+    /// than exiting (`std::process::ExitStatus::code()`'s own contract), or
     /// when `marker.command` is `None` — a bare marker has no process to
     /// report a code for (`success` disambiguates the two: a bare marker
     /// is always `success: true`). For an absence marker, no process is
