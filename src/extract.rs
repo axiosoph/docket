@@ -613,8 +613,8 @@ struct IdAnchor {
 
 /// Whether html anchor `[def_start, def_end)` sits immediately beside a
 /// heading — nothing but whitespace between them, in EITHER order (the
-/// anchor may precede or follow its heading) — and if so, that heading's
-/// index into `raw_headings`.
+/// anchor may precede or follow its heading) — and if so, the NEAREST such
+/// heading's index into `raw_headings`.
 ///
 /// **Why this reclassification exists, not merely an optimization:** an
 /// html anchor is positionally polymorphic in a way bold-form never is.
@@ -632,16 +632,70 @@ struct IdAnchor {
 /// (`AnchorKind::Html`, `inline_scope_end`) — this function is what
 /// decides which case a given anchor is in, checked once at `id_anchors`
 /// construction rather than folded into the scope-computation match arm.
+///
+/// **Nearest, not first.** A whitespace-only, no-body-prose heading
+/// directly beside the anchor (an empty sibling immediately before it, or
+/// a parent immediately before a subheading right after it) can satisfy
+/// BOTH sides of the predicate for two different headings at once — the
+/// earlier of the two is not necessarily the one the anchor names. Picking
+/// the first match in document order silently mis-scoped it two distinct
+/// ways: binding to an empty preceding sibling with real content on the
+/// other side collapses the scope to nothing (that heading's own scope
+/// closes at the very next heading — the one the anchor actually meant);
+/// binding to an empty parent instead of its immediately-following child
+/// over-widens the scope through every sibling subsection the child's own
+/// narrower scope would have excluded. Comparing the whitespace-gap length
+/// on each side and taking the smaller fixes both.
+///
+/// **The two sides are not measured the same way, so the raw gap needs a
+/// +1 correction on one of them before comparing.** Confirmed directly
+/// against `pulldown_cmark`'s own offset iterator, not assumed: a
+/// heading's `Range` always absorbs its own line-terminating `\n` (`"##
+/// A\n"`, not `"## A"`), but a heading's `Range` never absorbs anything
+/// BEFORE it. So for the identical author-visible gap (say, one blank
+/// line) on each side, "heading precedes the anchor" measures one byte
+/// SHORTER than "anchor precedes the heading" purely as an artifact of
+/// which side's newline got absorbed into whose range — not because the
+/// author placed the anchor any closer to one heading than the other.
+/// Left uncorrected, that phantom byte silently and systematically
+/// prefers the PRECEDING heading on every real tie, which is exactly the
+/// wrong direction for both defects above (both need the FOLLOWING
+/// heading to win the tie). Adding 1 to the "heading precedes anchor"
+/// side's raw gap restores the comparison to what the author actually
+/// wrote before ranking, turning what was a phantom 1-byte win into a
+/// genuine tie — and Rust's `min_by_key` breaks a genuine tie by
+/// returning the FIRST element, which is document order, i.e. the
+/// PRECEDING heading again. So a tie after correction still needs an
+/// explicit tiebreak: the boolean carried alongside each gap prefers the
+/// heading the anchor PRECEDES (the one it "names" in the reclassification
+/// this function performs) whenever the corrected gaps are equal.
 fn heading_adjacent_to(
     source: &str,
     def_start: usize,
     def_end: usize,
     raw_headings: &[RawHeading],
 ) -> Option<usize> {
-    raw_headings.iter().position(|h| {
-        (def_end <= h.start && source[def_end..h.start].trim().is_empty())
-            || (h.end <= def_start && source[h.end..def_start].trim().is_empty())
-    })
+    raw_headings
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, h)| {
+            if def_end <= h.start && source[def_end..h.start].trim().is_empty() {
+                // The anchor precedes `h` — measured as written, no
+                // correction needed on this side. `anchor_precedes_h` is
+                // `true`: `h` is the heading the anchor "names", and wins
+                // a corrected-gap tie below.
+                Some((idx, h.start - def_end, true))
+            } else if h.end <= def_start && source[h.end..def_start].trim().is_empty() {
+                // `h` precedes the anchor — `h.end` already ate one
+                // newline that never separated the two on the other
+                // side's measurement; add it back before comparing.
+                Some((idx, def_start - h.end + 1, false))
+            } else {
+                None
+            }
+        })
+        .min_by_key(|&(_, gap, anchor_precedes_h)| (gap, !anchor_precedes_h))
+        .map(|(idx, _, _)| idx)
 }
 
 /// Where an inline-form definition's (bold- or FREE-STANDING html-form)
@@ -1950,6 +2004,58 @@ mod tests {
         let res = extract_document("docs/specs/a.md", src);
         assert_eq!(ids(&res), vec!["free-standing"]);
         assert_eq!(res.claims[0].prose_links, vec!["target-a".to_string()]);
+    }
+
+    // --- heading_adjacent_to's nearest-match fix ---------------------------
+    //
+    // `position()` picked the FIRST heading in document order satisfying
+    // whitespace-adjacency on either side, not the nearest — a real defect
+    // whenever an empty (no-body-prose) heading sits immediately beside
+    // the anchor on one side and a real heading sits on the other. Every
+    // fixture and unit test above has exactly one candidate per anchor, so
+    // none of them could have caught this.
+
+    #[test]
+    fn an_anchor_tied_between_two_empty_headings_binds_to_the_one_it_precedes() {
+        // The scope-collapse shape, exactly: `## A` carries no body prose,
+        // then the anchor, then `## B` with real content — an equal
+        // whitespace gap on both sides (`\n\n`, the tie the doc comment
+        // names). `position()` bound this to A, whose own scope (as a
+        // level-2 heading) closes at the very next level-2 heading — B,
+        // immediately following — collapsing to nothing and dropping
+        // "target" from the claim entirely. The fix must bind to B, the
+        // heading the anchor PRECEDES, recovering the link.
+        let src = "## A\n\n<a id=\"b\"></a>\n\n## B\n\n[link](target)\n\n```claim\nkind: requirement\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["b"]);
+        assert_eq!(res.claims[0].prose_links, vec!["target".to_string()]);
+    }
+
+    #[test]
+    fn an_anchor_binds_to_the_heading_with_the_smaller_whitespace_gap() {
+        // Not a tie: a wide gap on one side, a tight one on the other —
+        // proves the fix compares actual distance, not merely "prefers
+        // the following heading" as a blanket rule regardless of gap
+        // size.
+        let src = "## Far\n\n\n\n<a id=\"near\"></a>\n## Near\n\n[link](target)\n\n```claim\nkind: requirement\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["near"]);
+        assert_eq!(res.claims[0].prose_links, vec!["target".to_string()]);
+    }
+
+    #[test]
+    fn an_anchor_tied_between_a_parent_and_its_child_binds_to_the_child_not_the_parent() {
+        // The over-widening shape: `## Parent` carries no body prose, then
+        // the anchor, then `### Child` with content, then an `### Unrelated`
+        // sibling. `position()` bound this to Parent, a level-2 heading
+        // whose scope runs until the next level-2-or-shallower heading —
+        // there is none here, so it swallowed BOTH Child's and Unrelated's
+        // links. Binding to Child (level 3) instead closes the scope at
+        // Unrelated (also level 3), correctly excluding it.
+        let src = "## Parent\n\n<a id=\"child\"></a>\n\n### Child\n\n[inner](inner-target)\n\n```claim\nkind: requirement\nevaluator: test\n```\n\n### Unrelated\n\n[outer](outer-target)\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["child"]);
+        assert_eq!(res.claims[0].prose_links, vec!["inner-target".to_string()]);
     }
 
     // --- unregistered definitions (coverage count) ------------------------

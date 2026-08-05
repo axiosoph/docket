@@ -57,6 +57,7 @@ called out below.
 | `html-anchor-malformed-id/` | `malformed-id` (`Warn`) | See below. A non-kebab and an empty `id` attribute, both on immediately-closed pairs. Exits **0**. |
 | `html-anchor-dangling-link/` | `dangling-reference` (`Warn`) | See below. A link to an html anchor that does not exist anywhere in the corpus. Exits **0**. |
 | `html-anchor-heading-adjacent/` | — (all pass) | See below. The migration's real shape: an anchor immediately beside a heading, both authoring orders, one nested under a deeper subheading — inherits the heading's scope rather than the inline one. |
+| `html-anchor-nearest-heading/` | — (all pass) | See below. Two candidate headings on either side of one anchor, isolating `heading_adjacent_to`'s nearest-match fix: an exact-gap tie, and an asymmetric gap where the far heading would win under document-order-first matching. |
 | `c2-duplicate-across-forms/` | `C2` | `docs/specs/a.md` declares `[dup-across-forms]` in heading form, `docs/specs/b.md` declares the same id in bold form. Proves a duplicate arising from two *different* recognizers is still one C2 finding pair, each naming the other's site. |
 | `unregistered-definition/` | `unregistered-definition` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition with no `claim` block, plus one registered heading-form definition for contrast. Exits **0** — `Warn` severity, the coverage count. |
 | `malformed-id/` | `malformed-id` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition whose id fails the kebab-case grammar (both the real-corpus shape: an otherwise-kebab id with one stray uppercase segment), a bracketed-but-multi-word false positive that must not fire, and one registered heading-form definition for contrast. Exits **0** — `Warn` severity, never blocking. |
@@ -527,7 +528,7 @@ files were scanned.
   two `unregistered-definition` warnings on stderr, naming the file,
   line, and id of each.
 
-## `html-anchor-definitions/`, `html-anchor-false-positives/`, `html-anchor-malformed-id/`, `html-anchor-dangling-link/`, `html-anchor-heading-adjacent/`
+## `html-anchor-definitions/`, `html-anchor-false-positives/`, `html-anchor-malformed-id/`, `html-anchor-dangling-link/`, `html-anchor-heading-adjacent/`, `html-anchor-nearest-heading/`
 
 The third definition form: `<a id="…"></a>`, invisible in rendered
 output — the head's ruling that a claim id must never pollute
@@ -615,6 +616,25 @@ still uses the inline rule the other three fixtures below exercise.
   at is its own), so the depends entry's prose link, wherever it sits,
   falls outside it — confirming the fixture actually exercises the
   corrected rule, not some other path to the same clean exit.
+- **`html-anchor-nearest-heading/`** — `heading_adjacent_to`'s
+  `.position()` bug reproduced by construction, not by accident: every
+  other html-anchor fixture places exactly one candidate heading beside
+  each anchor, which is why none of them caught first-match binding to
+  the wrong one. `[tied-target]` sits between an empty `## Empty
+  sibling` and `## Tied target`, an equal one-blank-line gap on both
+  sides — binding to the empty sibling (first match in document order)
+  collapses that section's own scope to nothing, since an empty
+  heading's "next heading" is the very next one, dropping the `depends:
+  [target-claim]` prose link entirely. `[near-target]` sits between
+  `## Far sibling` (three blank lines away) and `## Near target` (zero)
+  — an asymmetric gap, proving the fix compares actual distance and not
+  merely a fixed "prefer the following heading" rule. `docket check
+  --corpus fixtures/html-anchor-nearest-heading` exits **0**. Verified
+  by hand against the pre-fix `.position()` implementation, not
+  committed: both `tied-target` and `near-target` turn into `C5`
+  failures (`docs/specs/a.md:12` and `:31`) under it, confirming the
+  fixture exercises the nearest-match rule and not some other path to
+  the same clean exit.
 
 ## `malformed-id/`
 
