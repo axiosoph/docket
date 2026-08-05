@@ -591,11 +591,12 @@ let unregistered_definition_diagnostics = fun defs =>
     defs
 in
 
-# --- malformed-id: a bracketed token in definition position that fails --
-# the id grammar. `Warn` severity, like `unregistered-definition`: real
-# corpora are expected to carry some of these on the day this check
-# ships, and the remedy is a rename an author makes, not a gate that
-# should block a commit already in flight.
+# --- malformed-id: an id in definition position (a bracketed token, or --
+# an html anchor's `id` attribute) that fails the id grammar. `Warn`
+# severity, like `unregistered-definition`: real corpora are expected to
+# carry some of these on the day this check ships, and the remedy is a
+# rename an author makes, not a gate that should block a commit already
+# in flight.
 
 let malformed_id_diagnostics = fun ids =>
   std.array.map
@@ -605,7 +606,7 @@ let malformed_id_diagnostics = fun ids =>
       file = m.file,
       line = m.line,
       message =
-        "bracketed token \"%{m.id}\" is in definition position but is not valid kebab-case — rename it (a malformed id is neither claimed nor counted as unregistered)",
+        "id \"%{m.id}\" is in definition position but is not valid kebab-case — rename it (a malformed id is neither claimed nor counted as unregistered)",
     })
     ids
 in

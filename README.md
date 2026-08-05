@@ -10,7 +10,11 @@ number with an enumerated residue, instead of a feeling.
 > `unregistered-definition`, `malformed-id`, `unreachable-reference`,
 > `dangling-reference`, `absent-marker-stale`) — resolved against corpus
 > documents by both a numeric section anchor and a heading's real
-> GitHub-style slug (see "References are typed," below); `blast`
+> GitHub-style slug (see "References are typed," below). A claim's id
+> can be declared three ways — a heading, a bolded lead-in, or an
+> `<a id="…"></a>` anchor invisible in rendered output — the third so a
+> corpus can anchor a claim anywhere without the id itself ever showing
+> to a reader (MVP.md §1.1). `blast`
 > computes the citation graph and its transitive closure; `run`
 > executes a claim's evaluator and reports one of six outcomes (see
 > "Tying claims to the evaluators that discharge them," below); `signals`

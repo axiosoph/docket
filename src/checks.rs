@@ -1815,6 +1815,96 @@ mod tests {
         );
     }
 
+    // --- AnchorKind::Html end to end --------------------------------------
+    //
+    // register.ncl needed NO changes for this: an html-anchored claim
+    // becomes an ordinary `Claim` once extracted, indistinguishable from a
+    // heading- or bold-form one, and dangling-reference/C4/C5 already
+    // resolve a doc-anchor citation whose anchor equals any real claim id
+    // regardless of which document — or which anchor form — registered it
+    // (MVP.md §1.3's "anchor form" acceptance, unchanged). These tests
+    // confirm that empirically rather than assuming it from the design.
+
+    #[test]
+    fn a_same_file_anchor_link_to_an_html_anchored_claim_resolves() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["requirement"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "<a id=\"html-claim\"></a>\n\nThe system MUST persist keyed data.\n\n```claim\nkind: requirement\nevaluator: test\n```\n\nSee [the requirement](#html-claim) above.\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, "dangling-reference").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_depends_entry_naming_an_html_anchored_claim_id_resolves_c4() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["requirement", "constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "<a id=\"html-claim\"></a>\n\nThe system MUST persist keyed data.\n\n```claim\nkind: requirement\nevaluator: test\n```\n\n### [depends-on-html]\n\nSee [the requirement](#html-claim).\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [html-claim]\n```\n",
+        );
+        let report = run(&dir);
+        assert!(only(&report, "C4").is_empty(), "{:#?}", report.diagnostics);
+        assert!(only(&report, "C5").is_empty(), "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn a_link_to_a_nonexistent_html_anchor_still_dangles() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["requirement"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "<a id=\"real-claim\"></a>\n\nprose.\n\n```claim\nkind: requirement\nevaluator: test\n```\n\nSee [nowhere](#not-a-real-anchor) above.\n",
+        );
+        let report = run(&dir);
+        let findings = only(&report, "dangling-reference");
+        assert_eq!(findings.len(), 1, "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn an_html_anchor_with_no_claim_block_is_reported_unregistered_through_the_register() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["requirement"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "<a id=\"orphaned-anchor\"></a>\n\nNo block follows this one.\n",
+        );
+        let report = run(&dir);
+        let findings = only(&report, "unregistered-definition");
+        assert_eq!(findings.len(), 1, "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn a_malformed_html_anchor_id_is_reported_through_the_register() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["requirement"], quadrant = "reference" } ] }"#,
+        );
+        dir.write("docs/specs/a.md", "<a id=\"Not_Valid\"></a>\n\nprose.\n");
+        let report = run(&dir);
+        let findings = only(&report, "malformed-id");
+        assert_eq!(findings.len(), 1, "{:#?}", report.diagnostics);
+    }
+
     #[test]
     fn dangling_reference_resolves_a_link_written_as_a_real_heading_slug() {
         // Symptom A of the false-danglings defect this migration fixes:

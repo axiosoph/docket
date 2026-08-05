@@ -182,6 +182,71 @@ fn malformed_bracket_id(text: &str) -> Option<&str> {
     }
 }
 
+/// The tag name of an HTML open tag's raw text (`` `<a id="x">` `` ->
+/// `"a"`), or `None` if `tag` isn't shaped like an open tag at all.
+/// Case-sensitive: every real corpus this project targets writes lowercase
+/// tag names, and HTML tag names are case-insensitive by spec but this
+/// scan is lexical, not a real HTML parser — see [`html_attr_value`]'s own
+/// doc comment for the same boundary stated the same way.
+fn html_open_tag_name(tag: &str) -> Option<&str> {
+    let body = tag.strip_prefix('<')?;
+    if body.starts_with('/') {
+        return None;
+    }
+    let end = body.find(|c: char| c.is_whitespace() || c == '>' || c == '/')?;
+    (!body[..end].is_empty()).then_some(&body[..end])
+}
+
+/// Whether `tag` is exactly a closing tag for `name` (`` `</a>` `` closes
+/// `"a"`).
+fn is_html_close_tag(tag: &str, name: &str) -> bool {
+    tag.strip_prefix("</")
+        .and_then(|rest| rest.strip_suffix('>'))
+        .is_some_and(|inner| inner.trim().eq_ignore_ascii_case(name))
+}
+
+/// The raw value of attribute `name` in HTML open-tag text `tag` — the
+/// `` `<a id="x">` ``-shaped string an `Event::InlineHtml`/`Event::Html`
+/// hands over verbatim. `None` if `name` never appears as its own
+/// whitespace-delimited attribute token (so `data-id="x"` never matches a
+/// search for `id`, unlike a naive substring search) or appears without a
+/// quoted value (a bare `id` or an unquoted `id=x`).
+///
+/// **A lexical scan, not an HTML parser — two residuals stated rather
+/// than hidden**, the same class of limitation `gitignore.rs`'s backtick
+/// scan and `absence.rs`'s literal search already carry: an attribute
+/// value containing whitespace (`id="my id"`) is split at the space and
+/// missed, and an unquoted or valueless `id` attribute is not recognized
+/// at all. Every real anchor this project's own corpus and its dispatch
+/// examples use is double-quoted kebab-case with no internal whitespace,
+/// so neither residual is expected to matter in practice; both are named
+/// in MVP.md.
+fn html_attr_value<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let body = tag
+        .strip_prefix('<')?
+        .trim_end_matches('>')
+        .trim_end_matches('/');
+    // Skip the tag name itself (the first token) — only real attributes
+    // after it are candidates, so a tag named e.g. `id` (not real HTML,
+    // but not this scan's problem to rule out) can't self-match.
+    let mut tokens = body.split_whitespace();
+    tokens.next()?;
+    for tok in tokens {
+        let Some(rest) = tok.strip_prefix(name).and_then(|r| r.strip_prefix('=')) else {
+            continue;
+        };
+        let quote = rest.chars().next()?;
+        if quote != '"' && quote != '\'' {
+            continue;
+        }
+        let inner = &rest[1..];
+        if let Some(end) = inner.find(quote) {
+            return Some(&inner[..end]);
+        }
+    }
+    None
+}
+
 /// Bound, in source bytes, on the interstitial between a bold-form
 /// definition's closing `**` and its terminating colon (the fourth of the
 /// four properties that together identify a definition — line start, the
@@ -471,23 +536,118 @@ struct PendingBold {
     skip_depth: u32,
 }
 
-/// A recognized id definition, either form, merged into one
+/// A recognized `<a id="claim-id"></a>` definition — the third anchor
+/// form, invisible in rendered output by design (the head's ruling: claim
+/// ids must not pollute user-facing documentation, and `<a
+/// id="…"></a>` is the only markdown-legal construct that is both
+/// invisible to a reader and a genuine link target, unlike `<!--
+/// comment -->` which renders nothing and therefore anchors nothing
+/// either). `start` is the opening tag's byte offset (used for the
+/// nearest-preceding-anchor search, same as the other two forms); `end`
+/// is immediately after the closing `</a>`, the html-form analogue of a
+/// bold definition's own `end` — where the definition's own prose scope
+/// begins.
+struct RawHtmlDef {
+    start: usize,
+    end: usize,
+    id: ClaimId,
+}
+
+/// A closed, immediately-paired `<a id="…"></a>` whose id failed the
+/// grammar — including empty (`` `id=""` ``), which routes here rather
+/// than being silently ignored the way an empty bracket is: an author who
+/// wrote `id=""` was attempting a definition, so silence would hide
+/// exactly the defect `malformed-id` exists to surface. The html-form
+/// analogue of [`RawMalformedBold`].
+struct RawMalformedHtml {
+    start: usize,
+    id: String,
+}
+
+/// What a closed `<a id="…">` open tag resolves to once its id is read —
+/// mirrors [`BoldCandidate`], one grammar check deciding
+/// [`RawHtmlDef`]/[`RawMalformedHtml`]. Resolution itself still needs the
+/// immediately-adjacent `</a>` confirming the pair is closed and empty
+/// ([`PendingHtml`]) — an unclosed `<a id="…">`, or one with real content
+/// before its `</a>`, is never a candidate at all: it is not the
+/// invisible-marker shape this form exists for, the same way an
+/// unpunctuated bold span is never a bold-form candidate.
+enum HtmlCandidate {
+    Definition(ClaimId),
+    Malformed(String),
+}
+
+/// An `<a id="…">` open tag awaiting its immediately-adjacent `</a>` —
+/// the html-form analogue of [`PendingBold`], simpler because there is no
+/// interstitial to hunt through: the NEXT event must be the closing tag,
+/// starting exactly where the open tag ended, or this candidate is
+/// abandoned outright (never reported as malformed — an author who left
+/// a real anchor open, or wrote actual content inside it, was not
+/// necessarily attempting a docket definition at all).
+struct PendingHtml {
+    start: usize,
+    end_of_open: usize,
+    candidate: HtmlCandidate,
+}
+
+/// A recognized id definition, any of the three forms, merged into one
 /// position-ordered stream for §1.1's "nearest preceding [id]" ownership
 /// search — generalized from heading-only to whichever form is nearer,
 /// exactly the way a deeper heading already wins over a shallower one.
-/// `idx` indexes back into `raw_headings` / `raw_bold_defs` so the
-/// claim-building loop can recover the form-specific fields (heading
-/// level for its same-or-higher-level C5 scope close; the bold
-/// definition's own `end` for its scope start).
+/// `idx` indexes back into `raw_headings` / `raw_bold_defs` /
+/// `raw_html_defs` so the claim-building loop can recover the
+/// form-specific fields (heading level for its same-or-higher-level C5
+/// scope close; the bold/html definition's own `end` for its scope
+/// start).
 enum AnchorKind {
     Heading(usize),
     Bold(usize),
+    Html(usize),
 }
 
 struct IdAnchor {
     start: usize,
     id: ClaimId,
     kind: AnchorKind,
+}
+
+/// Where an inline-form definition's (bold- or html-form) prose scope
+/// ends: the next heading of ANY level, or the next definition of
+/// EITHER other inline form, whichever comes first. An inline
+/// definition is a sentence inside a section, not a section of its own
+/// — unlike a heading-form definition, whose scope survives a deeper
+/// subheading (`nested_headings_find_the_nearest_bracket_kebab_ancestor`),
+/// nothing beneath the next heading, and nothing past the next sibling
+/// definition, belongs to it. Shared by both `AnchorKind::Bold` and
+/// `AnchorKind::Html` rather than duplicated per form, since the rule
+/// itself does not depend on which inline form is asking — a bold
+/// definition's scope now closes at the next html definition too, and
+/// vice versa, symmetrically.
+fn inline_scope_end(
+    after: usize,
+    raw_headings: &[RawHeading],
+    raw_bold_defs: &[RawBoldDef],
+    raw_html_defs: &[RawHtmlDef],
+    source_len: usize,
+) -> usize {
+    [
+        raw_headings
+            .iter()
+            .find(|h| h.start > after)
+            .map(|h| h.start),
+        raw_bold_defs
+            .iter()
+            .find(|b| b.start > after)
+            .map(|b| b.start),
+        raw_html_defs
+            .iter()
+            .find(|h| h.start > after)
+            .map(|h| h.start),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    .unwrap_or(source_len)
 }
 
 /// Parse one markdown document and extract its claim blocks, per MVP.md
@@ -503,6 +663,8 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
     let mut raw_blocks: Vec<RawBlock> = Vec::new();
     let mut raw_bold_defs: Vec<RawBoldDef> = Vec::new();
     let mut raw_malformed_bold: Vec<RawMalformedBold> = Vec::new();
+    let mut raw_html_defs: Vec<RawHtmlDef> = Vec::new();
+    let mut raw_malformed_html: Vec<RawMalformedHtml> = Vec::new();
 
     // pulldown-cmark's offset iterator gives Start and End the same full
     // element range, so we capture level/start/end at Start and only
@@ -520,12 +682,36 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
     // citation of a real id (no colon ever follows) both fall through
     // silently, same as before this state grew multi-event.
     let mut pending_bold: Option<PendingBold> = None;
+    // An `<a id="…">` open tag awaiting its immediately-adjacent `</a>` —
+    // see `PendingHtml`'s own docs.
+    let mut pending_html: Option<PendingHtml> = None;
     // Nesting depth, not a bool: a quote can contain a quote. Only its
     // zero/nonzero state matters to the normative-prose scan below.
     let mut blockquote_depth: u32 = 0;
     let mut normative_occurrences: Vec<NormativeOccurrence> = Vec::new();
 
     for (event, range) in parser {
+        if let Some(p) = pending_html.take() {
+            let closes = range.start == p.end_of_open
+                && matches!(&event, Event::InlineHtml(t) | Event::Html(t) if is_html_close_tag(t, "a"));
+            if closes {
+                match p.candidate {
+                    HtmlCandidate::Definition(id) => raw_html_defs.push(RawHtmlDef {
+                        start: p.start,
+                        end: range.end,
+                        id,
+                    }),
+                    HtmlCandidate::Malformed(id) => {
+                        raw_malformed_html.push(RawMalformedHtml { start: p.start, id });
+                    }
+                }
+            }
+            // else: not immediately closed — abandon silently (`PendingHtml`'s
+            // doc comment). The current event still needs its own normal
+            // handling below (it may itself open a new candidate), so it
+            // falls through rather than `continue`-ing.
+        }
+
         if let Some(mut pb) = pending_bold.take() {
             if pb.skip_depth > 0 {
                 // Inside an opaque wrapper span whose whole byte range is
@@ -657,6 +843,26 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
                     dest: dest_url.into_string(),
                 });
             }
+            Event::InlineHtml(ref t) | Event::Html(ref t) => {
+                // An `<a href="…">` (no `id` attribute) is indistinguishable
+                // from prose that never attempted a definition — never a
+                // candidate, not even a malformed one, the same silence an
+                // ordinary non-line-start bold span gets.
+                if html_open_tag_name(t).is_some_and(|name| name.eq_ignore_ascii_case("a"))
+                    && let Some(id) = html_attr_value(t, "id")
+                {
+                    let candidate = if is_kebab_case(id) {
+                        HtmlCandidate::Definition(id.to_string())
+                    } else {
+                        HtmlCandidate::Malformed(id.to_string())
+                    };
+                    pending_html = Some(PendingHtml {
+                        start: range.start,
+                        end_of_open: range.end,
+                        candidate,
+                    });
+                }
+            }
             Event::Text(t) => {
                 if let Some((_, _, _, ref mut text)) = cur_heading {
                     text.push_str(&t);
@@ -763,6 +969,11 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
             id: b.id.clone(),
             kind: AnchorKind::Bold(i),
         }))
+        .chain(raw_html_defs.iter().enumerate().map(|(i, h)| IdAnchor {
+            start: h.start,
+            id: h.id.clone(),
+            kind: AnchorKind::Html(i),
+        }))
         .collect();
     id_anchors.sort_by_key(|a| a.start);
 
@@ -815,17 +1026,33 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
             }
             AnchorKind::Bold(idx) => {
                 let bold = &raw_bold_defs[idx];
-                let next_heading = raw_headings.iter().find(|h| h.start > bold.end);
-                let next_bold = raw_bold_defs[idx + 1..].iter().next();
-                let scope_end = [next_heading.map(|h| h.start), next_bold.map(|b| b.start)]
-                    .into_iter()
-                    .flatten()
-                    .min()
-                    .unwrap_or(source.len());
+                let scope_end = inline_scope_end(
+                    bold.end,
+                    &raw_headings,
+                    &raw_bold_defs,
+                    &raw_html_defs,
+                    source.len(),
+                );
                 (
                     anchor.id.clone(),
                     line_index.line_of(bold.start),
                     bold.end,
+                    scope_end,
+                )
+            }
+            AnchorKind::Html(idx) => {
+                let html = &raw_html_defs[idx];
+                let scope_end = inline_scope_end(
+                    html.end,
+                    &raw_headings,
+                    &raw_bold_defs,
+                    &raw_html_defs,
+                    source.len(),
+                );
+                (
+                    anchor.id.clone(),
+                    line_index.line_of(html.start),
+                    html.end,
                     scope_end,
                 )
             }
@@ -903,6 +1130,16 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
                     file: file.to_string(),
                     line: line_index.line_of(b.start),
                     id: b.id.clone(),
+                },
+            )
+        }))
+        .chain(raw_malformed_html.iter().map(|h| {
+            (
+                h.start,
+                MalformedId {
+                    file: file.to_string(),
+                    line: line_index.line_of(h.start),
+                    id: h.id.clone(),
                 },
             )
         }))
@@ -1460,6 +1697,141 @@ mod tests {
         let mut got = ids(&res);
         got.sort_unstable();
         assert_eq!(got, vec!["bold-claim", "heading-claim"]);
+    }
+
+    // --- html-form anchors (`<a id="…"></a>`) ------------------------------
+
+    #[test]
+    fn extracts_an_html_anchored_claim() {
+        let src = "Some prose.\n\n<a id=\"html-claim\"></a>\nThe system MUST persist keyed data.\n\n[see also](target-a)\n\n```claim\nkind: requirement\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["html-claim"]);
+        assert_eq!(res.claims[0].prose_links, vec!["target-a"]);
+    }
+
+    #[test]
+    fn an_html_anchor_can_sit_mid_paragraph() {
+        // The exact shape the dispatch names: "mid-paragraph, in a table
+        // cell, immediately before a claim fence" — unlike heading- and
+        // bold-form, which both require line start, an html anchor has no
+        // positional constraint at all.
+        let src = "Some lead-in text <a id=\"mid-para\"></a> and more prose after it.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["mid-para"]);
+    }
+
+    #[test]
+    fn an_html_anchor_immediately_before_the_claim_fence_still_resolves() {
+        let src = "Some prose.\n\n<a id=\"right-before\"></a>\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["right-before"]);
+    }
+
+    #[test]
+    fn an_html_anchors_prose_scope_stops_at_the_next_heading_of_any_level() {
+        let src = "<a id=\"a\"></a>\n\n[link-a](target-a)\n\n#### Notes\n\n[link-b](target-b)\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(ids(&res), vec!["a"]);
+        assert_eq!(res.claims[0].prose_links, vec!["target-a"]);
+    }
+
+    #[test]
+    fn an_html_anchors_prose_scope_stops_at_the_next_bold_form_definition() {
+        // Cross-form: an html anchor's inline scope closes at ANY sibling
+        // inline definition, not only another html anchor. The claim
+        // block sits between the two anchors so its owner ([a]) is
+        // unambiguous; target-b, positioned after [b] begins, is outside
+        // [a]'s scope only if the cross-form stop rule actually fires —
+        // absent it, scope_end would default to end-of-document and
+        // include target-b too.
+        let src = "<a id=\"a\"></a>\n\n[link-a](target-a)\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n**[b]**: second claim.\n\n[link-b](target-b)\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(ids(&res), vec!["a"]);
+        assert_eq!(res.claims[0].prose_links, vec!["target-a"]);
+    }
+
+    #[test]
+    fn a_bold_form_definitions_prose_scope_now_also_stops_at_the_next_html_anchor() {
+        // The symmetric case: adding html-form must not silently widen
+        // bold-form's own existing scope rule. Same shape as the mirror
+        // test above, forms swapped.
+        let src = "**[a]**: first claim.\n\n[link-a](target-a)\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n<a id=\"b\"></a>\n\n[link-b](target-b)\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(ids(&res), vec!["a"]);
+        assert_eq!(res.claims[0].prose_links, vec!["target-a"]);
+    }
+
+    #[test]
+    fn an_html_anchor_with_no_claim_block_is_unregistered() {
+        let src = "<a id=\"orphaned\"></a>\n\nNo block follows.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.claims.is_empty());
+        assert_eq!(res.unregistered_definitions.len(), 1);
+        assert_eq!(res.unregistered_definitions[0].id, "orphaned");
+    }
+
+    #[test]
+    fn a_registered_html_anchor_is_not_reported_as_unregistered() {
+        let src = "<a id=\"registered\"></a>\n\nhas a block.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.unregistered_definitions.is_empty(), "{:#?}", res);
+    }
+
+    #[test]
+    fn an_anchor_tag_with_no_id_attribute_is_never_a_candidate() {
+        // The adversarial floor: an ordinary `<a href="…">` link must
+        // never register as a definition, not even a malformed one.
+        let src = "See <a href=\"https://example.com\">this</a> for background.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.unregistered_definitions.is_empty());
+        assert!(res.malformed_ids.is_empty());
+    }
+
+    #[test]
+    fn an_empty_id_attribute_is_malformed_not_silently_skipped() {
+        let src = "<a id=\"\"></a>\n\nSome prose.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(res.malformed_ids.len(), 1, "{:#?}", res.malformed_ids);
+        assert_eq!(res.malformed_ids[0].id, "");
+        assert!(res.unregistered_definitions.is_empty());
+    }
+
+    #[test]
+    fn a_non_kebab_id_attribute_is_malformed() {
+        let src = "<a id=\"Not_Valid\"></a>\n\nSome prose.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(res.malformed_ids.len(), 1);
+        assert_eq!(res.malformed_ids[0].id, "Not_Valid");
+    }
+
+    #[test]
+    fn an_unclosed_anchor_tag_is_silently_not_a_candidate() {
+        // No immediately-adjacent `</a>` — never a definition attempt at
+        // all (the confirming structural signal never arrived), the same
+        // silence an unpunctuated bold span gets. Not malformed, not
+        // unregistered: nothing.
+        let src = "<a id=\"never-closed\"> and then some prose that never closes it.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.unregistered_definitions.is_empty());
+        assert!(res.malformed_ids.is_empty());
+    }
+
+    #[test]
+    fn an_anchor_with_real_content_between_the_tags_is_not_a_candidate() {
+        // Not the invisible-empty-marker shape this form exists for.
+        let src = "<a id=\"has-content\">some text</a>\n\nSome prose.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.unregistered_definitions.is_empty());
+        assert!(res.malformed_ids.is_empty());
+    }
+
+    #[test]
+    fn heading_bold_and_html_forms_can_all_coexist_in_one_document() {
+        let src = "### [heading-claim]\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n**[bold-claim]**: A second claim.\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n<a id=\"html-claim\"></a>\n\nA third claim.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        let mut got = ids(&res);
+        got.sort_unstable();
+        assert_eq!(got, vec!["bold-claim", "heading-claim", "html-claim"]);
     }
 
     // --- unregistered definitions (coverage count) ------------------------

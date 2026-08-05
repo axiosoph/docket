@@ -26,7 +26,7 @@ depends: [docs/models/composition-model#6, docs/models/execution-model#2.4]
 
 **The claim's `id` is not in the block.** It is taken from the nearest
 preceding **definition** — a marker elsewhere in the document whose
-sole job is to state the id. Two forms are recognized:
+sole job is to state the id. Three forms are recognized:
 
 **Heading form.** A heading whose text is exactly a bracketed
 kebab-case token:
@@ -55,10 +55,40 @@ crossing one.
 lock-nonzero)_: Every lock value MUST be ground.
 ```
 
-Both forms exist because corpora do: a specification-first corpus
-built around numbered sections tends toward the heading form, while a
-prose-first corpus stating one requirement per paragraph tends toward
-the bold form — and a real corpus measured against an early
+**HTML form.** An empty, immediately self-closed anchor tag —
+`<a id="lock-groundness"></a>` — with nothing at all between the open
+and close tags:
+
+```markdown
+<a id="lock-groundness"></a>
+```
+
+The only form with no positional constraint: a heading or a line-start
+bold span both occupy a visible line of their own, but an html anchor
+may sit mid-paragraph, inside a table cell, or immediately before a
+`claim` fence. It exists because the other two forms cannot be made
+invisible: a claim id occupying a whole heading or a bolded lead-in is
+useful for a reference corpus (a section IS the fact it states), but
+some corpora need to anchor a claim without that id ever rendering in a
+reader's view. `<a id="…"></a>` is the only markdown-legal construct
+that is simultaneously invisible in rendered output and a genuine link
+target — an HTML comment (`<!-- id: … -->`) renders nothing and
+therefore *anchors* nothing either; a link could never point at it.
+
+The pair must be exactly adjacent — `<a id="x">` immediately followed
+by `</a>`, no content between them. Anything else (an unclosed tag, real
+text between the tags, `<a href="…">` with no `id` attribute at all) is
+never a recognized definition attempt, silently — the same treatment an
+unpunctuated bold span or a non-line-start one already gets. An `id`
+attribute that IS present but empty or non-kebab-case, on a pair that
+IS immediately closed, is `malformed-id` (below) rather than silence:
+the empty-closed shape is what confirms the author was attempting a
+definition, the same way a bold span's colon confirms it.
+
+Both existing forms exist because corpora do: a specification-first
+corpus built around numbered sections tends toward the heading form,
+while a prose-first corpus stating one requirement per paragraph tends
+toward the bold form — and a real corpus measured against an early
 heading-only draft of this tool had 400 of its 418 definitions in bold
 form. **The tool learns the corpus's convention rather than requiring
 the corpus to restructure around the tool's.** Recognizing a form is
@@ -66,9 +96,22 @@ deliberately permissive rather than requiring a canonical one: id
 uniqueness (C2) adjudicates precision centrally, so an over-matching
 recognizer produces a loud, corpus-wide duplicate-id failure — naming
 every site that declared the id, regardless of which recognizer found
-each one — rather than a silently invented claim. This is what keeps
-adding a third form, later, cheap: each recognizer needs to be roughly
-right, not perfect.
+each one — rather than a silently invented claim. This is what kept
+adding a third form cheap: each recognizer needs to be roughly right,
+not perfect.
+
+**An html anchor's prose scope (C5), stated in one sentence: it ends at
+the next heading of any level, or the next definition of any other
+form, whichever comes first** — exactly bold-form's own rule, since
+neither has a heading level or a section of its own to key on, both are
+inline markers sitting *in* prose rather than opening a section of it.
+This is not a new rule invented for the third form: bold-form's own
+scope-closing logic already answered "what ends an inline definition
+with no level," and an html anchor is the same shape of problem, so it
+reuses the same answer rather than inventing a second one. Bold-form's
+own scope now also closes at the next html anchor, symmetrically — the
+addition does not silently widen an existing form's scope in one
+direction only.
 
 Rationale, unchanged by the addition of a second form: the id already
 exists in prose as the human-readable anchor, and duplicating it into
@@ -76,28 +119,30 @@ the block would create precisely the divergence surface this tool
 exists to remove. One statement, one place.
 
 **Ownership.** A claim block belongs to the **nearest preceding
-definition, either form** — one rule across both, not two: exactly the
-existing "a deeper heading wins over a shallower one" behavior,
-generalized from one shape to two rather than replaced. The block need
-not be adjacent to its definition, only nearest to it — a bold-form
-definition sits inline in prose, so a fenced block cannot follow it
-directly the way it can a heading, and a human author reaches the
-block after elaborating, not before.
+definition, any of the three forms** — one rule across all of them, not
+one per form: exactly the existing "a deeper heading wins over a
+shallower one" behavior, generalized from one shape to three rather than
+replaced. The block need not be adjacent to its definition, only
+nearest to it — a bold-form or html-form definition sits inline in
+prose, so a fenced block cannot follow it directly the way it can a
+heading, and a human author reaches the block after elaborating, not
+before.
 
 A claim block with no such preceding definition anywhere in the file is
 an error (`orphan-claim`).
 
-**Unregistered definitions.** A recognized definition — either form —
-with no claim block is *unregistered*: real corpus content the
-register does not yet cover. Reported as `unregistered-definition`
-(`Warn` severity, §5) rather than failed on, since a corpus is expected
-to carry many of these on the day a registration effort begins; the
-count is exactly the number that effort exists to move.
+**Unregistered definitions.** A recognized definition — any form — with
+no claim block is *unregistered*: real corpus content the register does
+not yet cover. Reported as `unregistered-definition` (`Warn` severity,
+§5) rather than failed on, since a corpus is expected to carry many of
+these on the day a registration effort begins; the count is exactly the
+number that effort exists to move.
 
 **Malformed ids.** A bracketed token that sits in definition position —
 line-start `**[...]**` immediately followed by definitional punctuation,
-or a heading whose entire text is `[...]` — but whose inner content is
-not lowercase kebab-case is not recognized as a definition at all: it
+a heading whose entire text is `[...]`, or an immediately-closed
+`<a id="…"></a>` — but whose inner content (or `id` attribute) is not
+lowercase kebab-case is not recognized as a definition at all: it
 becomes neither a claim nor an `unregistered-definition`, which means it
 would otherwise produce **no diagnostic whatsoever** — the same silence
 a correctly handled definition produces. Reported instead as
@@ -105,9 +150,15 @@ a correctly handled definition produces. Reported instead as
 than folded into `unregistered-definition`: the remedies differ (rename
 the id, versus write a claim block), and a malformed id is more likely a
 mistake than a coincidence — prose rarely opens a line with a bolded
-bracketed kebab-ish token followed by a colon. The id itself is never
+bracketed kebab-ish token followed by a colon, or closes an anchor tag
+immediately with an id attribute, by accident. The id itself is never
 normalized or auto-corrected; the grammar stays exactly what §1.1
-already states, only violations of it become visible.
+already states, only violations of it become visible. An html anchor's
+`id` attribute additionally counts *empty* (`id=""`) as malformed rather
+than as "not a candidate" — the confirming signal for this form is
+structural (the pair is closed and empty), not textual, so there is no
+"this was never meant as a definition" reading the way an ordinary
+sentence gives a multi-word bracket.
 
 A bracket whose inner content carries whitespace is not treated as a
 malformed id — it reads as an ordinary sentence (`**[Note to

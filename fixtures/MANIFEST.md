@@ -52,6 +52,10 @@ called out below.
 | `run-bare-wrong-grade-absent/` | — (all pass; `docket run bare-marker-wrong-grade` exits 3) | Not a `C`-check fixture — see below. Same bare marker shape as `run-bare-type-pass/`, but the claim is `evaluator: test` — a grade that needs a command a bare marker cannot offer, so it does not count as a match and the claim reports `absent`, exactly as if no marker existed. |
 | `bold-form-definitions/` | — (all pass) | Not a check fixture — see below. Isolates the bold-form recognizer: five definitions — one direct-colon, two parenthetical (one non-ASCII), and two italicized revision notes (one multi-line) — each with a matching block. |
 | `bold-form-false-positives/` | — (all pass) | Not a check fixture — see below. The false-positive floor: ordinary bold text, a mid-sentence citation, a line-start bracket with no adjacent punctuation, and a list-embedded bracket — none recognized as a definition. |
+| `html-anchor-definitions/` | — (all pass) | See below. Isolates the third (html) definition form: an `<a id="…"></a>` anchored claim, resolved by both the bare-id and anchor-form prose-link forms exactly like any other definition. |
+| `html-anchor-false-positives/` | — (all pass) | See below. The false-positive floor: an `<a href="…">` with no `id`, an unclosed `<a id="…">`, and a closed pair carrying real content between the tags — none recognized as a definition. |
+| `html-anchor-malformed-id/` | `malformed-id` (`Warn`) | See below. A non-kebab and an empty `id` attribute, both on immediately-closed pairs. Exits **0**. |
+| `html-anchor-dangling-link/` | `dangling-reference` (`Warn`) | See below. A link to an html anchor that does not exist anywhere in the corpus. Exits **0**. |
 | `c2-duplicate-across-forms/` | `C2` | `docs/specs/a.md` declares `[dup-across-forms]` in heading form, `docs/specs/b.md` declares the same id in bold form. Proves a duplicate arising from two *different* recognizers is still one C2 finding pair, each naming the other's site. |
 | `unregistered-definition/` | `unregistered-definition` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition with no `claim` block, plus one registered heading-form definition for contrast. Exits **0** — `Warn` severity, the coverage count. |
 | `malformed-id/` | `malformed-id` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition whose id fails the kebab-case grammar (both the real-corpus shape: an otherwise-kebab id with one stray uppercase segment), a bracketed-but-multi-word false positive that must not fire, and one registered heading-form definition for contrast. Exits **0** — `Warn` severity, never blocking. |
@@ -521,6 +525,57 @@ files were scanned.
   --corpus fixtures/unregistered-definition` exits **0** with exactly
   two `unregistered-definition` warnings on stderr, naming the file,
   line, and id of each.
+
+## `html-anchor-definitions/`, `html-anchor-false-positives/`, `html-anchor-malformed-id/`, `html-anchor-dangling-link/`
+
+The third definition form: `<a id="…"></a>`, invisible in rendered
+output — the head's ruling that a claim id must never pollute
+user-facing documentation, discharged the only way markdown allows an
+anchor to be simultaneously invisible and a genuine link target
+(`<!-- comment -->` renders nothing and therefore anchors nothing
+either). Recognition requires the pair to be immediately closed with
+nothing between the tags — the empty-closed shape is what confirms an
+author's intent to define something, the same job a bold span's colon
+already does. No changes were needed anywhere downstream of extraction:
+an html-anchored claim is an ordinary `Claim` once extracted, so C1–C5,
+`blast`, `signals`, `dangling-reference`, and `unregistered-definition`
+all already handle it via the same code path every other definition
+form uses.
+
+- **`html-anchor-definitions/`** — the positive case: `<a
+  id="html-claim"></a>` anchors a `requirement` claim, referenced by a
+  second claim's `depends` entry via the anchor-form prose link
+  (`[…](#html-claim)`) — the same acceptance §1.3 already gives every
+  other claim-id reference. `docket check --corpus
+  fixtures/html-anchor-definitions` exits **0**. Removing the anchor
+  (verified by hand, not committed) turns `html-claim` into an
+  unrecognized bare word, breaking both claims — confirming the fixture
+  actually exercises html-anchor recognition.
+- **`html-anchor-false-positives/`** — the false-positive floor: an
+  `<a href="…">` with no `id` attribute at all (indistinguishable from
+  prose that never attempted a definition); an `<a id="never-closed">`
+  with no immediately-adjacent `</a>`; and a closed pair carrying real,
+  visible content between the tags (not the invisible-empty shape this
+  form exists for) — plus one registered heading-form claim for
+  contrast. None of the three is recognized as a definition, not even a
+  malformed one. Exits **0**.
+- **`html-anchor-malformed-id/`** — `<a id="Not_Valid"></a>` (fails
+  kebab-case) and `<a id=""></a>` (empty) — both closed pairs, so both
+  are recognized definition *attempts*, unlike the unclosed/content-bearing
+  cases above. The empty case is the one property this form adds beyond
+  the other two: an empty bracket (`**[]**`) is silently not a
+  candidate at all, but an empty `id=""` is `malformed-id`, because the
+  closed-empty pair shape is itself the confirming signal here, with no
+  "this reads as an ordinary sentence" escape the way a multi-word
+  bracket has. `docket check --corpus fixtures/html-anchor-malformed-id`
+  exits **0** with exactly two `malformed-id` warnings.
+- **`html-anchor-dangling-link/`** — a link to `#not-a-real-anchor`,
+  which resolves to nothing (no heading, no claim id, no html anchor
+  anywhere in the corpus) — a real html anchor for a different id exists
+  in the same file, so the fixture proves this is target-specific, not
+  "html anchors are unreachable in general." `docket check --corpus
+  fixtures/html-anchor-dangling-link` exits **0** with exactly one
+  `dangling-reference` warning.
 
 ## `malformed-id/`
 
