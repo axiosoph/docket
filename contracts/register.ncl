@@ -260,6 +260,7 @@ let c1_diagnostics = fun claims =>
             severity = "fail",
             file = c.file,
             line = c.block_line,
+            claim_id = c.id,
             message = std.array.first violations,
           }
         ]
@@ -286,6 +287,7 @@ let c2_diagnostics = fun claims =>
             severity = "fail",
             file = c.file,
             line = c.heading_line,
+            claim_id = c.id,
             message =
               "id \"%{c.id}\" is also declared at %{std.string.join ", " (std.array.map (fun o => "%{o.file}:%{std.string.from_number o.heading_line}") others)}",
           }
@@ -328,6 +330,7 @@ let c3_diagnostics = fun claims documents genres =>
                     severity = "fail",
                     file = c.file,
                     line = c.block_line,
+                    claim_id = c.id,
                     message =
                       "kind \"%{kind}\" is not permitted by genre \"%{g.path}\" (permits [%{std.string.join ", " g.kinds}])",
                   }
@@ -361,6 +364,7 @@ let refs_check = fun check_id sev field_name broken_word claim_ids documents cla
                 severity = sev,
                 file = c.file,
                 line = c.block_line,
+                claim_id = c.id,
                 message = "%{field_name} target %{ref_to_string cite} does not resolve — %{broken_word}",
               }
             ]
@@ -523,6 +527,7 @@ let c5_diagnostics = fun documents claims =>
             severity = "fail",
             file = c.file,
             line = c.heading_line,
+            claim_id = c.id,
             message =
               "\"%{c.id}\" declares a dependence or reason with no matching prose link: [%{std.string.join ", " (std.array.map (fun r => "\"%{r.kind}:%{ref_to_string r.cite}\"") undeclared)}]",
           }
@@ -543,6 +548,7 @@ let orphan_claim_diagnostics = fun orphan_claims =>
       severity = "fail",
       file = o.file,
       line = o.line,
+      claim_id = null,
       message = "claim block has no preceding bracket-kebab id heading",
     })
     orphan_claims
@@ -571,6 +577,7 @@ let normative_prose_diagnostics = fun documents genres occurrences =>
                 severity = "fail",
                 file = occ.file,
                 line = occ.line,
+                claim_id = null,
                 message =
                   "normative keyword \"%{occ.keyword}\" in own-voice prose, but genre \"%{g.path}\" permits no claim kinds",
               }
@@ -586,6 +593,11 @@ let unregistered_definition_diagnostics = fun defs =>
       severity = "warn",
       file = d.file,
       line = d.line,
+      # `d.id` is the bracket token in definition position, not a claim
+      # id — no claim exists yet, which is the finding itself. Still
+      # visible in `message`; just not asserted here as a resolvable
+      # claim_id.
+      claim_id = null,
       message = "definition \"%{d.id}\" has no claim block — unregistered",
     })
     defs
@@ -605,6 +617,9 @@ let malformed_id_diagnostics = fun ids =>
       severity = "warn",
       file = m.file,
       line = m.line,
+      # `m.id` fails the id grammar (§1.1) — never a claim id, malformed
+      # or otherwise.
+      claim_id = null,
       message =
         "id \"%{m.id}\" is in definition position but is not valid kebab-case — rename it (a malformed id is neither claimed nor counted as unregistered)",
     })
@@ -630,6 +645,8 @@ let unreachable_reference_diagnostics = fun refs =>
       severity = "fail",
       file = r.file,
       line = r.line,
+      # A link-level finding, not scoped to any one claim.
+      claim_id = null,
       message =
         "link \"%{r.dest}\" resolves to \"%{r.resolved}\", which is gitignored — unreachable for any reader who is not the author",
     })
@@ -655,6 +672,7 @@ let stale_absence_marker_diagnostics = fun markers =>
       severity = "warn",
       file = m.file,
       line = m.line,
+      claim_id = m.id,
       message =
         "absence marker for \"%{m.id}\" names \"%{m.literal}\", which no longer appears as a code span in that claim's own prose — stale marker, or the prose drifted",
     })
@@ -734,6 +752,9 @@ let dangling_reference_diagnostics = fun claim_ids documents declared unreachabl
               severity = "warn",
               file = l.file,
               line = l.line,
+              # A document-wide link, independent of any claim's C5 scope
+              # — not scoped to a claim (see the module comment above).
+              claim_id = null,
               message =
                 "link \"%{l.dest}\" does not resolve to anything in the corpus — a bare reference, not a broken claim",
             }
