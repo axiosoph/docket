@@ -10,10 +10,13 @@ number with an enumerated residue, instead of a feeling.
 > `unregistered-definition`, `malformed-id`, `unreachable-reference`);
 > `blast` computes the citation graph and its transitive closure; `run`
 > executes a claim's evaluator and reports one of six outcomes (see
-> "Tying claims to the evaluators that discharge them," below). The
-> coverage index, the verdict register, and the stability metric
-> described later in this document are not built — "Out of MVP scope"
-> marks what's still missing. Name is provisional.
+> "Tying claims to the evaluators that discharge them," below); `signals`
+> reports derived graph properties over the same edges — out-degree,
+> in-degree, and blast-radius size per claim — headlined by every claim
+> nothing cites, a candidate list for superseded-and-unnoticed rather than
+> a verdict (MVP.md §4.4). The coverage index, the verdict register, and
+> the stability metric described later in this document are not built —
+> "Out of MVP scope" marks what's still missing. Name is provisional.
 
 ---
 
@@ -214,6 +217,25 @@ a new reason. The kinds differ in what deletion means, not in whether a
 downstream change matters. A reference names either a claim or a
 document section directly, so the walk runs the same way from either
 end.
+
+**The same edges, read backwards, find claims nobody points at.**
+`docket blast` reads the graph forward from a target to find who depends
+on it; `docket signals` reads every claim's in-degree, out-degree, and
+blast-radius size without being asked to blast anything in particular —
+a derived report over edges the corpus already declares, not a new
+annotation for an author to keep in sync. A claim with zero inbound
+edges — nothing depends on it, nothing is justified by it — is the
+mechanical trace of this project's own dominant failure mode: content
+that drifted out of relevance with nothing pointing at it to notice.
+
+That does not make every such claim a defect. **A claim nothing points at
+can be exactly right on its own** — a self-contained safety property, a
+forbidden state — so `signals` reports zero-inbound claims as
+*candidates* for superseded-and-unnoticed, never as a verdict: it bounds
+where a reviewer might look, and confirming a leaf is legitimate is as
+much a use of the report as retiring one is. Read MVP.md §4.4 before
+running it in anger — the report is only worth trusting if a reader knows
+in advance what a high false-alarm rate means and doesn't.
 
 ## "Stable", defined honestly
 

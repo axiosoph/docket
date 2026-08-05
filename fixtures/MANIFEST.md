@@ -9,7 +9,7 @@ path and corpus roots don't overlap.
 
 The `run-*/` fixtures additionally carry a `src/` tree — the runner
 (`docket run <id>`, `src/marker.rs`/`src/run.rs`) scans the *whole*
-corpus root for `docket: <id> :: <command>` markers, not only `docs/`,
+corpus root for `@docket: <id> :: <command>` markers, not only `docs/`,
 so their evaluator markers live beside a stand-in Rust test the way a
 real corpus's would. All seven still `docket check` cleanly (see their
 own row): they isolate `run` behavior, not a `C`-check failure.
@@ -38,9 +38,9 @@ called out below.
 | `blast-doc-anchor/` | — (all pass) | Not a check fixture — see below. Isolates a `blast` behaviour rather than a check. |
 | `anchor-link-satisfies-claim-id/` | — (all pass) | Not a check fixture — see below. Isolates C5's anchor-form acceptance for a claim-id declaration. |
 | `golden/` | — (all pass) | See below. |
-| `run-pass/` | — (all pass; `docket run always-true` exits 0) | Not a `C`-check fixture — see below. `src/lib.rs` carries `// docket: always-true :: true`; the marker's command exits 0. |
-| `run-fail/` | — (all pass; `docket run always-false` exits 1) | Not a `C`-check fixture — see below. `src/lib.rs` carries `// docket: always-false :: false`; the marker's command exits 1. |
-| `run-absent/` | — (all pass; `docket run unbacked-claim` exits 3) | Not a `C`-check fixture — see below. `[unbacked-claim]` declares `evaluator: test`; no `docket:` marker for it exists anywhere in the corpus. |
+| `run-pass/` | — (all pass; `docket run always-true` exits 0) | Not a `C`-check fixture — see below. `src/lib.rs` carries `// @docket: always-true :: true`; the marker's command exits 0. |
+| `run-fail/` | — (all pass; `docket run always-false` exits 1) | Not a `C`-check fixture — see below. `src/lib.rs` carries `// @docket: always-false :: false`; the marker's command exits 1. |
+| `run-absent/` | — (all pass; `docket run unbacked-claim` exits 3) | Not a `C`-check fixture — see below. `[unbacked-claim]` declares `evaluator: test`; no `@docket:` marker for it exists anywhere in the corpus. |
 | `run-none/` | — (all pass; `docket run not-yet-implemented` exits 0) | Not a `C`-check fixture — see below. `[not-yet-implemented]` declares `evaluator: none`; a marker for it exists (`:: false`) but must never be consulted. |
 | `run-vacuous-missing/` | — (all pass; `docket run missing-test-target` exits 4) | Not a `C`-check fixture — see below. The marker names a test that was renamed/deleted; its command still exits 0. |
 | `run-vacuous-ignored/` | — (all pass; `docket run ignored-test-target` exits 4) | Not a `C`-check fixture — see below. The marker names a real `#[ignore]`d test; cargo collects and skips it, still exiting 0. |
@@ -52,6 +52,7 @@ called out below.
 | `unregistered-definition/` | `unregistered-definition` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition with no `claim` block, plus one registered heading-form definition for contrast. Exits **0** — `Warn` severity, the coverage count. |
 | `malformed-id/` | `malformed-id` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition whose id fails the kebab-case grammar (both the real-corpus shape: an otherwise-kebab id with one stray uppercase segment), a bracketed-but-multi-word false positive that must not fire, and one registered heading-form definition for contrast. Exits **0** — `Warn` severity, never blocking. |
 | `unreachable-reference/` | `unreachable-reference` (`Fail`) | See below. `docs/specs/a.md`'s claim `[unreachable-target]` links `../../.scratch/notes.md` in prose; the fixture's own `.gitignore` marks `.scratch/` ignored. Exits **1**. |
+| `signals-zero-inbound/` | — (all pass) | Not a check fixture — see below. Isolates `docket signals`: one claim with a citer, one that cites but is never cited itself, one that neither cites nor is cited. |
 
 **`duplicate-stem/` is retired**, not just its row here. MVP.md §1.3 was
 amended once a real corpus produced three `README.md` files under one
@@ -213,7 +214,7 @@ second fixture.
 ## `run-pass/`, `run-fail/`, `run-absent/`, `run-none/`, `run-vacuous-missing/`, `run-vacuous-ignored/`, `run-vacuous-exempt/`
 
 Isolate `docket run <claim-id>` (`src/marker.rs`, `src/run.rs`): given a
-claim, execute the `docket: <id> :: <command>` marker(s) that discharge
+claim, execute the `@docket: <id> :: <command>` marker(s) that discharge
 it and report `pass` / `fail` / `absent` / `none` / `vacuous` — the
 three-outcome distinction the runner's own dispatch names as its most
 easily lost property (`absent` must never read as `fail`), the fourth,
@@ -223,17 +224,17 @@ green-by-construction hole: a marker's command can exit 0 while its own
 output proves nothing was actually checked.
 
 - **`run-pass/`** — `docs/specs/a.md` declares `[always-true]`
-  (`evaluator: test`); `src/lib.rs` carries `// docket: always-true ::
+  (`evaluator: test`); `src/lib.rs` carries `// @docket: always-true ::
   true`. `docket run always-true --corpus fixtures/run-pass` prints
   `pass  always-true  test` plus the one marker's `ok` line, and exits
   **0**.
-- **`run-fail/`** — `[always-false]`, marker `// docket: always-false ::
+- **`run-fail/`** — `[always-false]`, marker `// @docket: always-false ::
   false`. `docket run always-false --corpus fixtures/run-fail` prints
   `fail  always-false  test` plus a `FAIL (exit 1)` line, and exits
   **1**. Watched red directly (not merely asserted): `false` always
   exits 1, so this is the actual failure path, not an assumed one.
 - **`run-absent/`** — `[unbacked-claim]` (`evaluator: test`), and
-  **no** `docket:` marker for it anywhere in the corpus. `docket run
+  **no** `@docket:` marker for it anywhere in the corpus. `docket run
   unbacked-claim --corpus fixtures/run-absent` prints `absent
   unbacked-claim  test` and the literal "no marker found" line — never
   the `fail` label or a `FAIL (exit …)` line, which is exactly the
@@ -242,7 +243,7 @@ output proves nothing was actually checked.
   gets.
 - **`run-none/`** — `[not-yet-implemented]` (`evaluator: none`, under
   `docs/architecture/**`), *and* `src/lib.rs` carries a marker for it
-  (`// docket: not-yet-implemented :: false`) whose command would fail
+  (`// @docket: not-yet-implemented :: false`) whose command would fail
   if run. `docket run not-yet-implemented --corpus fixtures/run-none`
   prints `none  not-yet-implemented  none` with no marker line at all,
   and exits **0** — proving the marker is never consulted, not merely
@@ -270,7 +271,7 @@ output proves nothing was actually checked.
 - **`run-vacuous-exempt/`** — `[exempt-target]` (`evaluator: proof`, a
   stand-in for an evaluator kind — Lean/TLA+/Alloy — the runner has no
   output recognizer for at all); the marker's id carries a trailing `!`
-  (`docket: exempt-target! :: printf '...'`) whose command's output is
+  (`@docket: exempt-target! :: printf '...'`) whose command's output is
   deliberately built to match the same vacuity signal the two fixtures
   above trigger. `docket run exempt-target --corpus
   fixtures/run-vacuous-exempt` prints `pass  exempt-target  proof` and
@@ -514,6 +515,36 @@ question this check can answer at all
 (`gitignore::tests::a_corpus_root_that_is_not_a_git_repository_degrades_to_silence`,
 `gitignore::tests::a_missing_git_binary_degrades_to_silence_rather_than_a_crash`,
 `checks::tests::a_corpus_that_is_not_a_git_repository_never_fires_unreachable_reference`).
+
+## `signals-zero-inbound/`
+
+Isolates `docket signals` (MVP.md §4.4): the derived-degree report over
+the same reference graph `blast` already walks, headlined by zero-inbound
+claims — a candidate list for superseded-and-unnoticed, never a verdict.
+
+`docs/specs/a.md` carries three claims, chosen so out-degree and in-degree
+read as genuinely independent axes rather than one number seen twice:
+
+- `[base]` — no `depends`/`because` of its own, cited by `derived`.
+  out-degree 0, in-degree 1, review-surface 1 (`derived` is its whole
+  blast radius).
+- `[derived]` — `depends: [base]`, with a matching same-file anchor-form
+  prose link (`[base](#base)`, so C5 stays clean); nothing in the corpus
+  cites `derived` itself. out-degree 1, in-degree **0**, review-surface 0
+  — the case that motivates the fixture: a claim with real outgoing
+  dependencies can still be zero-inbound, because in-degree counts who
+  cites *it*, not what it cites.
+- `[standalone-invariant]` — neither `depends` nor `because`, and nothing
+  cites it either. out-degree 0, in-degree 0, review-surface 0 — the
+  self-contained-leaf shape the report's own framing calls out: a
+  legitimate zero-inbound claim, not a defect to fix.
+
+`docket signals --corpus fixtures/signals-zero-inbound` lists `derived`
+and `standalone-invariant` under zero-inbound (2 of 3 claims) and prints
+all three rows in the per-claim table above with exactly the
+out-degree/in-degree/review-surface values named above. The corpus passes
+`docket check` cleanly — like `blast-doc-anchor/`, this fixture
+demonstrates a query's behavior, not a check failure.
 
 ## Judgment calls made while writing these fixtures
 
