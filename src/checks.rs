@@ -126,6 +126,15 @@ struct InputHeading {
     level: u8,
     text: String,
     line: usize,
+    /// Real, GitHub-style anchor (`model::heading_slug`, deduplicated per
+    /// document at extraction time) — what an ordinary markdown link to
+    /// this heading actually names. Separate from `text`/`anchor_matches`'s
+    /// numeric-prefix rule, which stays `depends`/`because`'s own
+    /// resolution mechanism (MVP.md §1.3): register.ncl uses `slug` only
+    /// to resolve ordinary prose links (`dangling-reference`) and to
+    /// recognize when such a link targets the same heading a numeric
+    /// `depends`/`because` entry already names (C5).
+    slug: String,
 }
 
 #[derive(Serialize)]
@@ -263,6 +272,7 @@ fn build_input(loaded: &LoadedCorpus, config: &Config, markers: &[Marker]) -> In
                     level: h.level,
                     text: h.text.clone(),
                     line: h.line.0,
+                    slug: h.slug.clone(),
                 })
                 .collect(),
         })
@@ -889,6 +899,37 @@ mod tests {
     }
 
     #[test]
+    fn a_depends_entry_written_as_a_real_heading_slug_still_fails_c4() {
+        // Guards the boundary this migration deliberately did not cross:
+        // `depends`/`because` resolution stays numeric-only
+        // (`anchor_matches`), even though the same heading is now also
+        // addressable by its real GitHub slug for ordinary prose links
+        // (`c5_accepts_a_real_slug_prose_link_for_a_numeric_doc_anchor_declaration`,
+        // below). A `depends` entry written in slug form is not the
+        // numeric form C1/C4 expect, so it must still dangle.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
+              ],
+            }"#,
+        );
+        dir.write(
+            "docs/models/composition-model.md",
+            "## 6. The fact-set: the substrate's only state\n\nprose\n",
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/composition-model#6-the-fact-set-the-substrates-only-state]\n```\n",
+        );
+        let report = run(&dir);
+        assert_eq!(only(&report, "C4").len(), 1, "{:#?}", report.diagnostics);
+    }
+
+    #[test]
     fn c5_passes_when_prose_link_covers_a_depends_entry() {
         let dir = tempdir();
         dir.write(
@@ -1070,6 +1111,71 @@ mod tests {
         );
         let report = run(&dir);
         assert!(only(&report, "C5").is_empty(), "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn c5_accepts_a_real_slug_prose_link_for_a_numeric_doc_anchor_declaration() {
+        // The real-corpus fix this migration exists for: `depends`
+        // still names its target by section number
+        // (`docs/models/composition-model#6`, MVP.md §1.3, unchanged),
+        // but the prose link satisfying that declaration is written the
+        // way an author and a renderer both expect — a real GitHub slug,
+        // not the bare number. Before this fix that link never satisfied
+        // C5 at all (no renderer resolves `#6` to that heading), so a
+        // corpus in this exact shape had no way to pass both its own
+        // link-checking gate and C5 with one href.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
+              ],
+            }"#,
+        );
+        dir.write(
+            "docs/models/composition-model.md",
+            "## 6. The fact-set: the substrate's only state\n\nprose\n",
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nSee [the fact-set](../models/composition-model.md#6-the-fact-set-the-substrates-only-state).\n\n\
+             ```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/composition-model#6]\n```\n",
+        );
+        let report = run(&dir);
+        assert!(only(&report, "C4").is_empty(), "{:#?}", report.diagnostics);
+        assert!(only(&report, "C5").is_empty(), "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn c5_still_fails_when_the_slug_form_link_names_a_different_heading() {
+        // The false-positive floor for the fix above: a slug-form link
+        // that resolves to a REAL heading, just not the one the
+        // declaration names, must not satisfy C5 — `same_heading` cross-
+        // checks by the target heading's own `line`, not merely "some
+        // heading slug was present in this document."
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
+              ],
+            }"#,
+        );
+        dir.write(
+            "docs/models/composition-model.md",
+            "## 6. The fact-set: the substrate's only state\n\nprose\n\n## 7. A different section\n\nmore prose\n",
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nSee [a different section](../models/composition-model.md#7-a-different-section).\n\n\
+             ```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/composition-model#6]\n```\n",
+        );
+        let report = run(&dir);
+        assert_eq!(only(&report, "C5").len(), 1, "{:#?}", report.diagnostics);
     }
 
     #[test]
@@ -1447,6 +1553,7 @@ mod tests {
             "docs/specs/x.md",
             "### [x]\n\nSee [notes](../../.scratch/notes.md).\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
         );
+        dir.write(".scratch/notes.md", "");
         let report = run(&dir);
         let failures = only(&report, "unreachable-reference");
         assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
@@ -1454,6 +1561,246 @@ mod tests {
         assert_eq!(failures[0].file, "docs/specs/x.md");
         assert!(failures[0].message.contains(".scratch/notes.md"));
         assert!(!report.passed(), "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn an_inline_code_span_citing_a_gitignored_path_fires_unreachable_reference() {
+        // Symptom 1 of the defect this widening fixes: a bare mention
+        // like `` `.scratch/notes.md` `` is not markdown link syntax, so
+        // it never reached this check before — a reader still can't
+        // follow it.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", ".scratch/\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nSee `.scratch/notes.md` for background.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        dir.write(".scratch/notes.md", "");
+        let report = run(&dir);
+        let failures = only(&report, "unreachable-reference");
+        assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(failures[0].severity, Severity::Fail);
+    }
+
+    #[test]
+    fn an_ordinary_inline_code_span_never_fires_unreachable_reference() {
+        // The false-positive floor: `` `cargo test` `` is not path-shaped
+        // (no slash, dot, or anchor) — must stay silent.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", ".scratch/\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nRun `cargo test` first.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, "unreachable-reference").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_prose_example_matching_a_gitignore_pattern_but_naming_nothing_that_exists_is_silent() {
+        // The over-permissiveness defect this migration widened into:
+        // `path_shaped` only tests for a `/` or a `.`, so any backtick
+        // span happening to match a `.gitignore` pattern was a Fail-grade
+        // finding with no requirement that it name a file that exists —
+        // turning an ordinary illustrative example ("a two-part key like
+        // `foo/bar`") into a false unreachable-reference. `unreachable-
+        // reference` means "resolves, but a reader can't follow it"; a
+        // target present nowhere is not a reference at all, so this must
+        // never fire (and never fire dangling-reference either — a
+        // backtick span is not a link, so it was never that check's
+        // candidate to begin with).
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", "bar\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "### [x]\n\nFor example, a two-part key like `foo/bar` shows the general shape.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, "unreachable-reference").is_empty(),
+            "a path-shaped prose example naming nothing that exists must never fire: {:#?}",
+            report.diagnostics
+        );
+        assert!(
+            only(&report, "dangling-reference").is_empty(),
+            "a backtick span was never a link, so it is not dangling-reference's concern either: {:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn the_same_gitignore_pattern_still_fires_when_the_path_genuinely_exists() {
+        // The true positive `foo/bar.md` is silenced against above: the
+        // same `.gitignore` pattern, the same citation text, but this
+        // time `foo/bar.md` is real content on the author's disk — the
+        // check must still catch it. Without this, the existence filter
+        // above could pass by having simply turned the check off.
+        // `.md`-shaped (not bare `foo/bar`) so this stays a true positive
+        // under the document-shaped restriction below too, which the
+        // bare-path form would no longer satisfy.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", "bar.md\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "### [x]\n\nSee `foo/bar.md` for the working notes.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        dir.write("foo/bar.md", "");
+        let report = run(&dir);
+        let failures = only(&report, "unreachable-reference");
+        assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(failures[0].severity, Severity::Fail);
+        assert!(failures[0].message.contains("foo/bar.md"));
+    }
+
+    #[test]
+    fn a_code_span_naming_a_real_gitignored_non_markdown_artifact_never_fires() {
+        // The defect existence alone cannot close: `build/out.txt` is a
+        // genuinely gitignored path that genuinely EXISTS — an author who
+        // ran a real build locally has it on disk exactly the same way an
+        // author with a real `.ledger/` note does. Existence cannot tell
+        // "prose example naming a real build artifact" apart from "a
+        // citation to a document only the author can reach"; extension
+        // can, since every real citation this check exists for is
+        // `.ledger/…md`. The code-span route restricts to `.md`
+        // specifically for this reason — never the markdown-link route,
+        // which stays exactly as it was after the existence fix.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", "build/\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "### [x]\n\nSee `build/out.txt` for an example of the generated shape.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        dir.write("build/out.txt", "");
+        let report = run(&dir);
+        assert!(
+            only(&report, "unreachable-reference").is_empty(),
+            "a non-.md code-span candidate must never fire, even when it genuinely exists and is genuinely gitignored: {:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_markdown_link_matching_a_gitignore_pattern_but_naming_nothing_that_exists_is_dangling_not_unreachable()
+     {
+        // The same existence requirement applied consistently to the
+        // markdown-link surface, not only the widened backtick one: before
+        // this fix, `find_unreachable_references` never checked existence
+        // for either input (confirmed directly — the pre-existing tests
+        // for the `links` path never wrote their target to disk), so a
+        // link resolving to a gitignore-matching but nonexistent path was
+        // *also* a latent false Fail. Anchored (`#elsewhere`) so the link
+        // is `is_ref_shaped` and actually reaches `dangling-reference`'s
+        // resolution question (a same-document, no-anchor link is out of
+        // that check's ref grammar entirely, a separate, pre-existing
+        // scope boundary unrelated to this fix). It resolves to nothing in
+        // the corpus, so it correctly falls through to `dangling-reference`
+        // (Warn) instead — the check this module's own doc comment always
+        // said was the right home for "the target does not exist".
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", "bar\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "### [x]\n\nSee [notes](foo/bar#elsewhere) for background.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, "unreachable-reference").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+        assert_eq!(
+            only(&report, "dangling-reference").len(),
+            1,
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_markdown_link_to_a_real_gitignored_non_markdown_artifact_still_fires() {
+        // The document-shaped restriction is code-span-only by design —
+        // pinned here at the layer a user sees, not merely asserted in a
+        // comment. A markdown link is explicit link syntax an author
+        // wrote to be followed, unlike a backtick span's incidental
+        // prose, so `build/out.txt` linked this way stays a genuine
+        // `unreachable-reference` Fail exactly as it did before the
+        // code-span restriction existed.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", "build/\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "### [x]\n\nSee [the build output](/build/out.txt) for details.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        dir.write("build/out.txt", "");
+        let report = run(&dir);
+        let failures = only(&report, "unreachable-reference");
+        assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(failures[0].severity, Severity::Fail);
+    }
+
+    #[test]
+    fn a_genre_matched_nickel_contract_file_fires_unreachable_reference() {
+        // Symptom 2: `contracts/*.ncl` was outside the corpus entirely
+        // (genres match `.md` only, and claim/heading extraction cannot
+        // apply to Nickel). A corpus that declares it as its own genre
+        // (this project's stated resolution — see MVP.md) gets a
+        // backtick-only scan, wired all the way through to a real
+        // diagnostic.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", ".ledger/\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "contracts/*.ncl", kinds = [], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "contracts/x.ncl",
+            "# see `.ledger/2026-01-01-notes.md` for the decision\n",
+        );
+        dir.write(".ledger/2026-01-01-notes.md", "");
+        let report = run(&dir);
+        let failures = only(&report, "unreachable-reference");
+        assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(failures[0].file, "contracts/x.ncl");
     }
 
     #[test]
@@ -1638,6 +1985,158 @@ mod tests {
         );
     }
 
+    // --- AnchorKind::Html end to end --------------------------------------
+    //
+    // register.ncl needed NO changes for this: an html-anchored claim
+    // becomes an ordinary `Claim` once extracted, indistinguishable from a
+    // heading- or bold-form one, and dangling-reference/C4/C5 already
+    // resolve a doc-anchor citation whose anchor equals any real claim id
+    // regardless of which document — or which anchor form — registered it
+    // (MVP.md §1.3's "anchor form" acceptance, unchanged). These tests
+    // confirm that empirically rather than assuming it from the design.
+
+    #[test]
+    fn a_same_file_anchor_link_to_an_html_anchored_claim_resolves() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["requirement"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "<a id=\"html-claim\"></a>\n\nThe system MUST persist keyed data.\n\n```claim\nkind: requirement\nevaluator: test\n```\n\nSee [the requirement](#html-claim) above.\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, "dangling-reference").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_depends_entry_naming_an_html_anchored_claim_id_resolves_c4() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["requirement", "constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "<a id=\"html-claim\"></a>\n\nThe system MUST persist keyed data.\n\n```claim\nkind: requirement\nevaluator: test\n```\n\n### [depends-on-html]\n\nSee [the requirement](#html-claim).\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [html-claim]\n```\n",
+        );
+        let report = run(&dir);
+        assert!(only(&report, "C4").is_empty(), "{:#?}", report.diagnostics);
+        assert!(only(&report, "C5").is_empty(), "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn a_link_to_a_nonexistent_html_anchor_still_dangles() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["requirement"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "<a id=\"real-claim\"></a>\n\nprose.\n\n```claim\nkind: requirement\nevaluator: test\n```\n\nSee [nowhere](#not-a-real-anchor) above.\n",
+        );
+        let report = run(&dir);
+        let findings = only(&report, "dangling-reference");
+        assert_eq!(findings.len(), 1, "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn an_html_anchor_with_no_claim_block_is_reported_unregistered_through_the_register() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["requirement"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "<a id=\"orphaned-anchor\"></a>\n\nNo block follows this one.\n",
+        );
+        let report = run(&dir);
+        let findings = only(&report, "unregistered-definition");
+        assert_eq!(findings.len(), 1, "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn a_malformed_html_anchor_id_is_reported_through_the_register() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["requirement"], quadrant = "reference" } ] }"#,
+        );
+        dir.write("docs/specs/a.md", "<a id=\"Not_Valid\"></a>\n\nprose.\n");
+        let report = run(&dir);
+        let findings = only(&report, "malformed-id");
+        assert_eq!(findings.len(), 1, "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn dangling_reference_resolves_a_link_written_as_a_real_heading_slug() {
+        // Symptom A of the false-danglings defect this migration fixes:
+        // an ordinary, correctly-written markdown link to a heading —
+        // real GitHub slug, the form a renderer and a link-checker both
+        // accept — used to dangle because only the numeric-prefix
+        // `anchor_matches` rule was ever consulted for resolution.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/guides/**", kinds = [], quadrant = "how-to" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
+              ],
+            }"#,
+        );
+        dir.write(
+            "docs/models/composition-model.md",
+            "## 6. The fact-set: the substrate's only state\n\nprose\n",
+        );
+        dir.write(
+            "docs/guides/setup.md",
+            "# Setup\n\nSee [the fact-set](../models/composition-model.md#6-the-fact-set-the-substrates-only-state) for background.\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, "dangling-reference").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn dangling_reference_still_fires_for_a_near_miss_slug() {
+        // The false-positive floor for the fix above: a slug that is
+        // close to, but not exactly, a real heading's slug must still
+        // dangle — the fix resolves real slugs, not "something
+        // slug-shaped."
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/guides/**", kinds = [], quadrant = "how-to" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
+              ],
+            }"#,
+        );
+        dir.write(
+            "docs/models/composition-model.md",
+            "## 6. The fact-set: the substrate's only state\n\nprose\n",
+        );
+        dir.write(
+            "docs/guides/setup.md",
+            "# Setup\n\nSee [the fact-set](../models/composition-model.md#6-the-fact-set-is-wrong) for background.\n",
+        );
+        let report = run(&dir);
+        let findings = only(&report, "dangling-reference");
+        assert_eq!(findings.len(), 1, "{:#?}", report.diagnostics);
+    }
+
     #[test]
     fn a_link_outside_a_claims_scope_never_satisfies_its_declaration_even_though_it_resolves() {
         // The load-bearing constraint the dispatch names explicitly: C5's
@@ -1686,6 +2185,7 @@ mod tests {
             "docs/specs/x.md",
             "### [x]\n\nSee [notes](../../.scratch/notes.md).\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
         );
+        dir.write(".scratch/notes.md", "");
         let report = run(&dir);
         assert_eq!(
             only(&report, "unreachable-reference").len(),

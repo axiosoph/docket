@@ -26,7 +26,7 @@ depends: [docs/models/composition-model#6, docs/models/execution-model#2.4]
 
 **The claim's `id` is not in the block.** It is taken from the nearest
 preceding **definition** — a marker elsewhere in the document whose
-sole job is to state the id. Two forms are recognized:
+sole job is to state the id. Three forms are recognized:
 
 **Heading form.** A heading whose text is exactly a bracketed
 kebab-case token:
@@ -55,10 +55,40 @@ crossing one.
 lock-nonzero)_: Every lock value MUST be ground.
 ```
 
-Both forms exist because corpora do: a specification-first corpus
-built around numbered sections tends toward the heading form, while a
-prose-first corpus stating one requirement per paragraph tends toward
-the bold form — and a real corpus measured against an early
+**HTML form.** An empty, immediately self-closed anchor tag —
+`<a id="lock-groundness"></a>` — with nothing at all between the open
+and close tags:
+
+```markdown
+<a id="lock-groundness"></a>
+```
+
+The only form with no positional constraint: a heading or a line-start
+bold span both occupy a visible line of their own, but an html anchor
+may sit mid-paragraph, inside a table cell, or immediately before a
+`claim` fence. It exists because the other two forms cannot be made
+invisible: a claim id occupying a whole heading or a bolded lead-in is
+useful for a reference corpus (a section IS the fact it states), but
+some corpora need to anchor a claim without that id ever rendering in a
+reader's view. `<a id="…"></a>` is the only markdown-legal construct
+that is simultaneously invisible in rendered output and a genuine link
+target — an HTML comment (`<!-- id: … -->`) renders nothing and
+therefore *anchors* nothing either; a link could never point at it.
+
+The pair must be exactly adjacent — `<a id="x">` immediately followed
+by `</a>`, no content between them. Anything else (an unclosed tag, real
+text between the tags, `<a href="…">` with no `id` attribute at all) is
+never a recognized definition attempt, silently — the same treatment an
+unpunctuated bold span or a non-line-start one already gets. An `id`
+attribute that IS present but empty or non-kebab-case, on a pair that
+IS immediately closed, is `malformed-id` (below) rather than silence:
+the empty-closed shape is what confirms the author was attempting a
+definition, the same way a bold span's colon confirms it.
+
+Both existing forms exist because corpora do: a specification-first
+corpus built around numbered sections tends toward the heading form,
+while a prose-first corpus stating one requirement per paragraph tends
+toward the bold form — and a real corpus measured against an early
 heading-only draft of this tool had 400 of its 418 definitions in bold
 form. **The tool learns the corpus's convention rather than requiring
 the corpus to restructure around the tool's.** Recognizing a form is
@@ -66,9 +96,40 @@ deliberately permissive rather than requiring a canonical one: id
 uniqueness (C2) adjudicates precision centrally, so an over-matching
 recognizer produces a loud, corpus-wide duplicate-id failure — naming
 every site that declared the id, regardless of which recognizer found
-each one — rather than a silently invented claim. This is what keeps
-adding a third form, later, cheap: each recognizer needs to be roughly
-right, not perfect.
+each one — rather than a silently invented claim. This is what kept
+adding a third form cheap: each recognizer needs to be roughly right,
+not perfect.
+
+**An html anchor's prose scope (C5) depends on its position, not only its
+spelling — stated in one sentence: an anchor immediately beside a
+heading (nothing but whitespace between them, either order) is a
+heading-form definition differently spelled, inheriting that heading's
+level and full section extent; a free-standing anchor is genuinely
+inline, and closes at the next heading of any level or the next
+definition of any other inline form, whichever comes first.**
+
+This is not the same shape of problem bold-form already solved, even
+though it first looked that way. A bold span (`**[id]**: text`) is
+*inherently* inline — a sentence never has an adjacent heading it could
+name — so there was never any positional information to consult. An
+html anchor is positionally **polymorphic**: beside a heading it names a
+*section*; free-standing in prose it names a *paragraph run*. Treating
+it as always-inline discards real information exactly where it exists,
+and does so with a sharp failure mode: an anchor placed *immediately
+before* its own heading then closes its scope at the very next heading —
+its own — collapsing `[scope_start, scope_end)` to nothing and silently
+dropping every link and code span in the section. Anchor-before-heading
+and anchor-after-heading are cosmetically identical authoring choices;
+one of the two orders zeroed the claim. The classification above is the
+fix: adjacency is checked once, at definition-recognition time, and a
+heading-adjacent anchor is folded into the SAME heading-form scope
+computation §1.1's own heading rule already gives a bracketed heading —
+survives a deeper subheading beneath it, closes only at the next
+same-or-higher-level heading, exactly as if the heading itself had
+carried the bracket-kebab id. Only a genuinely free-standing anchor ever
+reaches the inline rule, and bold-form's own scope still closes at the
+next free-standing html anchor, symmetrically — the addition does not
+silently widen an existing form's scope in one direction only.
 
 Rationale, unchanged by the addition of a second form: the id already
 exists in prose as the human-readable anchor, and duplicating it into
@@ -76,28 +137,30 @@ the block would create precisely the divergence surface this tool
 exists to remove. One statement, one place.
 
 **Ownership.** A claim block belongs to the **nearest preceding
-definition, either form** — one rule across both, not two: exactly the
-existing "a deeper heading wins over a shallower one" behavior,
-generalized from one shape to two rather than replaced. The block need
-not be adjacent to its definition, only nearest to it — a bold-form
-definition sits inline in prose, so a fenced block cannot follow it
-directly the way it can a heading, and a human author reaches the
-block after elaborating, not before.
+definition, any of the three forms** — one rule across all of them, not
+one per form: exactly the existing "a deeper heading wins over a
+shallower one" behavior, generalized from one shape to three rather than
+replaced. The block need not be adjacent to its definition, only
+nearest to it — a bold-form or html-form definition sits inline in
+prose, so a fenced block cannot follow it directly the way it can a
+heading, and a human author reaches the block after elaborating, not
+before.
 
 A claim block with no such preceding definition anywhere in the file is
 an error (`orphan-claim`).
 
-**Unregistered definitions.** A recognized definition — either form —
-with no claim block is *unregistered*: real corpus content the
-register does not yet cover. Reported as `unregistered-definition`
-(`Warn` severity, §5) rather than failed on, since a corpus is expected
-to carry many of these on the day a registration effort begins; the
-count is exactly the number that effort exists to move.
+**Unregistered definitions.** A recognized definition — any form — with
+no claim block is *unregistered*: real corpus content the register does
+not yet cover. Reported as `unregistered-definition` (`Warn` severity,
+§5) rather than failed on, since a corpus is expected to carry many of
+these on the day a registration effort begins; the count is exactly the
+number that effort exists to move.
 
 **Malformed ids.** A bracketed token that sits in definition position —
 line-start `**[...]**` immediately followed by definitional punctuation,
-or a heading whose entire text is `[...]` — but whose inner content is
-not lowercase kebab-case is not recognized as a definition at all: it
+a heading whose entire text is `[...]`, or an immediately-closed
+`<a id="…"></a>` — but whose inner content (or `id` attribute) is not
+lowercase kebab-case is not recognized as a definition at all: it
 becomes neither a claim nor an `unregistered-definition`, which means it
 would otherwise produce **no diagnostic whatsoever** — the same silence
 a correctly handled definition produces. Reported instead as
@@ -105,9 +168,15 @@ a correctly handled definition produces. Reported instead as
 than folded into `unregistered-definition`: the remedies differ (rename
 the id, versus write a claim block), and a malformed id is more likely a
 mistake than a coincidence — prose rarely opens a line with a bolded
-bracketed kebab-ish token followed by a colon. The id itself is never
+bracketed kebab-ish token followed by a colon, or closes an anchor tag
+immediately with an id attribute, by accident. The id itself is never
 normalized or auto-corrected; the grammar stays exactly what §1.1
-already states, only violations of it become visible.
+already states, only violations of it become visible. An html anchor's
+`id` attribute additionally counts *empty* (`id=""`) as malformed rather
+than as "not a candidate" — the confirming signal for this form is
+structural (the pair is closed and empty), not textual, so there is no
+"this was never meant as a definition" reading the way an ordinary
+sentence gives a multi-word bracket.
 
 A bracket whose inner content carries whitespace is not treated as a
 malformed id — it reads as an ordinary sentence (`**[Note to
@@ -229,14 +298,100 @@ match `## 60. …`.
 
 Section numbers rather than slugified heading text, deliberately: heading
 *wording* churns far more often than section *numbering* in the corpora
-this tool targets, so numbers are the more stable anchor. The failure mode
-when a document is renumbered is loud — C4 fails immediately — rather than
-silent.
+this tool targets, so numbers are the more stable anchor.
+
+**This is a known live defect, not a safety property, and the failure
+mode is not loud.** A renumber that inserts, removes, or reorders a
+section only fails loudly (C4) when a citation stops resolving to
+*anything*. A renumber that shifts an existing citation onto a
+*different real section* resolves perfectly and points at the wrong
+content, silently — `docs/models/atom-model#6` still means "whatever is
+now numbered 6," which may no longer be what the citation's author
+meant. This is strictly worse than a dangling reference: the dangling
+one is visible and gets fixed; the wrong-but-resolving one is invisible
+and stays wrong. The corpus-side remedy is to cite a claim id rather
+than a section number wherever the target has one — a claim id is
+stable under renumbering by construction, the same guarantee §1.2
+already gives every other `depends`/`because` entry — and is the
+direction the consumer corpus this tool was built against is moving in.
+The document-anchor form stays supported for sections that have not (or
+cannot) acquire a claim id of their own.
+
+**Heading slugs — a second, orthogonal addressing scheme for ordinary
+prose links.** `depends`/`because` entries stay numeric (above); every
+heading is *also* indexed under its real, GitHub-style anchor — what an
+ordinary relative markdown link's `#fragment` actually names, and what
+GitHub itself renders. This is not a replacement for anchor derivation
+and does not touch `depends`/`because` resolution at all: it exists
+because a documentation corpus's prose links are written for a renderer
+and a link checker, neither of which has ever heard of this tool's
+numeric convention, and a corpus that only ever wrote `[…](#6)`-shaped
+prose links would ship anchors that don't work anywhere but here.
+
+Slug computation (`docket`'s own `model::heading_slug`): lowercase the
+heading text, drop every character that is not a Unicode letter/digit,
+combining mark, or an ASCII space/hyphen/underscore — dropped outright,
+never replaced, so `"a/b"` collapses to `"ab"` and `"1.5 Foo"` collapses
+to `"15-foo"` — then turn each surviving space into its own hyphen
+(consecutive spaces become consecutive hyphens; never collapsed). Within
+one document, a repeated slug is deduplicated in heading order: first
+occurrence bare, then `-1`, `-2`, … This is a direct, verified port of
+`github-slugger`'s published algorithm (lowercase → strip a large Unicode
+punctuation/symbol blacklist → spaces to hyphens → per-document dedup),
+approximated by "keep alphanumeric-or-combining-mark-or-space/hyphen/underscore"
+rather than porting that several-thousand-codepoint blacklist verbatim —
+the blacklist itself was parsed from `github-slugger`'s published
+`regex.js` to derive both the combining-mark table and the divergences
+below, not recalled or assumed.
+
+The two are confirmed identical on every heading shape this tool's own
+real corpora carry (numbered headings, inline code, brackets, non-ASCII
+punctuation like em dashes and section signs, and — as of the fix that
+added the combining-mark table — NFD-composed accents and other scripts'
+combining marks, the form many editors, filesystems, and copy-pasted
+GitHub URLs actually produce: `café` written as `e` + a bare combining
+acute accent, not the single precomposed `é`). Three characterized
+divergences remain, none a shape any of this tool's real corpora carry
+today: **38 very recent Unicode 16.0 codepoints** (Arabic Quranic
+annotation marks, two Telugu/Kannada signs) that `github-slugger`'s
+blacklist has not caught up to and still strips, which this table keeps
+regardless — a byte-perfect port would need to carve these back out, and
+does not, the same judgment call this residual note already makes for
+the gaps below; **seven unassigned (Unicode category `Cn`) codepoints —
+`0x192C`–`0x192F` and `0x11F3B`–`0x11F3D`** — swept into the table as a
+side effect of merging its surrounding ranges rather than deliberately
+kept; harmless and in the same safe direction as the gap above (no
+codepoint can meaningfully appear in a heading before Unicode assigns it
+a meaning), but not something a byte-perfect port would carry, so named
+here rather than left for the table alone to reveal; and
+**Symbol-category codepoints `github-slugger` does not strip but this
+approximation still does** — emoji chief among them (an emoji is not
+itself alphanumeric, a combining mark, or ASCII punctuation, so "keep"
+never fires for it). Measured, not merely derived: a heading `## Rocket
+🚀 Launch` produces the slug `rocket--launch` (emoji dropped, the
+resulting doubled hyphen kept as-is, matching `"a/b"` → `"ab"` above) —
+a prose link to `#rocket-🚀-launch` (the un-stripped form `github-slugger`
+would produce) dangles, while `#rocket--launch` resolves.
+
+Two consumers, both about *prose links*, neither about `depends`/`because`
+itself: `dangling-reference` (§3) resolves a link naming a heading by its
+real slug, alongside the existing numeric rule; and C5's "document anchor"
+case, next, gains a second way to be satisfied.
 
 **Which link forms satisfy a declaration (C5).** A `depends`/`because`
-entry naming a **document anchor** is satisfied only by an exact match —
-its normalized path and anchor must equal the entry's. An entry naming a
-**claim id**, though, is satisfied by either of two prose-link forms:
+entry naming a **document anchor** is satisfied by an exact match — its
+normalized path and anchor must equal the entry's — **or** by a prose
+link, in real heading-slug form, that names the *same heading* the
+entry's numeric anchor resolves to (cross-checked by heading identity,
+not by requiring either side to match the other's vocabulary). This
+second path exists because the entry's own numeric anchor
+(`composition-model#6`) is never itself a link a renderer or link
+checker would resolve to that heading — only the slug form is — so
+without it, a doc-anchor declaration could never be satisfied by a link
+an author would actually write unprompted, the same bind the claim-id
+case below was already in before its own second form was accepted. An
+entry naming a **claim id**, similarly, is satisfied by either of two
+prose-link forms:
 
 - the **bare id** as the href, `[…](spine-chain-complete)` — resolved only
   by this tool's normalization, since it is neither a path nor a fragment;
@@ -245,8 +400,8 @@ its normalized path and anchor must equal the entry's. An entry naming a
   whose anchor component equals the id, independent of which document it
   names.
 
-Both are accepted, non-exclusively: a documentation corpus must stay
-readable by ordinary tooling, and the bare form is not that — no
+All accepted, non-exclusively: a documentation corpus must stay
+readable by ordinary tooling, and the bare claim-id form is not that — no
 markdown renderer resolves it to anything and no link checker accepts an
 href that names no file, so a corpus that used it exclusively would ship
 links this tool alone can follow. The anchor form is what a renderer
@@ -279,7 +434,11 @@ document anchor; document identifiers are the corpus-relative path with
 `.md` removed, not a basename; a prose link normalizes to the same
 vocabulary by resolving against the citing file's directory before
 comparison; an anchor matches a heading by non-alphanumeric-bounded
-prefix, not exact text.
+prefix, not exact text; a heading is also indexed under its real
+GitHub-style slug, a second addressing scheme used only to resolve
+ordinary prose links (`dangling-reference`) and to recognize when one
+names the same heading a numeric doc-anchor entry already does (C5) —
+never to resolve `depends`/`because` itself.
 
 ```claim
 kind: constraint
@@ -411,15 +570,19 @@ The replacement:
 Formally: let `D` be a claim's `depends` ∪ `because` entries and `L` its
 normalized prose-link targets (which array an entry came from does not
 matter here). A document-anchor entry in `D` matches `L` by exact target
-equality; a claim-id entry matches by target equality **or** by any `L`
-entry whose anchor component equals the id (§1.3, "Which link forms
-satisfy a declaration") — the anchor form has no other representation,
-since a claim id carries no anchor of its own. The rule is `D ⊆ L` under
-that matching, not `D = L`. Everything declared must be linked, so a
-reader following prose reaches what the graph says matters; nothing
-requires the reverse, so an incidental mention costs nothing to leave
-undeclared, and nothing is hidden — undeclared *means* bare, and bare
-asserts nothing.
+equality **or** by any `L` entry naming the *same heading* in real
+GitHub-slug form (§1.3, "Heading slugs") — the numeric anchor `D` itself
+carries is never a link a renderer resolves to that heading, so without
+this second path a doc-anchor declaration could only ever be satisfied
+by a link no ordinary tooling would accept. A claim-id entry matches by
+target equality **or** by any `L` entry whose anchor component equals
+the id (§1.3, "Which link forms satisfy a declaration") — the anchor
+form has no other representation, since a claim id carries no anchor of
+its own. The rule is `D ⊆ L` under that matching, not `D = L`.
+Everything declared must be linked, so a reader following prose reaches
+what the graph says matters; nothing requires the reverse, so an
+incidental mention costs nothing to leave undeclared, and nothing is
+hidden — undeclared *means* bare, and bare asserts nothing.
 
 **This also relocates a job C5 was never able to do.** No formulation of
 set equality — old or new — can catch *undeclared dependence*: an author
@@ -492,14 +655,68 @@ directory (`.ledger`, `.scratch`, or any project-specific ignore rule)
 resolves for its author, for a reviewer in the same worktree, and for
 every check that runs where the author sits — and resolves to nothing
 for every other reader of the repository, which is everyone the document
-was written for
-(`.ledger/2026-08-05-references-that-leave-the-register.md`, O4's
-"unreachable" condition, distinct from C4's "dangles": the target is
-present, only unreachable). `Fail` severity, not `Warn`: unlike
+was written for — distinct from C4's "dangles": the target is present,
+only unreachable. `Fail` severity, not `Warn`: unlike
 `unregistered-definition`/`malformed-id`, a real corpus is not expected
 to carry any of these on the day this check ships — an unreachable
 reference is wrong the moment it is written, with the same cheap,
 unambiguous remedy C4's dangling `depends` has (rewire or remove).
+
+**A candidate must exist on disk, for both inputs — not a weakening, the
+check's actual semantics.** `unreachable-reference` means "resolves, but a
+reader can't follow it" (above: "the target is present, only
+unreachable" — this was always the stated contract, restored here to
+match, not newly invented). A path-shaped candidate naming nothing that
+exists is not a treacherous local-only reference at all; it is a typo or
+a prose example that happens to collide with an unrelated `.gitignore`
+pattern (`` `foo/bar` `` in running text, when `.gitignore` ignores any
+directory named `bar`), and neither case is this check's business — the
+former is `dangling-reference`'s question for a markdown link (and simply
+not a citation at all for a code span, which that check was never wired
+to see), the latter is nobody's. This applies identically to `links` and
+`code_references`: the code-span-widening dispatch surfaced it because
+prose backtick spans collide with `.gitignore` far more often than
+deliberately-authored links do, but the underlying gap — no existence
+check at all — predated the widening and applied equally to markdown
+links; the fix closes it for both rather than leaving the link path with
+the same latent false-Fail. Checked with a plain filesystem stat against
+the corpus root, before the `git` batch, so a nonexistent candidate costs
+nothing beyond that.
+
+**The code-span route is further restricted to document-shaped targets —
+a `.md` extension exactly — the `links` route is not.** Existence alone
+cannot tell a citation from a prose example that names a real gitignored
+ARTIFACT: `` `build/out.txt` `` genuinely exists once an author has run a
+build locally, the same way `.ledger/2026-08-05-foo.md` genuinely exists
+once an author has written a note — the existence check above cannot
+distinguish them, since both are real files on disk. The extension can:
+every real citation this check exists for is `.ledger/…md`, so requiring
+it costs nothing real and drops the artifact-mention false positive by
+construction rather than by heuristic. Applied to `code_references` only,
+never to `links`: a markdown href is explicit link syntax an author wrote
+to be followed, not the incidental prose a bare backtick span merely
+happens to resemble — `[the build output](/build/out.txt)` still fires,
+`` `build/out.txt` `` does not, for the identical gitignored, existing
+target. A broader document set (a bare directory, say) is purely additive
+if a future corpus needs it; `.md` is what every real citation measured
+against actually is.
+
+**The existence requirement makes this check structurally silent on a
+fresh clone or a CI runner, where the gitignored target never exists.**
+Before the existence fix, a path-shaped candidate matching a `.gitignore`
+pattern fired regardless of whether anything was actually on disk, so the
+check caught an unreachable reference from any checkout. Now it only
+fires where the author sits, because the target — by definition
+gitignored — is present in no other checkout at all. This is not an
+argument against the existence rule, which is correct on its own terms
+(a candidate that names nothing real is a typo or a prose collision, not
+an unreachable reference, and the false-Fail it produced without the
+rule was the worse defect); it is a limit a reader of this check must
+know. `docket check` run in CI, or against a fresh clone, enforces less
+than the same command run locally — the exact inversion of what a reader
+would assume "CI enforces what runs locally" to mean, for this one
+check. There is no CI configured for docket today, so this has not yet
+surfaced as a gap in practice, but it will the moment one is added.
 
 **Directional.** Only a tracked document's link to an ignored path is
 checked; the reverse — an ignored file linking into the repository — is
@@ -515,14 +732,88 @@ repository, or an environment with no `git` on `PATH`, degrades to
 silence rather than a false verdict or a crash — there is no
 reader-reachability question to answer without a repository to ask.
 
+**What counts as a reference — widened past markdown link syntax.** A
+reference is a pointer a reader cannot follow whether or not it happens
+to use `[text](href)` syntax: a bare, backtick-quoted path inside a
+sentence is exactly as unreachable as the same path written as a link,
+and this project's own corpus carried real instances of the former that
+the check could not see for its own first day of existence. The line
+drawn, exactly: **a backtick-delimited span whose content is path-shaped
+is in scope; arbitrary prose merely mentioning a directory name is
+not** — a bare, backtick-quoted path is checked, "see the recorder
+directory" in plain prose is not, because the backtick marks the
+author's own intent to write something literal (a path, a filename),
+the same signal an inline code span already carries for every other
+purpose in this tool. A code-span reference resolves **corpus-root-relative
+directly**, never against the citing file's own directory the way a
+markdown href does (§1.3): real citations are written identically
+regardless of which file cites them — a nested-directory file cites the
+recorder without any relative-path prefix, the same way a corpus-root
+file does — which only makes sense under root-relative reading —
+resolving it the way a markdown href
+resolves would silently check the wrong, always-nonexistent path for
+every citer outside the corpus root. A leading `/` in a code-span
+reference means the same thing it means for a markdown href (root
+already), and is stripped before resolving rather than handed to `git`
+literally, which reads a leading `/` as an OS-absolute path attempt.
+Never consulted by `dangling-reference`/C5: an inline code span is not a
+link, and treating one as a resolvable target for those checks would
+fire on every incidental `` `docs/x.md` `` mention that was never meant
+as a citation.
+
+**Which files this check covers.** Every genre-matched markdown document,
+as always — plus, now, any OTHER genre-matched file too, scanned only for
+backtick-delimited code-span references (never for claims or headings,
+which cannot live outside markdown). A corpus opts a non-markdown path
+pattern in exactly the way it opts any markdown path pattern: by
+declaring it a genre in `docket.ncl` (`kinds = []`, since no claim block
+can live there). This project's own `docket.ncl` declares
+`contracts/*.ncl` this way: docket's bundled Nickel contracts are its
+normative SPECIFICATION layer (§7: "Nickel is required for the
+contract"), continuous with MVP.md as documentation a reader consults to
+understand the tool, not mere implementation. The non-markdown scan is a
+**lexical, line-by-line backtick scan** (`gitignore::find_backtick_references`),
+not a language-aware comment parser — Nickel has no backtick syntax of
+its own (strings are `"…"` or `m%"…"%m`), so in a well-formed `.ncl` file
+every backtick pair this scan finds sits inside a `#` comment in
+practice; a file that put a literal backtick inside a string would be
+invisible to (or misread by) this scan, the same class of stated
+limitation §4.3's absence search already carries for string and raw
+literals it does not track.
+
+**Deliberately out of scope: other project source (`src/*.rs` and
+similar).** Rust module and inline doc comments in this very codebase
+also cite the recorder's decision records — more of them, in fact, than
+markdown and Nickel combined. Extending the same backtick scan there is
+architecturally possible (the mechanism is generic) but is NOT done here:
+it was flagged as an open decision rather than made unilaterally, because
+whether an implementation comment citing its own design rationale is the
+same kind of "documentation a stranger must be able to read whole" as a
+spec file is a real, debatable question, and answering it commits a
+whole codebase's comment convention, not one check's file list. A
+corpus MAY choose to bring its own source under this scan the same way
+`contracts/*.ncl` was — declare it a genre — once that question has an
+owner.
+
+**A robustness finding surfaced by this widening, worth stating plainly:**
+`git check-ignore --stdin` does not skip a candidate path it treats as an
+invalid pathspec (a bare `/`, `..`, or a leading `//`) the way it skips
+an ordinary non-ignored one — it fatals the whole batch and stops reading
+further candidates, discarding every real match queued alongside the bad
+one. A real corpus's own prose discussing its own leading-`/` convention
+in an inline code span hit exactly this, silently zeroing an otherwise-
+correct result. The fix (`gitignore::ignored_paths`) falls back to
+querying one candidate at a time whenever the batch fatals, recovering
+every real match around the bad one rather than requiring every possible
+pathological string to be enumerated and pre-filtered by hand.
+
 **`dangling-reference`, links are a document's facts, not only a
 claim's.** §1.1's link surface (a claim's prose scope, C5's `L`) is
 collected and satisfies a declaration at that scope on purpose — a
 declared reference is a promise that a reader following the *claim's own
 prose* meets the citation, and a link elsewhere in the document must
-never discharge that promise
-(`.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`).
-But a document's links are a wider set than any claim's scope: a genre
+never discharge that promise. But a document's links are a wider set
+than any claim's scope: a genre
 that permits no claim blocks at all (a how-to guide, `kinds = []`) still
 points at things, and before this check, those links were extracted and
 then went nowhere — not resolved, not reported, invisible to every check
@@ -535,11 +826,15 @@ resolves a `depends`/`because` target: against corpus documents and
 claim ids, using the anchor form's already-established exception (a
 doc-anchor whose anchor equals a real claim id resolves regardless of
 which document it names, the same acceptance §1.3 already gives C5's
-declared-refs question). A target that resolves is silent, same as
-everywhere else in this tool. One that does not is `dangling-reference`
-— **`Warn`, not `Fail`**: the reference-kinds table (§1.2) already
-settles this — a bare reference asserts no dependence, so its target
-missing breaks nothing, only leaves a citation that goes nowhere.
+declared-refs question) — **plus one path C4 does not have**: a
+doc-anchor whose anchor is a heading's real GitHub slug (§1.3, "Heading
+slugs") also resolves, since an ordinary prose link is written in that
+form, not the numeric form `depends`/`because` itself still uses. A
+target that resolves is silent, same as everywhere else in this tool.
+One that does not is `dangling-reference` — **`Warn`, not `Fail`**: the
+reference-kinds table (§1.2) already settles this — a bare reference
+asserts no dependence, so its target missing breaks nothing, only leaves
+a citation that goes nowhere.
 
 **Two exclusions, so a broken target is never reported twice.** A link
 that resolves but is gitignored is `unreachable-reference`'s finding,
@@ -560,9 +855,8 @@ already performs, extended in scope rather than in kind.
 **`absent-marker-stale`, derived from the marker scan, not a sixth
 numbered check.** §4.3 adds `evaluator: absent` — a claim discharged by
 confirming a named literal is absent from the corpus's non-documentation
-source, not by evidence that something holds
-(`.ledger/2026-08-05-references-that-leave-the-register.md`, O3). Its
-marker pairs the claim to the exact literal, wherever in the document
+source, not by evidence that something holds. Its marker pairs the claim
+to the exact literal, wherever in the document
 the author marked it; this check catches the marker and the prose it
 sits beside falling out of step — a marker naming a literal no code span
 in that claim's own prose currently mentions. `Warn` severity, like
@@ -820,11 +1114,10 @@ recognized success; a command whose output matches no known shape is
 **`evaluator: absent` — the marker's text is a literal, not a
 command.** For every other evaluator, a marker's text after `::` is
 `sh -c`'d. For `absent` it is instead searched for, verbatim, across the
-corpus's non-documentation source
-(`.ledger/2026-08-05-references-that-leave-the-register.md`, O3: a
-document stating something does NOT exist is a reference too, and it
-breaks in the opposite direction — when its target *appears*). Found ⇒
-`fail`; not found ⇒ `pass`. No new marker syntax: the claim's own
+corpus's non-documentation source — a document stating something does
+NOT exist is a reference too, and it breaks in the opposite direction
+(when its target *appears*). Found ⇒ `fail`; not found ⇒ `pass`. No new
+marker syntax: the claim's own
 `evaluator: absent` field is what tells the runner to interpret the
 marker's text this way, so the grammar in "Evaluator markers," above, is
 unchanged.
@@ -844,8 +1137,9 @@ The search excludes documentation (`.md` — the claim's own document
 necessarily names the literal to describe its absence, so including it
 would make every absence claim fail immediately), a recognized test
 path (a `test`/`tests` path component), and any path `git` would not
-track (`target/`, `node_modules/`, and the like) — build output and
-vendored dependencies are not corpus source, and a hit inside one is
+track (a build directory, a vendored dependency tree, and the like) —
+build output and vendored dependencies are not corpus source, and a hit
+inside one is
 neither fixable at the marker nor reproducible machine to machine, since
 the verdict would then depend on whether a build had happened to run.
 A recognized language's comments are stripped before matching (`//`- and

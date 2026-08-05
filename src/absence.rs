@@ -910,6 +910,55 @@ mod tests {
     }
 
     #[test]
+    fn find_literal_shares_the_batch_poisoning_fix_not_a_parallel_implementation() {
+        // `find_literal` (module code, above) calls
+        // `crate::gitignore::ignored_paths` directly — the exact function
+        // `gitignore::tests::a_fatal_candidate_falls_back_to_recovering_every_other_one`
+        // already pins against the real defect: one candidate `git
+        // check-ignore --stdin` treats as an invalid pathspec (`/`, `..`,
+        // a leading `//`) used to fatal the WHOLE batch, silently
+        // discarding every real match beside it — which here would mean
+        // a false `pass` on an absence claim whose literal is actually
+        // present in an ignored-but-unfiltered directory, exactly the
+        // failure `evaluator: absent` exists to prevent.
+        //
+        // This is a wiring proof, not a reproduction from `find_literal`'s
+        // own inputs: unlike `gitignore.rs`'s code-references (free text
+        // from inside a document, which genuinely can be `/` or `..`),
+        // `find_literal`'s candidates come from `corpus::walk_files` —
+        // real relative filesystem paths, which can never literally BE
+        // `/`, `..`, or empty (none is a constructible file or directory
+        // name). Confirmed directly: a filename containing a literal
+        // newline byte (a real, if unusual, possibility on this
+        // filesystem) does NOT trigger the same 128-fatal path either —
+        // git silently treats it as an extra stdin line rather than an
+        // invalid pathspec. So there is no organic way to reproduce the
+        // exact defect through this function's own candidate-generation
+        // path; what is verified here is that it depends on the SAME
+        // fixed function, not a parallel, unfixed one.
+        let repo = tempdir();
+        repo.git_init();
+        repo.write(".gitignore", "target/\n");
+        repo.write("target/debug/generated.rs", "");
+
+        let ignored = crate::gitignore::ignored_paths(
+            "git",
+            repo.path(),
+            &[
+                "target/debug/generated.rs".to_string(),
+                "/".to_string(),
+                "src/lib.rs".to_string(),
+            ],
+        );
+        assert!(
+            ignored.contains("target/debug/generated.rs"),
+            "the real ignored path must still be found even with a fatal \
+             candidate in the same batch: {ignored:?}"
+        );
+        assert!(!ignored.contains("src/lib.rs"));
+    }
+
+    #[test]
     fn a_literal_the_source_genuinely_splits_across_a_line_break_is_not_found() {
         // Not a regression case for a real defect: a `\n`-free literal
         // can never straddle a `.lines()` boundary (the newline that

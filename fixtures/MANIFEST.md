@@ -37,6 +37,8 @@ called out below.
 | `normative-prose-quoted/` | — (all pass) | Not a check fixture — see below. The identical keyword, present only inside a block quote and inside an inline code span, in the same `kinds = []` genre. |
 | `blast-doc-anchor/` | — (all pass) | Not a check fixture — see below. Isolates a `blast` behaviour rather than a check. |
 | `anchor-link-satisfies-claim-id/` | — (all pass) | Not a check fixture — see below. Isolates C5's anchor-form acceptance for a claim-id declaration. |
+| `heading-slug-resolves-dangling/` | — (all pass) | Not a check fixture — see below. Isolates real GitHub-slug heading resolution for `dangling-reference`. |
+| `heading-slug-satisfies-c5/` | — (all pass) | Not a check fixture — see below. Isolates C5 accepting a real-slug prose link as satisfying a numeric-anchor `depends`/`because` entry naming the same heading. |
 | `golden/` | — (all pass) | See below. |
 | `run-pass/` | — (all pass; `docket run always-true` exits 0) | Not a `C`-check fixture — see below. `src/lib.rs` carries `// @docket: always-true :: true`; the marker's command exits 0. |
 | `run-fail/` | — (all pass; `docket run always-false` exits 1) | Not a `C`-check fixture — see below. `src/lib.rs` carries `// @docket: always-false :: false`; the marker's command exits 1. |
@@ -50,11 +52,21 @@ called out below.
 | `run-bare-wrong-grade-absent/` | — (all pass; `docket run bare-marker-wrong-grade` exits 3) | Not a `C`-check fixture — see below. Same bare marker shape as `run-bare-type-pass/`, but the claim is `evaluator: test` — a grade that needs a command a bare marker cannot offer, so it does not count as a match and the claim reports `absent`, exactly as if no marker existed. |
 | `bold-form-definitions/` | — (all pass) | Not a check fixture — see below. Isolates the bold-form recognizer: five definitions — one direct-colon, two parenthetical (one non-ASCII), and two italicized revision notes (one multi-line) — each with a matching block. |
 | `bold-form-false-positives/` | — (all pass) | Not a check fixture — see below. The false-positive floor: ordinary bold text, a mid-sentence citation, a line-start bracket with no adjacent punctuation, and a list-embedded bracket — none recognized as a definition. |
+| `html-anchor-definitions/` | — (all pass) | See below. Isolates the third (html) definition form: an `<a id="…"></a>` anchored claim, resolved by both the bare-id and anchor-form prose-link forms exactly like any other definition. |
+| `html-anchor-false-positives/` | — (all pass) | See below. The false-positive floor: an `<a href="…">` with no `id`, an unclosed `<a id="…">`, and a closed pair carrying real content between the tags — none recognized as a definition. |
+| `html-anchor-malformed-id/` | `malformed-id` (`Warn`) | See below. A non-kebab and an empty `id` attribute, both on immediately-closed pairs. Exits **0**. |
+| `html-anchor-dangling-link/` | `dangling-reference` (`Warn`) | See below. A link to an html anchor that does not exist anywhere in the corpus. Exits **0**. |
+| `html-anchor-heading-adjacent/` | — (all pass) | See below. The migration's real shape: an anchor immediately beside a heading, both authoring orders, one nested under a deeper subheading — inherits the heading's scope rather than the inline one. |
+| `html-anchor-nearest-heading/` | — (all pass) | See below. Two candidate headings on either side of one anchor, isolating `heading_adjacent_to`'s nearest-match fix: an exact-gap tie, and an asymmetric gap where the far heading would win under document-order-first matching. |
 | `c2-duplicate-across-forms/` | `C2` | `docs/specs/a.md` declares `[dup-across-forms]` in heading form, `docs/specs/b.md` declares the same id in bold form. Proves a duplicate arising from two *different* recognizers is still one C2 finding pair, each naming the other's site. |
 | `unregistered-definition/` | `unregistered-definition` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition with no `claim` block, plus one registered heading-form definition for contrast. Exits **0** — `Warn` severity, the coverage count. |
 | `malformed-id/` | `malformed-id` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition whose id fails the kebab-case grammar (both the real-corpus shape: an otherwise-kebab id with one stray uppercase segment), a bracketed-but-multi-word false positive that must not fire, and one registered heading-form definition for contrast. Exits **0** — `Warn` severity, never blocking. |
-| `unreachable-reference/` | `unreachable-reference` (`Fail`) | See below. `docs/specs/a.md`'s claim `[unreachable-target]` links `../../.scratch/notes.md` in prose; the fixture's own `.gitignore` marks `.scratch/` ignored. Exits **1**. |
+| `unreachable-reference/` | `unreachable-reference` (`Fail`) | See below. `docs/specs/a.md`'s claim `[unreachable-target]` links `../../.scratch/notes.md` in prose; the fixture's own `.gitignore` marks `.scratch/` ignored. A bare `docket check --corpus fixtures/unreachable-reference` exits **0** — the check requires the target to exist, and a gitignored target is committable by no checkout. Create it first (`mkdir -p fixtures/unreachable-reference/.scratch && echo '# notes' > fixtures/unreachable-reference/.scratch/notes.md`), then it exits **1**. |
+| `unreachable-reference-code-span/` | `unreachable-reference` (`Fail`) | See below. Isolates the widened reference notion: a bare `` `.scratch/notes.md` `` mention in an inline code span, not markdown link syntax. Same existence gap as above: a bare `docket check --corpus fixtures/unreachable-reference-code-span` exits **0**; create the target first (`mkdir -p fixtures/unreachable-reference-code-span/.scratch && echo '# notes' > fixtures/unreachable-reference-code-span/.scratch/notes.md`), then it exits **1**. |
+| `unreachable-reference-non-markdown-genre/` | `unreachable-reference` (`Fail`) | See below. Isolates the widened file surface: a corpus-declared non-`.md` genre (`contracts/*.ncl`) gets a backtick-only scan. Same existence gap: a bare `docket check --corpus fixtures/unreachable-reference-non-markdown-genre` exits **0**; create the target first (`mkdir -p fixtures/unreachable-reference-non-markdown-genre/.ledger && echo '# notes' > fixtures/unreachable-reference-non-markdown-genre/.ledger/2026-01-01-notes.md`), then it exits **1**. |
 | `dangling-reference/` | `dangling-reference` (`Warn`) | See below. `docs/guides/a.md` carries **no claim block at all** — a how-to genre permits none — and links `does-not-exist`, which resolves to nothing. Isolates the capability `bare-reference-no-failure/` cannot: a document with zero claims still has its links resolved. Exits **0**. |
+| `heading-slug-genuinely-missing-still-dangles/` | `dangling-reference` (`Warn`) | See below. The false-positive floor for heading-slug resolution: a link into a real, existing document, naming a heading number that document never had. Proves slug resolution didn't get *loose* alongside the fix that made real slugs resolve. |
+| `heading-slug-near-miss-still-dangles/` | `dangling-reference` (`Warn`) | See below. A link whose anchor differs from a real heading's real slug by exactly one character. Same floor as the fixture above, at the tightest possible margin. |
 | `signals-zero-inbound/` | — (all pass) | Not a check fixture — see below. Isolates `docket signals`: one claim with a citer, one that cites but is never cited itself, one that neither cites nor is cited. |
 | `run-absence-pass/` | — (all pass; `docket run no-retry-header` exits 0) | Not a `C`-check fixture — see below. `[no-retry-header]` declares `evaluator: absent`; its marker's literal, `Retry-After`, does not occur anywhere in `src/lib.rs`. |
 | `run-absence-fail/` | — (all pass; `docket run retry-header-returned` exits 1) | Not a `C`-check fixture — see below. Same shape as `run-absence-pass/`, except `src/lib.rs` contains the literal — the absence claim is broken. |
@@ -158,8 +170,7 @@ a `dangling-reference` finding, the weakest of the three.
   prose links to `nonexistent-target`, which resolves to nothing in the
   corpus. `docket check --corpus fixtures/bare-reference-no-failure` exits
   **0** with exactly one `dangling-reference` warning — not a `C4`/`C5`
-  finding, not a failure. This is the noise-suppression property, refined
-  by `.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`:
+  finding, not a failure. This is the noise-suppression property:
   an undeclared prose link is a bare reference by construction (nothing
   marks it as one; the absence of a `depends`/`because` entry *is* the
   marking), so its target missing never breaks a claim — but it is no
@@ -219,6 +230,64 @@ failed C5: the anchor form normalized to a doc-anchor
 `checks::tests::c5_still_fails_a_claim_id_depends_entry_with_no_prose_link_at_all`,
 which covers that same-shape negative case directly rather than as a
 second fixture.
+
+## `heading-slug-resolves-dangling/`, `heading-slug-satisfies-c5/`, `heading-slug-genuinely-missing-still-dangles/`, `heading-slug-near-miss-still-dangles/`
+
+Real, GitHub-style heading-slug computation (`model::heading_slug`,
+`InputHeading.slug`, `register.ncl`'s `heading_slug_resolves`/
+`same_heading`): the register now indexes every heading's real anchor —
+what a renderer and an ordinary relative markdown link both use — not
+only the section-number prefix `depends`/`because` entries cite. The two
+false-positive floors below are also pinned directly in `checks::tests`
+(`dangling_reference_still_fires_for_a_near_miss_slug`,
+`c5_still_fails_when_the_slug_form_link_names_a_different_heading`) —
+duplicated here deliberately, not redundantly: a real slug matcher is
+exactly the shape where "the count went to zero" can mean either "got
+correct" or "got loose," and the two read identically from a diagnostic
+count alone. The fixtures make the distinguishing behavior visible at
+the layer a user actually sees (`docket check`'s own output), not only
+inside the test suite.
+
+- **`heading-slug-resolves-dangling/`** — `docs/guides/a.md` (a how-to
+  genre, no claim block anywhere, the same shape `dangling-reference/`
+  isolates) links `../models/composition-model.md#6-the-fact-set-the-substrates-only-state`,
+  the real slug of `docs/models/composition-model.md`'s own `## 6. The
+  fact-set: the substrate's only state`. Before this fix, only a bare
+  numeric anchor (`#6`) ever resolved against a heading — an entirely
+  correct, renderer-resolvable link in real-slug form dangled.
+  `docket check --corpus fixtures/heading-slug-resolves-dangling` exits
+  **0** with zero diagnostics. Replacing the slug with a wrong-but-
+  plausible one (verified by hand, not committed) restores the
+  `dangling-reference` warning, confirming the fixture actually
+  exercises slug resolution rather than some other path.
+- **`heading-slug-satisfies-c5/`** — `docs/specs/a.md`'s claim
+  `[depends-on-heading]` declares `depends: [docs/models/composition-model#6]`
+  — the numeric doc-anchor form MVP.md §1.3 still requires for
+  `depends`/`because` itself (untouched by this fix; see
+  `register.ncl`'s header comment on that section) — with a prose link
+  to the SAME heading written in real GitHub-slug form, the way an
+  author and a link-checker both expect. Before this fix, no href could
+  satisfy both C5 (which required matching the entry's literal `#6`
+  character-for-character) and an ordinary link-checking gate (which
+  requires a real, renderer-resolvable anchor) at once — this is the
+  shape 23 real-corpus claims were stuck in. `docket check --corpus
+  fixtures/heading-slug-satisfies-c5` exits **0** with zero diagnostics.
+- **`heading-slug-genuinely-missing-still-dangles/`** — `docs/guides/a.md`
+  links `../models/composition-model.md#99-this-heading-does-not-exist`;
+  `composition-model.md` is a real, scanned document, but has no heading
+  numbered 99 — nothing in it computes to that slug either. `docket check
+  --corpus fixtures/heading-slug-genuinely-missing-still-dangles` reports
+  exactly one `dangling-reference` warning and exits **0** (`Warn` never
+  flips the exit code). Proves resolving a *real* heading's slug did not
+  come at the cost of resolving *any* slug-shaped anchor.
+- **`heading-slug-near-miss-still-dangles/`** — same target document and
+  heading as `heading-slug-resolves-dangling/`, but `docs/guides/a.md`
+  links the real slug with its last character changed
+  (`...only-statz`, not `...only-state`). `docket check --corpus
+  fixtures/heading-slug-near-miss-still-dangles` reports exactly one
+  `dangling-reference` warning and exits **0**. The tightest version of
+  the same floor: slug comparison is exact-string, not fuzzy or
+  prefix-based.
 
 ## `run-pass/`, `run-fail/`, `run-absent/`, `run-none/`, `run-vacuous-missing/`, `run-vacuous-ignored/`, `run-vacuous-exempt/`, `run-absence-pass/`, `run-absence-fail/`
 
@@ -315,8 +384,7 @@ the other seven above — the `run` outcomes are a distinct code path
 Isolates `absent-marker-stale` (`src/absence.rs`'s `find_stale_markers`,
 `register.ncl`): `[no-retry-header]`'s marker still names `Retry-After`,
 but the surrounding prose was rewritten to no longer carry it as a code
-span — the drift the check exists to catch
-(`.ledger/2026-08-05-references-that-leave-the-register.md`, O3).
+span — the drift the check exists to catch.
 `docket check --corpus fixtures/absent-marker-stale` reports one `warn`
 diagnostic naming the claim id and the stale literal, and exits **0** —
 `Warn` severity, like `unregistered-definition`/`malformed-id`: this
@@ -460,13 +528,121 @@ files were scanned.
   two `unregistered-definition` warnings on stderr, naming the file,
   line, and id of each.
 
+## `html-anchor-definitions/`, `html-anchor-false-positives/`, `html-anchor-malformed-id/`, `html-anchor-dangling-link/`, `html-anchor-heading-adjacent/`, `html-anchor-nearest-heading/`
+
+The third definition form: `<a id="…"></a>`, invisible in rendered
+output — the head's ruling that a claim id must never pollute
+user-facing documentation, discharged the only way markdown allows an
+anchor to be simultaneously invisible and a genuine link target
+(`<!-- comment -->` renders nothing and therefore anchors nothing
+either). Recognition requires the pair to be immediately closed with
+nothing between the tags — the empty-closed shape is what confirms an
+author's intent to define something, the same job a bold span's colon
+already does. No changes were needed anywhere downstream of extraction:
+an html-anchored claim is an ordinary `Claim` once extracted, so C1–C5,
+`blast`, `signals`, `dangling-reference`, and `unregistered-definition`
+all already handle it via the same code path every other definition
+form uses.
+
+**Scope is position-dependent, corrected by an architect ruling before
+this landed.** The first cut of this feature treated every html anchor
+as inline (bold-form's own scope rule) on the reasoning that neither
+form has a heading level to key on. That reasoning does not transport: a
+bold span is *inherently* inline (a sentence has no adjacent heading to
+name), but an html anchor genuinely can sit beside one — and discarding
+that adjacency has a sharp failure mode, not a merely-suboptimal one. An
+anchor placed immediately *before* its own heading, under the inline
+rule, closes its scope at the very next heading — itself — collapsing
+`[scope_start, scope_end)` to nothing and silently dropping every link
+and code span the section actually contains.
+`fn reproduce_empty_scope_for_anchor_before_heading` reproduced this
+directly before the fix landed; it is not in the tree now because the
+fix removed the defect it was written to pin, and the tests below
+replaced it as permanent coverage. `html-anchor-heading-adjacent/`
+isolates the corrected rule: an anchor immediately beside a heading
+(nothing but whitespace between, either order) is reclassified to a
+heading-form definition, inheriting that heading's level and full
+section extent (survives a deeper subheading, closes only at the next
+same-or-higher-level heading) — only a genuinely free-standing anchor
+still uses the inline rule the other three fixtures below exercise.
+
+- **`html-anchor-definitions/`** — the positive case: `<a
+  id="html-claim"></a>` anchors a `requirement` claim, referenced by a
+  second claim's `depends` entry via the anchor-form prose link
+  (`[…](#html-claim)`) — the same acceptance §1.3 already gives every
+  other claim-id reference. `docket check --corpus
+  fixtures/html-anchor-definitions` exits **0**. Removing the anchor
+  (verified by hand, not committed) turns `html-claim` into an
+  unrecognized bare word, breaking both claims — confirming the fixture
+  actually exercises html-anchor recognition.
+- **`html-anchor-false-positives/`** — the false-positive floor: an
+  `<a href="…">` with no `id` attribute at all (indistinguishable from
+  prose that never attempted a definition); an `<a id="never-closed">`
+  with no immediately-adjacent `</a>`; and a closed pair carrying real,
+  visible content between the tags (not the invisible-empty shape this
+  form exists for) — plus one registered heading-form claim for
+  contrast. None of the three is recognized as a definition, not even a
+  malformed one. Exits **0**.
+- **`html-anchor-malformed-id/`** — `<a id="Not_Valid"></a>` (fails
+  kebab-case) and `<a id=""></a>` (empty) — both closed pairs, so both
+  are recognized definition *attempts*, unlike the unclosed/content-bearing
+  cases above. The empty case is the one property this form adds beyond
+  the other two: an empty bracket (`**[]**`) is silently not a
+  candidate at all, but an empty `id=""` is `malformed-id`, because the
+  closed-empty pair shape is itself the confirming signal here, with no
+  "this reads as an ordinary sentence" escape the way a multi-word
+  bracket has. `docket check --corpus fixtures/html-anchor-malformed-id`
+  exits **0** with exactly two `malformed-id` warnings.
+- **`html-anchor-dangling-link/`** — a link to `#not-a-real-anchor`,
+  which resolves to nothing (no heading, no claim id, no html anchor
+  anywhere in the corpus) — a real html anchor for a different id exists
+  in the same file, so the fixture proves this is target-specific, not
+  "html anchors are unreachable in general." `docket check --corpus
+  fixtures/html-anchor-dangling-link` exits **0** with exactly one
+  `dangling-reference` warning.
+- **`html-anchor-heading-adjacent/`** — three claims in one file: a
+  `[target-claim]` other things depend on; `lock-sufficiency`, anchored
+  immediately *before* `#### Lock sufficiency`, whose `depends` entry is
+  satisfied by a prose link written inside a deeper `##### A deeper
+  subheading` nested under it — proving the section's scope both
+  inherited the heading's extent and survived the subheading beneath it;
+  and `second-claim`, anchored immediately *after* `#### Second claim`
+  (the other authoring order), resolving identically. `docket check
+  --corpus fixtures/html-anchor-heading-adjacent` exits **0**. Verified
+  by hand, not committed: disabling the heading-adjacency
+  reclassification and re-running turns this into a `C5` failure on
+  `lock-sufficiency` — the anchor-before-heading order collapses the
+  inline reading's own scope to nothing (the "next heading" it closes
+  at is its own), so the depends entry's prose link, wherever it sits,
+  falls outside it — confirming the fixture actually exercises the
+  corrected rule, not some other path to the same clean exit.
+- **`html-anchor-nearest-heading/`** — `heading_adjacent_to`'s
+  `.position()` bug reproduced by construction, not by accident: every
+  other html-anchor fixture places exactly one candidate heading beside
+  each anchor, which is why none of them caught first-match binding to
+  the wrong one. `[tied-target]` sits between an empty `## Empty
+  sibling` and `## Tied target`, an equal one-blank-line gap on both
+  sides — binding to the empty sibling (first match in document order)
+  collapses that section's own scope to nothing, since an empty
+  heading's "next heading" is the very next one, dropping the `depends:
+  [target-claim]` prose link entirely. `[near-target]` sits between
+  `## Far sibling` (three blank lines away) and `## Near target` (zero)
+  — an asymmetric gap, proving the fix compares actual distance and not
+  merely a fixed "prefer the following heading" rule. `docket check
+  --corpus fixtures/html-anchor-nearest-heading` exits **0**. Verified
+  by hand against the pre-fix `.position()` implementation, not
+  committed: both `tied-target` and `near-target` turn into `C5`
+  failures (`docs/specs/a.md:12` and `:31`) under it, confirming the
+  fixture exercises the nearest-match rule and not some other path to
+  the same clean exit.
+
 ## `malformed-id/`
 
-`.ledger/2026-08-04-malformed-ids-are-silently-invisible.md`: a bracketed
-token that satisfies every *structural* property of a definition — line
-start, the wrapper, immediately-following punctuation for bold form; the
-whole heading text for heading form — but whose inner content fails the
-lowercase-kebab grammar was previously invisible to every check at once:
+A bracketed token that satisfies every *structural* property of a
+definition — line start, the wrapper, immediately-following punctuation
+for bold form; the whole heading text for heading form — but whose
+inner content fails the lowercase-kebab grammar was previously
+invisible to every check at once:
 not a claim, not `unregistered-definition`, not anything. Reported now as
 `malformed-id` (`Warn` severity, same treatment as
 `unregistered-definition`), under its own diagnostic because the remedy
@@ -498,10 +674,9 @@ definition to begin with.
 
 ## `unreachable-reference/`
 
-`.ledger/2026-08-05-references-that-leave-the-register.md`, O4: a
-reference whose target *exists* but sits somewhere the reader cannot go
-— a gitignored working directory, distinct from a dangling reference
-(`C4`, target absent entirely). `Fail` severity, unlike
+O4: a reference whose target *exists* but sits somewhere the reader
+cannot go — a gitignored working directory, distinct from a dangling
+reference (`C4`, target absent entirely). `Fail` severity, unlike
 `unregistered-definition`/`malformed-id`: an unreachable reference has no
 grace period the way an unregistered definition does (a real corpus is
 not expected to carry any on the day this check ships), and the head's
@@ -513,7 +688,24 @@ own ruling calls the underlying rule "not legal," the same weight C4's
 file's own directory) to `.scratch/notes.md`; the fixture's own
 `.gitignore` marks `.scratch/` ignored, so `git check-ignore` reports it.
 The claim declares neither `depends` nor `because`, so nothing else in
-the corpus is capable of firing — `docket check --corpus
+the corpus is capable of firing.
+
+**The check also requires the target to exist on disk** (MVP.md's
+"candidate must exist on disk" fix, below), and an ignored file is, by
+definition, not something any checkout can commit — the fixture
+directory itself contains only `.gitignore`, `docket.ncl`, and `docs/`.
+So a bare `docket check --corpus fixtures/unreachable-reference` exits
+**0**: there is nothing on disk yet for the check to find. Demonstrating
+the finding means creating the ignored target first, outside of any
+commit:
+
+```sh
+mkdir -p fixtures/unreachable-reference/.scratch
+echo '# notes' > fixtures/unreachable-reference/.scratch/notes.md
+docket check --corpus fixtures/unreachable-reference
+```
+
+With the target present, `docket check --corpus
 fixtures/unreachable-reference` exits **1** with exactly one
 `unreachable-reference` failure naming the file, the line, the link as
 written, and the corpus-relative path it resolved to.
@@ -558,10 +750,71 @@ question this check can answer at all
 `gitignore::tests::a_missing_git_binary_degrades_to_silence_rather_than_a_crash`,
 `checks::tests::a_corpus_that_is_not_a_git_repository_never_fires_unreachable_reference`).
 
+## `unreachable-reference-code-span/` and `unreachable-reference-non-markdown-genre/`
+
+The widened boundary MVP.md's `unreachable-reference` section now states:
+a reference is a pointer a reader cannot follow whether or not it uses
+markdown link syntax, and it can live in a genre-matched file that isn't
+markdown at all. Discovered on docket's own corpus, not hypothetically —
+`docket check --corpus .` reported **zero** `unreachable-reference`
+findings before this fix despite 13 real recorder citations sitting
+in `MVP.md`, `contracts/register.ncl`, and `contracts/claim.ncl` (since
+fixed by cutting the dead citations; see the campaign's own history for
+the before/after).
+
+- **`unreachable-reference-code-span/`** — `docs/specs/a.md`'s claim
+  `[unreachable-target]` mentions `` `.scratch/notes.md` `` in an
+  **inline code span**, never as a markdown link. Before this fix, only
+  `[text](href)` syntax was ever resolved, so this exact citation was
+  invisible. Same existence gap as the base fixture above: the target
+  must be created before the check can find it —
+  `mkdir -p fixtures/unreachable-reference-code-span/.scratch && echo
+  '# notes' > fixtures/unreachable-reference-code-span/.scratch/notes.md`
+  — after which `docket check --corpus
+  fixtures/unreachable-reference-code-span` exits **1** with one
+  `unreachable-reference` failure (a bare invocation exits **0**).
+  Removing the backticks (leaving the bare words in ordinary prose,
+  verified by hand, not committed) restores a clean exit even with the
+  target present — proving the fixture isolates code-span detection
+  specifically, not some other path to the same diagnostic.
+- **`unreachable-reference-non-markdown-genre/`** — `docket.ncl` declares
+  `contracts/*.ncl` as its own genre (`kinds = []`, mirroring docket's own
+  configuration for its bundled Nickel contracts); `contracts/x.ncl`
+  cites a bare, backtick-quoted recorder path in a `#` comment. No claim
+  block could ever live in a `.ncl` file, so this fixture isolates the
+  narrower pass a non-markdown genre-matched file gets: a lexical
+  backtick scan (`gitignore::find_backtick_references`), never full
+  claim/heading extraction. Same existence gap: create the target first
+  — `mkdir -p fixtures/unreachable-reference-non-markdown-genre/.ledger
+  && echo '# notes' >
+  fixtures/unreachable-reference-non-markdown-genre/.ledger/2026-01-01-notes.md`
+  — after which `docket check --corpus
+  fixtures/unreachable-reference-non-markdown-genre` exits **1** with one
+  `unreachable-reference` failure naming `contracts/x.ncl` (a bare
+  invocation exits **0**).
+
+**The false-positive floor for both** is pinned in `checks::tests`
+(`an_ordinary_inline_code_span_never_fires_unreachable_reference`) rather
+than as a third fixture: an ordinary `` `cargo test` `` span is not
+path-shaped (no slash, dot, or anchor) and stays silent, the same
+boundary `unreachable-reference/`'s own claim-id exclusion already draws
+for markdown links.
+
+**A batching robustness defect this widening surfaced**, pinned directly
+in `gitignore::tests`
+(`a_fatal_candidate_falls_back_to_recovering_every_other_one`): `git
+check-ignore --stdin` fatals its entire batch on a candidate it treats as
+an invalid pathspec (`/`, `..`, a leading `//`) rather than skipping it —
+this project's OWN prose discussing its leading-`/` convention in an
+inline code span hit this directly, silently zeroing every real finding
+in the same batch. `gitignore::ignored_paths` now falls back to querying
+one candidate at a time whenever a batch fatals, recovering every real
+match instead of requiring every pathological string shape to be
+enumerated by hand.
+
 ## `dangling-reference/`
 
-`.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`:
-links are collected and resolved per **document**, not only within a
+Links are collected and resolved per **document**, not only within a
 claim's C5 prose-link scope. Before this, a document with no claims had
 no scope to collect a link into at all — its links were extracted and
 then went nowhere, not even reported. `Warn` severity, like

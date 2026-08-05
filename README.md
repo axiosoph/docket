@@ -6,9 +6,16 @@ named evaluator — so that *"is this project stable?"* becomes a computed
 number with an enumerated residue, instead of a feeling.
 
 > Status: **implemented.** `check` runs the five structural checks below
-> plus five further diagnostics (`orphan-claim`, `normative-prose`,
-> `unregistered-definition`, `malformed-id`, `unreachable-reference`);
-> `blast` computes the citation graph and its transitive closure; `run`
+> plus seven further diagnostics (`orphan-claim`, `normative-prose`,
+> `unregistered-definition`, `malformed-id`, `unreachable-reference`,
+> `dangling-reference`, `absent-marker-stale`) — resolved against corpus
+> documents by both a numeric section anchor and a heading's real
+> GitHub-style slug (see "References are typed," below). A claim's id
+> can be declared three ways — a heading, a bolded lead-in, or an
+> `<a id="…"></a>` anchor invisible in rendered output — the third so a
+> corpus can anchor a claim anywhere without the id itself ever showing
+> to a reader (MVP.md §1.1). `blast`
+> computes the citation graph and its transitive closure; `run`
 > executes a claim's evaluator and reports one of six outcomes (see
 > "Tying claims to the evaluators that discharge them," below); `signals`
 > reports derived graph properties over the same edges — out-degree,
@@ -217,6 +224,18 @@ a new reason. The kinds differ in what deletion means, not in whether a
 downstream change matters. A reference names either a claim or a
 document section directly, so the walk runs the same way from either
 end.
+
+**A document section, addressed two ways.** `depends`/`because` name a
+section by its number (`composition-model#6`) — stable against wording
+churn, but not a link any renderer would resolve. An ordinary prose
+link, the kind an author and a link checker both expect, is written
+against the section's real, GitHub-style anchor instead
+(`composition-model.md#6-the-fact-set-the-substrates-only-state`). Both
+resolve, to the same heading, through two separate mechanisms — the
+numeric anchor is `depends`/`because`'s own grammar and stays that way;
+the real slug is what every ordinary prose link in the corpus is
+already written against, indexed so those links resolve instead of
+reading as broken.
 
 **The same edges, read backwards, find claims nobody points at.**
 `docket blast` reads the graph forward from a target to find who depends

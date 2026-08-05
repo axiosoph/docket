@@ -10,7 +10,7 @@
 //! already-isolated string a tree walk has produced, not on document
 //! structure, which is the distinction MVP.md §7 draws.
 
-use crate::model::{CiteRef, Claim, ClaimId, Heading, Line, RawClaimBlock};
+use crate::model::{CiteRef, Claim, ClaimId, Heading, Line, RawClaimBlock, assign_heading_slugs};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// A `claim` fence with no preceding bracket-kebab heading in the same
@@ -94,6 +94,14 @@ pub struct ExtractResult {
     pub unregistered_definitions: Vec<UnregisteredDefinition>,
     pub malformed_ids: Vec<MalformedId>,
     pub links: Vec<DocumentLink>,
+    /// Every inline code span in the document whose content might name a
+    /// path — the widened `unreachable-reference` surface
+    /// (`gitignore::find_unreachable_references`): a bare mention like
+    /// `` `.ledger/2026-08-05-foo.md` `` is a pointer a reader cannot
+    /// follow just as much as a markdown link is, even though it carries
+    /// none of a link's syntax. Never consulted by `dangling-reference`
+    /// or C5 — see this field's construction site for why.
+    pub code_references: Vec<DocumentLink>,
 }
 
 /// Byte-offset -> 1-indexed line number, built once per document.
@@ -172,6 +180,71 @@ fn malformed_bracket_id(text: &str) -> Option<&str> {
     } else {
         Some(inner)
     }
+}
+
+/// The tag name of an HTML open tag's raw text (`` `<a id="x">` `` ->
+/// `"a"`), or `None` if `tag` isn't shaped like an open tag at all.
+/// Case-sensitive: every real corpus this project targets writes lowercase
+/// tag names, and HTML tag names are case-insensitive by spec but this
+/// scan is lexical, not a real HTML parser — see [`html_attr_value`]'s own
+/// doc comment for the same boundary stated the same way.
+fn html_open_tag_name(tag: &str) -> Option<&str> {
+    let body = tag.strip_prefix('<')?;
+    if body.starts_with('/') {
+        return None;
+    }
+    let end = body.find(|c: char| c.is_whitespace() || c == '>' || c == '/')?;
+    (!body[..end].is_empty()).then_some(&body[..end])
+}
+
+/// Whether `tag` is exactly a closing tag for `name` (`` `</a>` `` closes
+/// `"a"`).
+fn is_html_close_tag(tag: &str, name: &str) -> bool {
+    tag.strip_prefix("</")
+        .and_then(|rest| rest.strip_suffix('>'))
+        .is_some_and(|inner| inner.trim().eq_ignore_ascii_case(name))
+}
+
+/// The raw value of attribute `name` in HTML open-tag text `tag` — the
+/// `` `<a id="x">` ``-shaped string an `Event::InlineHtml`/`Event::Html`
+/// hands over verbatim. `None` if `name` never appears as its own
+/// whitespace-delimited attribute token (so `data-id="x"` never matches a
+/// search for `id`, unlike a naive substring search) or appears without a
+/// quoted value (a bare `id` or an unquoted `id=x`).
+///
+/// **A lexical scan, not an HTML parser — two residuals stated rather
+/// than hidden**, the same class of limitation `gitignore.rs`'s backtick
+/// scan and `absence.rs`'s literal search already carry: an attribute
+/// value containing whitespace (`id="my id"`) is split at the space and
+/// missed, and an unquoted or valueless `id` attribute is not recognized
+/// at all. Every real anchor this project's own corpus and its dispatch
+/// examples use is double-quoted kebab-case with no internal whitespace,
+/// so neither residual is expected to matter in practice; both are named
+/// in MVP.md.
+fn html_attr_value<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let body = tag
+        .strip_prefix('<')?
+        .trim_end_matches('>')
+        .trim_end_matches('/');
+    // Skip the tag name itself (the first token) — only real attributes
+    // after it are candidates, so a tag named e.g. `id` (not real HTML,
+    // but not this scan's problem to rule out) can't self-match.
+    let mut tokens = body.split_whitespace();
+    tokens.next()?;
+    for tok in tokens {
+        let Some(rest) = tok.strip_prefix(name).and_then(|r| r.strip_prefix('=')) else {
+            continue;
+        };
+        let quote = rest.chars().next()?;
+        if quote != '"' && quote != '\'' {
+            continue;
+        }
+        let inner = &rest[1..];
+        if let Some(end) = inner.find(quote) {
+            return Some(&inner[..end]);
+        }
+    }
+    None
 }
 
 /// Bound, in source bytes, on the interstitial between a bold-form
@@ -463,23 +536,209 @@ struct PendingBold {
     skip_depth: u32,
 }
 
-/// A recognized id definition, either form, merged into one
+/// A recognized `<a id="claim-id"></a>` definition — the third anchor
+/// form, invisible in rendered output by design (the head's ruling: claim
+/// ids must not pollute user-facing documentation, and `<a
+/// id="…"></a>` is the only markdown-legal construct that is both
+/// invisible to a reader and a genuine link target, unlike `<!--
+/// comment -->` which renders nothing and therefore anchors nothing
+/// either). `start` is the opening tag's byte offset (used for the
+/// nearest-preceding-anchor search, same as the other two forms); `end`
+/// is immediately after the closing `</a>`, the html-form analogue of a
+/// bold definition's own `end` — where the definition's own prose scope
+/// begins.
+struct RawHtmlDef {
+    start: usize,
+    end: usize,
+    id: ClaimId,
+}
+
+/// A closed, immediately-paired `<a id="…"></a>` whose id failed the
+/// grammar — including empty (`` `id=""` ``), which routes here rather
+/// than being silently ignored the way an empty bracket is: an author who
+/// wrote `id=""` was attempting a definition, so silence would hide
+/// exactly the defect `malformed-id` exists to surface. The html-form
+/// analogue of [`RawMalformedBold`].
+struct RawMalformedHtml {
+    start: usize,
+    id: String,
+}
+
+/// What a closed `<a id="…">` open tag resolves to once its id is read —
+/// mirrors [`BoldCandidate`], one grammar check deciding
+/// [`RawHtmlDef`]/[`RawMalformedHtml`]. Resolution itself still needs the
+/// immediately-adjacent `</a>` confirming the pair is closed and empty
+/// ([`PendingHtml`]) — an unclosed `<a id="…">`, or one with real content
+/// before its `</a>`, is never a candidate at all: it is not the
+/// invisible-marker shape this form exists for, the same way an
+/// unpunctuated bold span is never a bold-form candidate.
+enum HtmlCandidate {
+    Definition(ClaimId),
+    Malformed(String),
+}
+
+/// An `<a id="…">` open tag awaiting its immediately-adjacent `</a>` —
+/// the html-form analogue of [`PendingBold`], simpler because there is no
+/// interstitial to hunt through: the NEXT event must be the closing tag,
+/// starting exactly where the open tag ended, or this candidate is
+/// abandoned outright (never reported as malformed — an author who left
+/// a real anchor open, or wrote actual content inside it, was not
+/// necessarily attempting a docket definition at all).
+struct PendingHtml {
+    start: usize,
+    end_of_open: usize,
+    candidate: HtmlCandidate,
+}
+
+/// A recognized id definition, any of the three forms, merged into one
 /// position-ordered stream for §1.1's "nearest preceding [id]" ownership
 /// search — generalized from heading-only to whichever form is nearer,
 /// exactly the way a deeper heading already wins over a shallower one.
-/// `idx` indexes back into `raw_headings` / `raw_bold_defs` so the
-/// claim-building loop can recover the form-specific fields (heading
-/// level for its same-or-higher-level C5 scope close; the bold
-/// definition's own `end` for its scope start).
+/// `idx` indexes back into `raw_headings` / `raw_bold_defs` /
+/// `raw_html_defs` so the claim-building loop can recover the
+/// form-specific fields (heading level for its same-or-higher-level C5
+/// scope close; the bold/html definition's own `end` for its scope
+/// start).
 enum AnchorKind {
     Heading(usize),
     Bold(usize),
+    Html(usize),
 }
 
 struct IdAnchor {
     start: usize,
     id: ClaimId,
     kind: AnchorKind,
+}
+
+/// Whether html anchor `[def_start, def_end)` sits immediately beside a
+/// heading — nothing but whitespace between them, in EITHER order (the
+/// anchor may precede or follow its heading) — and if so, the NEAREST such
+/// heading's index into `raw_headings`.
+///
+/// **Why this reclassification exists, not merely an optimization:** an
+/// html anchor is positionally polymorphic in a way bold-form never is.
+/// A bold span (`**[id]**: text`) is inherently inline — there is never
+/// an adjacent heading it could name, so treating it as a section marker
+/// would be meaningless. An html anchor beside a heading, by contrast,
+/// genuinely names that SECTION, and discarding the adjacency
+/// information (treating it as merely inline) produces a real defect:
+/// `inline_scope_end` closes at the very next heading, which — when the
+/// anchor sits immediately before its own heading — is that heading
+/// itself, collapsing `[scope_start, scope_end)` to nothing and silently
+/// dropping every link and code span in the section the author plainly
+/// meant to claim. A free-standing anchor with no adjacent heading has
+/// no such information to discard, and stays genuinely inline
+/// (`AnchorKind::Html`, `inline_scope_end`) — this function is what
+/// decides which case a given anchor is in, checked once at `id_anchors`
+/// construction rather than folded into the scope-computation match arm.
+///
+/// **Nearest, not first.** A whitespace-only, no-body-prose heading
+/// directly beside the anchor (an empty sibling immediately before it, or
+/// a parent immediately before a subheading right after it) can satisfy
+/// BOTH sides of the predicate for two different headings at once — the
+/// earlier of the two is not necessarily the one the anchor names. Picking
+/// the first match in document order silently mis-scoped it two distinct
+/// ways: binding to an empty preceding sibling with real content on the
+/// other side collapses the scope to nothing (that heading's own scope
+/// closes at the very next heading — the one the anchor actually meant);
+/// binding to an empty parent instead of its immediately-following child
+/// over-widens the scope through every sibling subsection the child's own
+/// narrower scope would have excluded. Comparing the whitespace-gap length
+/// on each side and taking the smaller fixes both.
+///
+/// **The two sides are not measured the same way, so the raw gap needs a
+/// +1 correction on one of them before comparing.** Confirmed directly
+/// against `pulldown_cmark`'s own offset iterator, not assumed: a
+/// heading's `Range` always absorbs its own line-terminating `\n` (`"##
+/// A\n"`, not `"## A"`), but a heading's `Range` never absorbs anything
+/// BEFORE it. So for the identical author-visible gap (say, one blank
+/// line) on each side, "heading precedes the anchor" measures one byte
+/// SHORTER than "anchor precedes the heading" purely as an artifact of
+/// which side's newline got absorbed into whose range — not because the
+/// author placed the anchor any closer to one heading than the other.
+/// Left uncorrected, that phantom byte silently and systematically
+/// prefers the PRECEDING heading on every real tie, which is exactly the
+/// wrong direction for both defects above (both need the FOLLOWING
+/// heading to win the tie). Adding 1 to the "heading precedes anchor"
+/// side's raw gap restores the comparison to what the author actually
+/// wrote before ranking, turning what was a phantom 1-byte win into a
+/// genuine tie — and Rust's `min_by_key` breaks a genuine tie by
+/// returning the FIRST element, which is document order, i.e. the
+/// PRECEDING heading again. So a tie after correction still needs an
+/// explicit tiebreak: the boolean carried alongside each gap prefers the
+/// heading the anchor PRECEDES (the one it "names" in the reclassification
+/// this function performs) whenever the corrected gaps are equal.
+fn heading_adjacent_to(
+    source: &str,
+    def_start: usize,
+    def_end: usize,
+    raw_headings: &[RawHeading],
+) -> Option<usize> {
+    raw_headings
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, h)| {
+            if def_end <= h.start && source[def_end..h.start].trim().is_empty() {
+                // The anchor precedes `h` — measured as written, no
+                // correction needed on this side. `anchor_precedes_h` is
+                // `true`: `h` is the heading the anchor "names", and wins
+                // a corrected-gap tie below.
+                Some((idx, h.start - def_end, true))
+            } else if h.end <= def_start && source[h.end..def_start].trim().is_empty() {
+                // `h` precedes the anchor — `h.end` already ate one
+                // newline that never separated the two on the other
+                // side's measurement; add it back before comparing.
+                Some((idx, def_start - h.end + 1, false))
+            } else {
+                None
+            }
+        })
+        .min_by_key(|&(_, gap, anchor_precedes_h)| (gap, !anchor_precedes_h))
+        .map(|(idx, _, _)| idx)
+}
+
+/// Where an inline-form definition's (bold- or FREE-STANDING html-form)
+/// prose scope ends: the next heading of ANY level, or the next
+/// definition of EITHER other inline form, whichever comes first. An
+/// inline definition is a sentence inside a section, not a section of
+/// its own — unlike a heading-form definition, whose scope survives a
+/// deeper subheading
+/// (`nested_headings_find_the_nearest_bracket_kebab_ancestor`), nothing
+/// beneath the next heading, and nothing past the next sibling
+/// definition, belongs to it. Shared by both `AnchorKind::Bold` and a
+/// non-heading-adjacent `AnchorKind::Html` rather than duplicated per
+/// form, since the rule itself does not depend on which inline form is
+/// asking — a bold definition's scope now closes at the next FREE-STANDING
+/// html definition too, and vice versa, symmetrically. A heading-adjacent
+/// html anchor never reaches this function at all —
+/// `heading_adjacent_to` reclassifies it to `AnchorKind::Heading` before
+/// scope computation ever runs.
+fn inline_scope_end(
+    after: usize,
+    raw_headings: &[RawHeading],
+    raw_bold_defs: &[RawBoldDef],
+    raw_html_defs: &[RawHtmlDef],
+    source_len: usize,
+) -> usize {
+    [
+        raw_headings
+            .iter()
+            .find(|h| h.start > after)
+            .map(|h| h.start),
+        raw_bold_defs
+            .iter()
+            .find(|b| b.start > after)
+            .map(|b| b.start),
+        raw_html_defs
+            .iter()
+            .find(|h| h.start > after)
+            .map(|h| h.start),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    .unwrap_or(source_len)
 }
 
 /// Parse one markdown document and extract its claim blocks, per MVP.md
@@ -491,9 +750,12 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
     let mut raw_headings: Vec<RawHeading> = Vec::new();
     let mut raw_links: Vec<RawLink> = Vec::new();
     let mut raw_codes: Vec<RawCode> = Vec::new();
+    let mut all_code_spans: Vec<RawCode> = Vec::new();
     let mut raw_blocks: Vec<RawBlock> = Vec::new();
     let mut raw_bold_defs: Vec<RawBoldDef> = Vec::new();
     let mut raw_malformed_bold: Vec<RawMalformedBold> = Vec::new();
+    let mut raw_html_defs: Vec<RawHtmlDef> = Vec::new();
+    let mut raw_malformed_html: Vec<RawMalformedHtml> = Vec::new();
 
     // pulldown-cmark's offset iterator gives Start and End the same full
     // element range, so we capture level/start/end at Start and only
@@ -511,12 +773,36 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
     // citation of a real id (no colon ever follows) both fall through
     // silently, same as before this state grew multi-event.
     let mut pending_bold: Option<PendingBold> = None;
+    // An `<a id="…">` open tag awaiting its immediately-adjacent `</a>` —
+    // see `PendingHtml`'s own docs.
+    let mut pending_html: Option<PendingHtml> = None;
     // Nesting depth, not a bool: a quote can contain a quote. Only its
     // zero/nonzero state matters to the normative-prose scan below.
     let mut blockquote_depth: u32 = 0;
     let mut normative_occurrences: Vec<NormativeOccurrence> = Vec::new();
 
     for (event, range) in parser {
+        if let Some(p) = pending_html.take() {
+            let closes = range.start == p.end_of_open
+                && matches!(&event, Event::InlineHtml(t) | Event::Html(t) if is_html_close_tag(t, "a"));
+            if closes {
+                match p.candidate {
+                    HtmlCandidate::Definition(id) => raw_html_defs.push(RawHtmlDef {
+                        start: p.start,
+                        end: range.end,
+                        id,
+                    }),
+                    HtmlCandidate::Malformed(id) => {
+                        raw_malformed_html.push(RawMalformedHtml { start: p.start, id });
+                    }
+                }
+            }
+            // else: not immediately closed — abandon silently (`PendingHtml`'s
+            // doc comment). The current event still needs its own normal
+            // handling below (it may itself open a new candidate), so it
+            // falls through rather than `continue`-ing.
+        }
+
         if let Some(mut pb) = pending_bold.take() {
             if pb.skip_depth > 0 {
                 // Inside an opaque wrapper span whose whole byte range is
@@ -648,6 +934,26 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
                     dest: dest_url.into_string(),
                 });
             }
+            Event::InlineHtml(ref t) | Event::Html(ref t) => {
+                // An `<a href="…">` (no `id` attribute) is indistinguishable
+                // from prose that never attempted a definition — never a
+                // candidate, not even a malformed one, the same silence an
+                // ordinary non-line-start bold span gets.
+                if html_open_tag_name(t).is_some_and(|name| name.eq_ignore_ascii_case("a"))
+                    && let Some(id) = html_attr_value(t, "id")
+                {
+                    let candidate = if is_kebab_case(id) {
+                        HtmlCandidate::Definition(id.to_string())
+                    } else {
+                        HtmlCandidate::Malformed(id.to_string())
+                    };
+                    pending_html = Some(PendingHtml {
+                        start: range.start,
+                        end_of_open: range.end,
+                        candidate,
+                    });
+                }
+            }
             Event::Text(t) => {
                 if let Some((_, _, _, ref mut text)) = cur_heading {
                     text.push_str(&t);
@@ -677,6 +983,22 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
                 }
             }
             Event::Code(t) => {
+                // Every inline code span, corpus-wide and regardless of
+                // which other role the same span plays below, is a
+                // candidate `unreachable-reference` target
+                // (`gitignore::path_shaped` decides downstream whether its
+                // content actually looks like a path) — a `.ledger/…`
+                // citation written as `` `.ledger/foo.md` `` is just as
+                // unreachable for a reader inside a heading as it is in
+                // ordinary prose, and this collection is unscoped by
+                // design: unlike `raw_codes`/`prose_code` below, there is
+                // no claim-window or own-voice question here, only "does
+                // a reader of this file see a pointer they cannot follow."
+                all_code_spans.push(RawCode {
+                    start: range.start,
+                    text: t.to_string(),
+                });
+
                 // Inline code spans occur only in inline (heading/prose)
                 // context; a fenced block's content is Text, never Code.
                 // A heading's own code span feeds only the heading's own
@@ -702,12 +1024,19 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
         }
     }
 
+    // Real GitHub-style slugs, deduplicated in document order
+    // (`model::assign_heading_slugs`) — GitHub's own dedup counter resets
+    // per document too, so this must run once per `extract_document` call
+    // over that document's own headings in reading order, not corpus-wide.
+    let slugs = assign_heading_slugs(raw_headings.iter().map(|h| h.text.as_str()));
     let headings: Vec<Heading> = raw_headings
         .iter()
-        .map(|h| Heading {
+        .zip(slugs)
+        .map(|(h, slug)| Heading {
             level: h.level,
             text: h.text.clone(),
             line: line_index.line_of(h.start),
+            slug,
         })
         .collect();
 
@@ -730,6 +1059,28 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
             start: b.start,
             id: b.id.clone(),
             kind: AnchorKind::Bold(i),
+        }))
+        .chain(raw_html_defs.iter().enumerate().map(|(i, h)| {
+            match heading_adjacent_to(source, h.start, h.end, &raw_headings) {
+                // Heading-adjacent: this anchor names the SECTION, not a
+                // sentence — reclassified to `Heading`, inheriting that
+                // heading's level and extent exactly as if the heading
+                // itself had carried a bracket-kebab id (`heading_adjacent_to`'s
+                // own doc comment states why this must not fall through
+                // to `inline_scope_end`). `start` is the earlier of the
+                // two markers, so the pair's ownership position is
+                // unaffected by which order the author wrote them in.
+                Some(heading_idx) => IdAnchor {
+                    start: h.start.min(raw_headings[heading_idx].start),
+                    id: h.id.clone(),
+                    kind: AnchorKind::Heading(heading_idx),
+                },
+                None => IdAnchor {
+                    start: h.start,
+                    id: h.id.clone(),
+                    kind: AnchorKind::Html(i),
+                },
+            }
         }))
         .collect();
     id_anchors.sort_by_key(|a| a.start);
@@ -783,17 +1134,33 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
             }
             AnchorKind::Bold(idx) => {
                 let bold = &raw_bold_defs[idx];
-                let next_heading = raw_headings.iter().find(|h| h.start > bold.end);
-                let next_bold = raw_bold_defs[idx + 1..].iter().next();
-                let scope_end = [next_heading.map(|h| h.start), next_bold.map(|b| b.start)]
-                    .into_iter()
-                    .flatten()
-                    .min()
-                    .unwrap_or(source.len());
+                let scope_end = inline_scope_end(
+                    bold.end,
+                    &raw_headings,
+                    &raw_bold_defs,
+                    &raw_html_defs,
+                    source.len(),
+                );
                 (
                     anchor.id.clone(),
                     line_index.line_of(bold.start),
                     bold.end,
+                    scope_end,
+                )
+            }
+            AnchorKind::Html(idx) => {
+                let html = &raw_html_defs[idx];
+                let scope_end = inline_scope_end(
+                    html.end,
+                    &raw_headings,
+                    &raw_bold_defs,
+                    &raw_html_defs,
+                    source.len(),
+                );
+                (
+                    anchor.id.clone(),
+                    line_index.line_of(html.start),
+                    html.end,
                     scope_end,
                 )
             }
@@ -874,6 +1241,16 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
                 },
             )
         }))
+        .chain(raw_malformed_html.iter().map(|h| {
+            (
+                h.start,
+                MalformedId {
+                    file: file.to_string(),
+                    line: line_index.line_of(h.start),
+                    id: h.id.clone(),
+                },
+            )
+        }))
         .collect();
     malformed_ids.sort_by_key(|(start, _)| *start);
     let malformed_ids = malformed_ids.into_iter().map(|(_, m)| m).collect();
@@ -892,6 +1269,26 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
         })
         .collect();
 
+    // Every inline code span, corpus-wide, as an `unreachable-reference`
+    // candidate — `all_code_spans` above, not `raw_codes` (which is
+    // scoped to claim windows for `absent-marker-stale`). Feeds a
+    // SEPARATE field from `links`, never `dangling-reference`/C5: an
+    // inline code span is not a link, and treating one as a resolvable
+    // reference for those checks would fire on every incidental
+    // `` `docs/x.md` `` mention that was never meant as a citation.
+    // `gitignore::path_shaped`/`find_unreachable_references` still decide
+    // whether any given span's content actually looks like a path and
+    // whether it resolves to something gitignored.
+    let code_references: Vec<DocumentLink> = all_code_spans
+        .iter()
+        .filter(|c| !is_external(&c.text))
+        .map(|c| DocumentLink {
+            file: file.to_string(),
+            line: line_index.line_of(c.start),
+            dest: c.text.clone(),
+        })
+        .collect();
+
     ExtractResult {
         headings,
         claims,
@@ -900,6 +1297,7 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
         unregistered_definitions,
         malformed_ids,
         links,
+        code_references,
     }
 }
 
@@ -1080,6 +1478,72 @@ mod tests {
         );
         assert!(crate::model::anchor_matches(&res.headings[0].text, "6"));
         assert!(!crate::model::anchor_matches(&res.headings[0].text, "60"));
+    }
+
+    #[test]
+    fn extracted_headings_carry_a_real_github_slug() {
+        // The exact heading composition-model.md:506 carries, and the
+        // exact slug the real corpus's own links already resolve against
+        // (adr/0009-atom-composition-plane.md's
+        // `composition-model.md#6-the-fact-set-the-substrates-only-state`)
+        // — the apostrophe in "substrate's" drops out entirely rather
+        // than becoming a separator, same as the slash/period cases
+        // `model::tests` pins on the pure function directly.
+        let src = "## 6. The fact-set: the substrate's only state\n";
+        let res = extract_document("docs/models/composition-model.md", src);
+        assert_eq!(
+            res.headings[0].slug,
+            "6-the-fact-set-the-substrates-only-state"
+        );
+    }
+
+    #[test]
+    fn repeated_headings_in_one_document_get_deduplicated_slugs() {
+        let src = "## Overview\n\ntext\n\n## Overview\n\nmore text\n";
+        let res = extract_document("docs/guides/a.md", src);
+        assert_eq!(res.headings.len(), 2);
+        assert_eq!(res.headings[0].slug, "overview");
+        assert_eq!(res.headings[1].slug, "overview-1");
+    }
+
+    #[test]
+    fn an_inline_code_span_in_prose_becomes_a_code_reference_candidate() {
+        // `gitignore::path_shaped`/`find_unreachable_references` decide
+        // downstream whether the content actually looks like a path;
+        // extraction's only job is capturing every span.
+        let src = "See `.ledger/2026-01-01-notes.md` for background.\n";
+        let res = extract_document("docs/guides/a.md", src);
+        assert_eq!(res.code_references.len(), 1);
+        assert_eq!(res.code_references[0].dest, ".ledger/2026-01-01-notes.md");
+        assert_eq!(res.code_references[0].line, Line(1));
+    }
+
+    #[test]
+    fn a_code_span_inside_a_heading_still_becomes_a_code_reference() {
+        // Deliberately UNSCOPED, unlike `prose_code`/`raw_codes`: a
+        // reader sees a heading's own text too, so a citation written
+        // there is just as unreachable as one in ordinary prose.
+        let src = "## See `.ledger/2026-01-01-notes.md`\n";
+        let res = extract_document("docs/guides/a.md", src);
+        assert_eq!(res.code_references.len(), 1);
+        assert_eq!(res.code_references[0].dest, ".ledger/2026-01-01-notes.md");
+    }
+
+    #[test]
+    fn an_external_url_inline_code_span_is_not_a_code_reference() {
+        let src = "See `https://example.com/notes` for background.\n";
+        let res = extract_document("docs/guides/a.md", src);
+        assert!(res.code_references.is_empty());
+    }
+
+    #[test]
+    fn an_ordinary_non_path_inline_code_span_is_still_captured_here() {
+        // Filtering by shape is `gitignore::path_shaped`'s job; this
+        // extraction layer captures every span unconditionally.
+        let src = "Run `cargo test` first.\n";
+        let res = extract_document("docs/guides/a.md", src);
+        assert_eq!(res.code_references.len(), 1);
+        assert_eq!(res.code_references[0].dest, "cargo test");
     }
 
     #[test]
@@ -1341,6 +1805,257 @@ mod tests {
         let mut got = ids(&res);
         got.sort_unstable();
         assert_eq!(got, vec!["bold-claim", "heading-claim"]);
+    }
+
+    // --- html-form anchors (`<a id="…"></a>`) ------------------------------
+
+    #[test]
+    fn extracts_an_html_anchored_claim() {
+        let src = "Some prose.\n\n<a id=\"html-claim\"></a>\nThe system MUST persist keyed data.\n\n[see also](target-a)\n\n```claim\nkind: requirement\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["html-claim"]);
+        assert_eq!(res.claims[0].prose_links, vec!["target-a"]);
+    }
+
+    #[test]
+    fn an_html_anchor_can_sit_mid_paragraph() {
+        // The exact shape the dispatch names: "mid-paragraph, in a table
+        // cell, immediately before a claim fence" — unlike heading- and
+        // bold-form, which both require line start, an html anchor has no
+        // positional constraint at all.
+        let src = "Some lead-in text <a id=\"mid-para\"></a> and more prose after it.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["mid-para"]);
+    }
+
+    #[test]
+    fn an_html_anchor_immediately_before_the_claim_fence_still_resolves() {
+        let src = "Some prose.\n\n<a id=\"right-before\"></a>\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["right-before"]);
+    }
+
+    #[test]
+    fn an_html_anchors_prose_scope_stops_at_the_next_heading_of_any_level() {
+        let src = "<a id=\"a\"></a>\n\n[link-a](target-a)\n\n#### Notes\n\n[link-b](target-b)\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(ids(&res), vec!["a"]);
+        assert_eq!(res.claims[0].prose_links, vec!["target-a"]);
+    }
+
+    #[test]
+    fn an_html_anchors_prose_scope_stops_at_the_next_bold_form_definition() {
+        // Cross-form: an html anchor's inline scope closes at ANY sibling
+        // inline definition, not only another html anchor. The claim
+        // block sits between the two anchors so its owner ([a]) is
+        // unambiguous; target-b, positioned after [b] begins, is outside
+        // [a]'s scope only if the cross-form stop rule actually fires —
+        // absent it, scope_end would default to end-of-document and
+        // include target-b too.
+        let src = "<a id=\"a\"></a>\n\n[link-a](target-a)\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n**[b]**: second claim.\n\n[link-b](target-b)\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(ids(&res), vec!["a"]);
+        assert_eq!(res.claims[0].prose_links, vec!["target-a"]);
+    }
+
+    #[test]
+    fn a_bold_form_definitions_prose_scope_now_also_stops_at_the_next_html_anchor() {
+        // The symmetric case: adding html-form must not silently widen
+        // bold-form's own existing scope rule. Same shape as the mirror
+        // test above, forms swapped.
+        let src = "**[a]**: first claim.\n\n[link-a](target-a)\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n<a id=\"b\"></a>\n\n[link-b](target-b)\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(ids(&res), vec!["a"]);
+        assert_eq!(res.claims[0].prose_links, vec!["target-a"]);
+    }
+
+    #[test]
+    fn an_html_anchor_with_no_claim_block_is_unregistered() {
+        let src = "<a id=\"orphaned\"></a>\n\nNo block follows.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.claims.is_empty());
+        assert_eq!(res.unregistered_definitions.len(), 1);
+        assert_eq!(res.unregistered_definitions[0].id, "orphaned");
+    }
+
+    #[test]
+    fn a_registered_html_anchor_is_not_reported_as_unregistered() {
+        let src = "<a id=\"registered\"></a>\n\nhas a block.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.unregistered_definitions.is_empty(), "{:#?}", res);
+    }
+
+    #[test]
+    fn an_anchor_tag_with_no_id_attribute_is_never_a_candidate() {
+        // The adversarial floor: an ordinary `<a href="…">` link must
+        // never register as a definition, not even a malformed one.
+        let src = "See <a href=\"https://example.com\">this</a> for background.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.unregistered_definitions.is_empty());
+        assert!(res.malformed_ids.is_empty());
+    }
+
+    #[test]
+    fn an_empty_id_attribute_is_malformed_not_silently_skipped() {
+        let src = "<a id=\"\"></a>\n\nSome prose.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(res.malformed_ids.len(), 1, "{:#?}", res.malformed_ids);
+        assert_eq!(res.malformed_ids[0].id, "");
+        assert!(res.unregistered_definitions.is_empty());
+    }
+
+    #[test]
+    fn a_non_kebab_id_attribute_is_malformed() {
+        let src = "<a id=\"Not_Valid\"></a>\n\nSome prose.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(res.malformed_ids.len(), 1);
+        assert_eq!(res.malformed_ids[0].id, "Not_Valid");
+    }
+
+    #[test]
+    fn an_unclosed_anchor_tag_is_silently_not_a_candidate() {
+        // No immediately-adjacent `</a>` — never a definition attempt at
+        // all (the confirming structural signal never arrived), the same
+        // silence an unpunctuated bold span gets. Not malformed, not
+        // unregistered: nothing.
+        let src = "<a id=\"never-closed\"> and then some prose that never closes it.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.unregistered_definitions.is_empty());
+        assert!(res.malformed_ids.is_empty());
+    }
+
+    #[test]
+    fn an_anchor_with_real_content_between_the_tags_is_not_a_candidate() {
+        // Not the invisible-empty-marker shape this form exists for.
+        let src = "<a id=\"has-content\">some text</a>\n\nSome prose.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.unregistered_definitions.is_empty());
+        assert!(res.malformed_ids.is_empty());
+    }
+
+    #[test]
+    fn heading_bold_and_html_forms_can_all_coexist_in_one_document() {
+        let src = "### [heading-claim]\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n**[bold-claim]**: A second claim.\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n<a id=\"html-claim\"></a>\n\nA third claim.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        let mut got = ids(&res);
+        got.sort_unstable();
+        assert_eq!(got, vec!["bold-claim", "heading-claim", "html-claim"]);
+    }
+
+    // --- html anchors adjacent to a heading (the migration's real shape) --
+    //
+    // The defect the architect's ruling caught: a heading-adjacent anchor
+    // treated as inline closes its own scope at the very next heading —
+    // its OWN heading, when the anchor precedes it — collapsing
+    // `[scope_start, scope_end)` to nothing and silently dropping every
+    // link and code span in the section. `heading_adjacent_to`
+    // reclassifies these to `AnchorKind::Heading`, inheriting the
+    // heading's level and extent, before scope computation ever runs.
+
+    #[test]
+    fn an_anchor_immediately_before_its_heading_inherits_the_headings_scope() {
+        // The exact shape the migration will produce 473 times: an
+        // invisible anchor naming a titled heading's id.
+        let src = "<a id=\"lock-sufficiency\"></a>\n#### Lock sufficiency\n\nThe lock MUST pin. [link](x.md)\n\n```claim\nkind: requirement\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["lock-sufficiency"]);
+        assert_eq!(res.claims[0].prose_links, vec!["x.md".to_string()]);
+    }
+
+    #[test]
+    fn an_anchor_immediately_after_its_heading_also_inherits_the_headings_scope() {
+        // The other authoring order — heading first, anchor right after
+        // it — must resolve identically.
+        let src = "#### Lock sufficiency\n<a id=\"lock-sufficiency\"></a>\n\nThe lock MUST pin. [link](x.md)\n\n```claim\nkind: requirement\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["lock-sufficiency"]);
+        assert_eq!(res.claims[0].prose_links, vec!["x.md".to_string()]);
+    }
+
+    #[test]
+    fn a_heading_adjacent_anchors_scope_survives_a_deeper_subheading() {
+        // Inherited from Heading-form directly, the same property
+        // `nested_headings_find_the_nearest_bracket_kebab_ancestor` pins
+        // for an ordinary bracket-kebab heading: unlike an inline
+        // definition, a section's scope is not cut short by a deeper
+        // subheading beneath it.
+        let src = "<a id=\"parent\"></a>\n## Parent\n\n[outer](outer-target)\n\n### Child\n\n[inner](inner-target)\n\n```claim\nkind: requirement\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["parent"]);
+        let mut links = res.claims[0].prose_links.clone();
+        links.sort_unstable();
+        assert_eq!(links, vec!["inner-target", "outer-target"]);
+    }
+
+    #[test]
+    fn a_heading_adjacent_anchor_does_not_widen_past_the_next_same_level_heading() {
+        let src = "<a id=\"a\"></a>\n## A\n\n[link-a](target-a)\n\n```claim\nkind: requirement\nevaluator: test\n```\n\n## B\n\n[link-b](target-b)\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["a"]);
+        assert_eq!(res.claims[0].prose_links, vec!["target-a".to_string()]);
+    }
+
+    #[test]
+    fn a_free_standing_html_anchor_still_uses_the_inline_scope_rule() {
+        // Not adjacent to any heading — must NOT be reclassified; the
+        // existing inline behavior (stops at the next heading of any
+        // level or next sibling definition) still applies.
+        let src = "Some lead-in prose.\n\n<a id=\"free-standing\"></a>\n\n[link-a](target-a)\n\n#### Notes\n\n[link-b](target-b)\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["free-standing"]);
+        assert_eq!(res.claims[0].prose_links, vec!["target-a".to_string()]);
+    }
+
+    // --- heading_adjacent_to's nearest-match fix ---------------------------
+    //
+    // `position()` picked the FIRST heading in document order satisfying
+    // whitespace-adjacency on either side, not the nearest — a real defect
+    // whenever an empty (no-body-prose) heading sits immediately beside
+    // the anchor on one side and a real heading sits on the other. Every
+    // fixture and unit test above has exactly one candidate per anchor, so
+    // none of them could have caught this.
+
+    #[test]
+    fn an_anchor_tied_between_two_empty_headings_binds_to_the_one_it_precedes() {
+        // The scope-collapse shape, exactly: `## A` carries no body prose,
+        // then the anchor, then `## B` with real content — an equal
+        // whitespace gap on both sides (`\n\n`, the tie the doc comment
+        // names). `position()` bound this to A, whose own scope (as a
+        // level-2 heading) closes at the very next level-2 heading — B,
+        // immediately following — collapsing to nothing and dropping
+        // "target" from the claim entirely. The fix must bind to B, the
+        // heading the anchor PRECEDES, recovering the link.
+        let src = "## A\n\n<a id=\"b\"></a>\n\n## B\n\n[link](target)\n\n```claim\nkind: requirement\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["b"]);
+        assert_eq!(res.claims[0].prose_links, vec!["target".to_string()]);
+    }
+
+    #[test]
+    fn an_anchor_binds_to_the_heading_with_the_smaller_whitespace_gap() {
+        // Not a tie: a wide gap on one side, a tight one on the other —
+        // proves the fix compares actual distance, not merely "prefers
+        // the following heading" as a blanket rule regardless of gap
+        // size.
+        let src = "## Far\n\n\n\n<a id=\"near\"></a>\n## Near\n\n[link](target)\n\n```claim\nkind: requirement\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["near"]);
+        assert_eq!(res.claims[0].prose_links, vec!["target".to_string()]);
+    }
+
+    #[test]
+    fn an_anchor_tied_between_a_parent_and_its_child_binds_to_the_child_not_the_parent() {
+        // The over-widening shape: `## Parent` carries no body prose, then
+        // the anchor, then `### Child` with content, then an `### Unrelated`
+        // sibling. `position()` bound this to Parent, a level-2 heading
+        // whose scope runs until the next level-2-or-shallower heading —
+        // there is none here, so it swallowed BOTH Child's and Unrelated's
+        // links. Binding to Child (level 3) instead closes the scope at
+        // Unrelated (also level 3), correctly excluding it.
+        let src = "## Parent\n\n<a id=\"child\"></a>\n\n### Child\n\n[inner](inner-target)\n\n```claim\nkind: requirement\nevaluator: test\n```\n\n### Unrelated\n\n[outer](outer-target)\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["child"]);
+        assert_eq!(res.claims[0].prose_links, vec!["inner-target".to_string()]);
     }
 
     // --- unregistered definitions (coverage count) ------------------------
