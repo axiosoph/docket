@@ -137,15 +137,10 @@ fn bracket_token(text: &str) -> Option<&str> {
     (!inner.is_empty()).then_some(inner)
 }
 
-/// MVP.md §1.1's id grammar: lowercase-kebab, every segment non-empty and
-/// restricted to ASCII lowercase letters and digits.
+/// MVP.md §1.1's id grammar — delegates to [`crate::model::is_valid_claim_id`],
+/// the single source of truth `rename.rs`'s new-id validation shares.
 fn is_kebab_case(inner: &str) -> bool {
-    inner.split('-').all(|seg| {
-        !seg.is_empty()
-            && seg
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-    })
+    crate::model::is_valid_claim_id(inner)
 }
 
 /// Whether `text` is exactly a bracketed kebab-case token, e.g. `[my-id]`.
@@ -741,9 +736,34 @@ fn inline_scope_end(
     .unwrap_or(source_len)
 }
 
-/// Parse one markdown document and extract its claim blocks, per MVP.md
-/// §1.1. `file` is the corpus-relative path recorded on each claim.
-pub fn extract_document(file: &str, source: &str) -> ExtractResult {
+/// The raw, byte-offset-carrying result of walking a document's event
+/// stream once — everything [`extract_document`] and [`find_rename_sites`]
+/// both need, factored out so the second is built from the SAME
+/// recognizer pass as the first rather than a re-derivation of it. This is
+/// the concrete meaning of "ranges come from the extractor's own
+/// offsets" (the rename dispatch's closed-by-construction ruling):
+/// [`find_rename_sites`] never re-parses prose or re-implements a
+/// recognizer, it only reads byte spans this same walk already computed.
+struct Scan {
+    line_index: LineIndex,
+    raw_headings: Vec<RawHeading>,
+    raw_links: Vec<RawLink>,
+    raw_codes: Vec<RawCode>,
+    all_code_spans: Vec<RawCode>,
+    raw_blocks: Vec<RawBlock>,
+    raw_bold_defs: Vec<RawBoldDef>,
+    raw_malformed_bold: Vec<RawMalformedBold>,
+    raw_html_defs: Vec<RawHtmlDef>,
+    raw_malformed_html: Vec<RawMalformedHtml>,
+    normative_occurrences: Vec<NormativeOccurrence>,
+}
+
+/// Walk `source`'s event stream once, collecting every raw, byte-offset
+/// form of heading/bold/html definition, link, code span, and fenced
+/// block. `file` is only needed to stamp [`NormativeOccurrence`] (the one
+/// output here that already carries a file name rather than a bare byte
+/// offset).
+fn scan(file: &str, source: &str) -> Scan {
     let line_index = LineIndex::new(source);
     let parser = Parser::new_ext(source, Options::empty()).into_offset_iter();
 
@@ -1024,6 +1044,38 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
         }
     }
 
+    Scan {
+        line_index,
+        raw_headings,
+        raw_links,
+        raw_codes,
+        all_code_spans,
+        raw_blocks,
+        raw_bold_defs,
+        raw_malformed_bold,
+        raw_html_defs,
+        raw_malformed_html,
+        normative_occurrences,
+    }
+}
+
+/// Parse one markdown document and extract its claim blocks, per MVP.md
+/// §1.1. `file` is the corpus-relative path recorded on each claim.
+pub fn extract_document(file: &str, source: &str) -> ExtractResult {
+    let Scan {
+        line_index,
+        raw_headings,
+        raw_links,
+        raw_codes,
+        all_code_spans,
+        raw_blocks,
+        raw_bold_defs,
+        raw_malformed_bold,
+        raw_html_defs,
+        raw_malformed_html,
+        normative_occurrences,
+    } = scan(file, source);
+
     // Real GitHub-style slugs, deduplicated in document order
     // (`model::assign_heading_slugs`) — GitHub's own dedup counter resets
     // per document too, so this must run once per `extract_document` call
@@ -1299,6 +1351,299 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
         links,
         code_references,
     }
+}
+
+// --- rename: byte-exact site location -----------------------------------
+//
+// `docket rename`'s writer (`rename.rs`) is closed by construction: its
+// only primitive is "replace byte range [s,e) with a rendering of id X",
+// where every range must come from here. Because a claim id is a plain
+// kebab-case token, "a rendering of id X" is always just `X`'s own bytes —
+// no bracket, quote, or link syntax ever needs re-synthesizing, only
+// located and substituted in place. That is what turns "every reference
+// to the id" into a byte-span-finding problem rather than a
+// document-rewriting one.
+
+/// One byte-exact site `rename.rs` may substitute another id's bytes
+/// into. Always spans exactly `target_id`'s own bytes — never a bracket,
+/// quote, comma, or any surrounding syntax — which `rename.rs`'s `Edit`
+/// constructor re-verifies (`source[start..end] == target_id`) before
+/// building an edit from it. That verification is what makes the writer
+/// closed by construction: even if this function's site-finding logic had
+/// a defect, an edit could never touch a byte outside a confirmed
+/// occurrence of the exact id being renamed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenameSite {
+    pub start: usize,
+    pub end: usize,
+    pub kind: RenameSiteKind,
+}
+
+/// What kind of site a [`RenameSite`] is — carried for `rename.rs`'s plan
+/// output and diagnostics, not consulted by the substitution itself
+/// (every kind substitutes the same way: replace the span with the new
+/// id's bytes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenameSiteKind {
+    /// The id's own definition — heading, bold, or html form (MVP.md
+    /// §1.1).
+    Definition,
+    /// A `depends:` array entry naming the claim id bare (no `#`
+    /// document-anchor suffix — those name a section, not this claim).
+    Depends,
+    /// A `because:` array entry, same shape as `Depends`.
+    Because,
+    /// A markdown link's href: the bare id as the whole destination, or
+    /// the fragment after `#` in an anchor-form destination (MVP.md
+    /// §1.3, "Which link forms satisfy a declaration").
+    ProseLink,
+}
+
+/// Every byte span in `source` where `target_id` appears in a position
+/// this project's grammar recognizes as naming that claim: its own
+/// definition (any of the three forms), every bare `depends`/`because`
+/// entry naming it, and every prose link (bare-id or anchor-form href)
+/// naming it.
+///
+/// Built from the SAME raw recognizer pass [`extract_document`] uses
+/// ([`scan`]) — a site this function returns is, by construction, a site
+/// the real extractor already recognizes as belonging to `target_id`, not
+/// a second, independent text search that could disagree with it.
+/// Deliberately narrower than "every occurrence of the substring
+/// `target_id`": an id appearing inside ordinary prose, a code span, or as
+/// part of a longer word is never a site, because `extract_document`
+/// itself would never have parsed it as a definition or a reference.
+pub fn find_rename_sites(source: &str, target_id: &str) -> Vec<RenameSite> {
+    let scanned = scan("", source);
+    let mut sites = Vec::new();
+
+    for h in scanned
+        .raw_headings
+        .iter()
+        .filter(|h| bracket_kebab_id(&h.text).as_deref() == Some(target_id))
+    {
+        if let Some((start, end)) = find_bracket_span(source, h.start, h.end, target_id) {
+            sites.push(RenameSite {
+                start,
+                end,
+                kind: RenameSiteKind::Definition,
+            });
+        }
+    }
+
+    for b in scanned.raw_bold_defs.iter().filter(|b| b.id == target_id) {
+        if let Some((start, end)) = find_bracket_span(source, b.start, b.end, target_id) {
+            sites.push(RenameSite {
+                start,
+                end,
+                kind: RenameSiteKind::Definition,
+            });
+        }
+    }
+
+    for h in scanned.raw_html_defs.iter().filter(|h| h.id == target_id) {
+        if let Some((start, end)) = find_html_id_attr_span(source, h.start, h.end, target_id) {
+            sites.push(RenameSite {
+                start,
+                end,
+                kind: RenameSiteKind::Definition,
+            });
+        }
+    }
+
+    for block in scanned.raw_blocks.iter().filter(|b| b.is_claim) {
+        for (field, kind) in [
+            ("depends", RenameSiteKind::Depends),
+            ("because", RenameSiteKind::Because),
+        ] {
+            for (start, end) in
+                find_yaml_ref_spans(source, block.start, block.end, field, target_id)
+            {
+                sites.push(RenameSite { start, end, kind });
+            }
+        }
+    }
+
+    for l in &scanned.raw_links {
+        let matches_target =
+            l.dest == target_id || l.dest.rsplit_once('#').is_some_and(|(_, f)| f == target_id);
+        if !matches_target {
+            continue;
+        }
+        if let Some((start, end)) = find_link_id_span(source, l.start, &l.dest, target_id) {
+            sites.push(RenameSite {
+                start,
+                end,
+                kind: RenameSiteKind::ProseLink,
+            });
+        }
+    }
+
+    sites.sort_by_key(|s| s.start);
+    sites
+}
+
+/// Locate the literal `[id]` bracket span inside `source[region_start..region_end]`
+/// — the definition's own bracket pair, for the heading and bold forms — and
+/// return the byte range of just `id`'s own bytes (not the brackets).
+/// `region_start`/`region_end` are already a recognized definition's own
+/// span (a `RawHeading` or `RawBoldDef`), so a literal search inside it is
+/// safe: MVP.md §1.1 requires the heading's whole trimmed text (or the
+/// bold span's whole content) to equal `[id]` exactly, so nothing else in
+/// that span could produce a second, spurious match.
+fn find_bracket_span(
+    source: &str,
+    region_start: usize,
+    region_end: usize,
+    id: &str,
+) -> Option<(usize, usize)> {
+    let region = source.get(region_start..region_end)?;
+    let needle = format!("[{id}]");
+    let rel = region.find(&needle)?;
+    let start = region_start + rel + 1;
+    Some((start, start + id.len()))
+}
+
+/// Locate the literal `id="…"`/`id='…'` attribute value's byte span
+/// inside `source[region_start..region_end]` — an html-form definition's
+/// own `<a id="…">` span (a `RawHtmlDef`). Requires a token boundary
+/// (start-of-region or preceding whitespace) immediately before `id=`, so
+/// a coincidental `data-id="…"` bearing the identical value is never
+/// mistaken for the `id` attribute itself — the same false-positive floor
+/// [`html_attr_value`] already enforces via `split_whitespace`, restated
+/// here because this function additionally needs the value's own byte
+/// offset, which a value-only lookup can't provide.
+fn find_html_id_attr_span(
+    source: &str,
+    region_start: usize,
+    region_end: usize,
+    id: &str,
+) -> Option<(usize, usize)> {
+    let region = source.get(region_start..region_end)?;
+    for quote in ['"', '\''] {
+        let needle = format!("id={quote}{id}{quote}");
+        let mut search_from = 0;
+        while let Some(rel) = region[search_from..].find(&needle) {
+            let abs_rel = search_from + rel;
+            let boundary_ok = abs_rel == 0
+                || region.as_bytes()[abs_rel - 1].is_ascii_whitespace()
+                || region.as_bytes()[abs_rel - 1] == b'<';
+            if boundary_ok {
+                let start = region_start + abs_rel + 3 + 1; // "id=".len() + the quote byte
+                return Some((start, start + id.len()));
+            }
+            search_from = abs_rel + 1;
+        }
+    }
+    None
+}
+
+/// The byte offset of the start of every line in `s` (0-indexed within
+/// `s`, not a 1-indexed [`Line`]) — [`find_yaml_ref_spans`]'s own
+/// line-at-a-time scan over an already-isolated claim block's text, the
+/// same class of hand-rolled tokenizing [`bracket_kebab_id`] and
+/// [`ascii_words`] already do rather than a regex over document
+/// structure.
+fn line_starts(s: &str) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(s.match_indices('\n').map(|(i, _)| i + 1))
+        .filter(|&i| i < s.len())
+        .collect()
+}
+
+/// Locate every occurrence of `target_id` as a bare `depends`/`because`
+/// array entry inside a claim block's own source span
+/// (`source[block_start..block_end]`, a `RawBlock`'s span) — one lexical
+/// scan per `field` ("depends" or "because"), restricted to a line whose
+/// trimmed text starts with `<field>:`, matching the flow-sequence shape
+/// every real claim block in this corpus already uses
+/// (`field: [a, b, c]`). A `depends`/`because` value spanning more than
+/// one YAML line is out of this scan's scope — not a shape MVP.md's own
+/// examples or this project's own corpus ever produce.
+fn find_yaml_ref_spans(
+    source: &str,
+    block_start: usize,
+    block_end: usize,
+    field: &str,
+    target_id: &str,
+) -> Vec<(usize, usize)> {
+    let Some(region) = source.get(block_start..block_end) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line_start in line_starts(region) {
+        let rest_of_region = &region[line_start..];
+        let line = rest_of_region.split('\n').next().unwrap_or(rest_of_region);
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        let Some(after_field) = trimmed.strip_prefix(field) else {
+            continue;
+        };
+        let Some(after_colon) = after_field.strip_prefix(':') else {
+            continue;
+        };
+        let Some(open_rel) = after_colon.find('[') else {
+            continue;
+        };
+        let Some(close_rel) = after_colon[open_rel..].find(']') else {
+            continue;
+        };
+        let seq = &after_colon[open_rel + 1..open_rel + close_rel];
+        let seq_abs_start = block_start + line_start + indent + field.len() + 1 + open_rel + 1;
+
+        let mut offset = 0usize;
+        for entry in seq.split(',') {
+            let entry_trimmed = entry.trim();
+            let leading = entry.len() - entry.trim_start().len();
+            if entry_trimmed == target_id {
+                let start = seq_abs_start + offset + leading;
+                out.push((start, start + target_id.len()));
+            }
+            offset += entry.len() + 1; // +1 accounts for the consumed comma
+        }
+    }
+    out
+}
+
+/// Locate `dest`'s own id-bearing byte span within the markdown link
+/// starting at `link_start` (a `RawLink`'s `start`, the link's opening
+/// `[`) — either the whole destination (bare-id form) or the fragment
+/// after its last `#` (anchor form). Requires the raw source text between
+/// `](` and the next `)` to equal `dest` byte-for-byte before trusting the
+/// span: `dest` is pulldown-cmark's already-decoded `dest_url`, which can
+/// differ from the raw source text for an entity- or percent-escaped
+/// href, and this function refuses to guess in that case rather than risk
+/// substituting into the wrong bytes — the staged invariant check
+/// (`rename.rs`) then reports the resulting divergence instead of this
+/// function silently mis-locating one.
+fn find_link_id_span(
+    source: &str,
+    link_start: usize,
+    dest: &str,
+    target_id: &str,
+) -> Option<(usize, usize)> {
+    // Real inline link syntax never spans more than a modest window
+    // between its opening `[` and its closing `)`; bounding the search
+    // keeps this a local scan rather than an accidental corpus-wide one.
+    let window_end = (link_start + 4096).min(source.len());
+    let window = source.get(link_start..window_end)?;
+    let paren_rel = window.find("](")?;
+    let dest_start_rel = paren_rel + 2;
+    let close_rel = window.get(dest_start_rel..)?.find(')')?;
+    let raw_dest = &window[dest_start_rel..dest_start_rel + close_rel];
+    if raw_dest != dest {
+        return None;
+    }
+    let dest_abs_start = link_start + dest_start_rel;
+    if dest == target_id {
+        return Some((dest_abs_start, dest_abs_start + target_id.len()));
+    }
+    let hash_rel = dest.rfind('#')?;
+    if &dest[hash_rel + 1..] == target_id {
+        let start = dest_abs_start + hash_rel + 1;
+        return Some((start, start + target_id.len()));
+    }
+    None
 }
 
 #[cfg(test)]
@@ -2344,5 +2689,189 @@ mod tests {
         let src = "### [heading-claim]\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n**[bold-claim]**: A second claim, this time bold-form.\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n**[unregistered-bold]**: no block follows.\n";
         let res = extract_document("docs/specs/x.md", src);
         assert!(res.malformed_ids.is_empty(), "{:#?}", res.malformed_ids);
+    }
+
+    // --- find_rename_sites --------------------------------------------
+
+    fn substituted(source: &str, target_id: &str, new_id: &str) -> String {
+        let mut sites = find_rename_sites(source, target_id);
+        sites.sort_by_key(|s| std::cmp::Reverse(s.start));
+        let mut out = source.to_string();
+        for site in sites {
+            assert_eq!(&out[site.start..site.end], target_id);
+            out.replace_range(site.start..site.end, new_id);
+        }
+        out
+    }
+
+    #[test]
+    fn finds_the_heading_form_definition_site() {
+        let src = "### [old-id]\n\nSome prose.\n";
+        let sites = find_rename_sites(src, "old-id");
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].kind, RenameSiteKind::Definition);
+        assert_eq!(&src[sites[0].start..sites[0].end], "old-id");
+        assert_eq!(
+            substituted(src, "old-id", "new-id"),
+            "### [new-id]\n\nSome prose.\n"
+        );
+    }
+
+    #[test]
+    fn finds_the_bold_form_definition_site() {
+        let src = "**[old-id]**: Every lock value MUST be ground.\n";
+        let sites = find_rename_sites(src, "old-id");
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].kind, RenameSiteKind::Definition);
+        assert_eq!(
+            substituted(src, "old-id", "new-id"),
+            "**[new-id]**: Every lock value MUST be ground.\n"
+        );
+    }
+
+    #[test]
+    fn finds_the_html_form_definition_site_without_touching_the_wrapper() {
+        let src = "<a id=\"old-id\"></a>\n\nProse.\n";
+        let sites = find_rename_sites(src, "old-id");
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].kind, RenameSiteKind::Definition);
+        assert_eq!(
+            substituted(src, "old-id", "new-id"),
+            "<a id=\"new-id\"></a>\n\nProse.\n"
+        );
+    }
+
+    #[test]
+    fn html_form_ignores_a_coincidental_data_id_with_the_same_value() {
+        // The false-positive floor `find_html_id_attr_span` exists for:
+        // a `data-id` attribute happening to carry the exact same value
+        // must never be mistaken for the real `id` attribute.
+        let src = "<a data-id=\"old-id\" id=\"old-id\"></a>\n";
+        let sites = find_rename_sites(src, "old-id");
+        assert_eq!(sites.len(), 1);
+        // The located span must be the REAL `id=` attribute's value, not
+        // `data-id`'s — confirmed by checking the byte immediately before
+        // the located span's `id="` is whitespace, not `-`.
+        let before = src.as_bytes()[sites[0].start - 5]; // one byte before `id="`
+        assert!(
+            before.is_ascii_whitespace(),
+            "matched data-id instead: {before}"
+        );
+    }
+
+    #[test]
+    fn finds_a_depends_entry_naming_the_claim_id_bare() {
+        let src = "### [a]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [old-id, other-thing]\n```\n";
+        let sites = find_rename_sites(src, "old-id");
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].kind, RenameSiteKind::Depends);
+        assert_eq!(&src[sites[0].start..sites[0].end], "old-id");
+    }
+
+    #[test]
+    fn finds_a_because_entry_separately_from_depends() {
+        let src = "### [a]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [other-thing]\nbecause: [old-id]\n```\n";
+        let sites = find_rename_sites(src, "old-id");
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].kind, RenameSiteKind::Because);
+    }
+
+    #[test]
+    fn a_doc_anchor_entry_whose_anchor_text_coincides_is_not_a_depends_site() {
+        // `path#old-id` names a SECTION, not this claim — only a bare
+        // entry (no `#`) is a citation of the claim id itself.
+        let src = "### [a]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/x#old-id]\n```\n";
+        assert!(find_rename_sites(src, "old-id").is_empty());
+    }
+
+    #[test]
+    fn finds_a_bare_id_prose_link() {
+        let src = "### [a]\n\nSee [the claim](old-id) for detail.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let sites = find_rename_sites(src, "old-id");
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].kind, RenameSiteKind::ProseLink);
+        assert_eq!(
+            substituted(src, "old-id", "new-id"),
+            "### [a]\n\nSee [the claim](new-id) for detail.\n\n```claim\nkind: constraint\nevaluator: test\n```\n"
+        );
+    }
+
+    #[test]
+    fn finds_an_anchor_form_prose_link_naming_the_id_as_the_fragment() {
+        let src = "See [the claim](docs/specs/x.md#old-id) for detail.\n";
+        let sites = find_rename_sites(src, "old-id");
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].kind, RenameSiteKind::ProseLink);
+        assert_eq!(
+            substituted(src, "old-id", "new-id"),
+            "See [the claim](docs/specs/x.md#new-id) for detail.\n"
+        );
+    }
+
+    #[test]
+    fn a_bare_fragment_link_also_resolves() {
+        let src = "See [the claim](#old-id) for detail.\n";
+        let sites = find_rename_sites(src, "old-id");
+        assert_eq!(sites.len(), 1);
+        assert_eq!(
+            substituted(src, "old-id", "new-id"),
+            "See [the claim](#new-id) for detail.\n"
+        );
+    }
+
+    #[test]
+    fn a_link_to_an_unrelated_target_is_not_a_site() {
+        let src = "See [the claim](other-id) and [more](docs/x#other-id).\n";
+        assert!(find_rename_sites(src, "old-id").is_empty());
+    }
+
+    #[test]
+    fn an_id_substring_inside_ordinary_prose_is_never_a_site() {
+        // "old-id" appearing as plain prose text, or as a longer word's
+        // substring, must never be mistaken for a definition or a
+        // reference — only grammar-recognized positions count.
+        let src = "### [a]\n\nThe id old-id-extended is mentioned here, and so is old-id in prose, unlinked.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        assert!(find_rename_sites(src, "old-id").is_empty());
+    }
+
+    #[test]
+    fn all_three_forms_and_every_reference_kind_together() {
+        // The dispatch's own required shape: one corpus exercising every
+        // site kind in a single document.
+        let src = "\
+### [old-id]
+
+Some prose about it. See [the claim](old-id) and
+[the anchor form](docs/x.md#old-id).
+
+```claim
+kind: constraint
+evaluator: test
+```
+
+### [b]
+
+```claim
+kind: constraint
+evaluator: test
+depends: [old-id]
+because: [old-id]
+```
+";
+        let sites = find_rename_sites(src, "old-id");
+        let kinds: Vec<_> = sites.iter().map(|s| s.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                RenameSiteKind::Definition,
+                RenameSiteKind::ProseLink,
+                RenameSiteKind::ProseLink,
+                RenameSiteKind::Depends,
+                RenameSiteKind::Because,
+            ]
+        );
+        let rewritten = substituted(src, "old-id", "new-id");
+        assert!(!rewritten.contains("old-id"), "{rewritten}");
+        assert_eq!(rewritten.matches("new-id").count(), 5);
     }
 }

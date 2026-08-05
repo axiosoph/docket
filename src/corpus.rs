@@ -83,6 +83,31 @@ pub struct LoadedCorpus {
 
 /// Load every genre-matched file under `corpus_root`.
 pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, CorpusError> {
+    load_corpus_with_overrides(corpus_root, config, &std::collections::BTreeMap::new())
+}
+
+/// [`load_corpus`], except any file named in `overrides` (keyed by its
+/// path relative to `corpus_root`, `/`-separated) is read from the given
+/// string instead of disk. Every other file is loaded exactly as
+/// `load_corpus` would.
+///
+/// `rename.rs`'s staged invariant check needs this: "compute every edit,
+/// apply to in-memory copies, re-run the register over the in-memory
+/// corpus, compare" (the rename dispatch's own ruling) means the
+/// re-loaded corpus must reflect the renamed files' EDITED content
+/// without either writing them to disk first or re-deriving the rest of
+/// the corpus by hand — every untouched file still needs its genre match,
+/// its `unreachable-reference` git query, and so on, exactly as a real
+/// reload would give them. Genre matching and `git check-ignore` both
+/// still consult the real filesystem/repository at `corpus_root`
+/// (untouched by a rename, which only ever edits existing files' bytes,
+/// never adds, removes, or moves one), so neither needs an override path
+/// of its own.
+pub fn load_corpus_with_overrides(
+    corpus_root: &Path,
+    config: &Config,
+    overrides: &std::collections::BTreeMap<String, String>,
+) -> Result<LoadedCorpus, CorpusError> {
     let mut corpus = Corpus::default();
     let mut orphan_claims = Vec::new();
     let mut normative_occurrences = Vec::new();
@@ -125,16 +150,23 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
             // below) — a file this scan cannot even read as text has
             // nothing for it to find, which is a fine outcome, not an
             // error to surface.
-            if let Ok(contents) = std::fs::read_to_string(&path) {
+            let read = match overrides.get(&relative) {
+                Some(content) => Ok(content.clone()),
+                None => std::fs::read_to_string(&path),
+            };
+            if let Ok(contents) = read {
                 code_references.extend(gitignore::find_backtick_references(&relative, &contents));
             }
             continue;
         }
 
-        let contents = std::fs::read_to_string(&path).map_err(|source| CorpusError::Read {
-            path: relative.clone(),
-            source,
-        })?;
+        let contents = match overrides.get(&relative) {
+            Some(content) => content.clone(),
+            None => std::fs::read_to_string(&path).map_err(|source| CorpusError::Read {
+                path: relative.clone(),
+                source,
+            })?,
+        };
 
         let result = extract::extract_document(&relative, &contents);
 
