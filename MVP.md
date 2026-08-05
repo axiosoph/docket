@@ -691,6 +691,23 @@ target. A broader document set (a bare directory, say) is purely additive
 if a future corpus needs it; `.md` is what every real citation measured
 against actually is.
 
+**The existence requirement makes this check structurally silent on a
+fresh clone or a CI runner, where the gitignored target never exists.**
+Before the existence fix, a path-shaped candidate matching a `.gitignore`
+pattern fired regardless of whether anything was actually on disk, so the
+check caught an unreachable reference from any checkout. Now it only
+fires where the author sits, because the target — by definition
+gitignored — is present in no other checkout at all. This is not an
+argument against the existence rule, which is correct on its own terms
+(a candidate that names nothing real is a typo or a prose collision, not
+an unreachable reference, and the false-Fail it produced without the
+rule was the worse defect); it is a limit a reader of this check must
+know. `docket check` run in CI, or against a fresh clone, enforces less
+than the same command run locally — the exact inversion of what a reader
+would assume "CI enforces what runs locally" to mean, for this one
+check. There is no CI configured for docket today, so this has not yet
+surfaced as a gap in practice, but it will the moment one is added.
+
 **Directional.** Only a tracked document's link to an ignored path is
 checked; the reverse — an ignored file linking into the repository — is
 not, since only the repository's own reader-visible content is this
