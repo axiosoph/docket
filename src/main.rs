@@ -5,7 +5,8 @@
 use clap::{Parser, Subcommand};
 use docket::model::{CiteRef, anchor_matches};
 use docket::run::{Outcome, RunError, RunResult};
-use docket::{blast, checks, config, contracts, corpus, marker, run};
+use docket::signals::GraphSignals;
+use docket::{blast, checks, config, contracts, corpus, marker, run, signals};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -60,6 +61,15 @@ enum Command {
         #[arg(long, default_value = ".")]
         corpus: PathBuf,
     },
+    /// Report derived properties of the reference graph the register
+    /// already carries — nothing declared, nothing new to check against
+    /// (see docket::signals). Never fails: every signal here is a
+    /// candidate for a reader to weigh, not a verdict.
+    Signals {
+        /// Corpus root.
+        #[arg(long, default_value = ".")]
+        corpus: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -77,6 +87,9 @@ fn main() -> ExitCode {
             claim,
             corpus: corpus_root,
         } => run_run(&corpus_root, &claim),
+        Command::Signals {
+            corpus: corpus_root,
+        } => run_signals(&corpus_root),
     }
 }
 
@@ -294,6 +307,67 @@ fn print_run_result(result: &RunResult) {
                 }
             }
         }
+    }
+}
+
+fn run_signals(corpus_root: &Path) -> ExitCode {
+    let cfg = match config::load_config(corpus_root) {
+        Ok(cfg) => cfg,
+        Err(e) => return usage_error(&e),
+    };
+
+    let loaded = match corpus::load_corpus(corpus_root, &cfg) {
+        Ok(loaded) => loaded,
+        Err(e) => return usage_error(&e),
+    };
+
+    print_signals(&signals::compute(&loaded.corpus));
+
+    // Every signal here is a candidate for a reader to weigh, never a
+    // check result — nothing in this report can fail a run the way
+    // `check`'s diagnostics do (this command's whole non-negotiable is
+    // that it changes no existing exit code or diagnostic).
+    ExitCode::SUCCESS
+}
+
+fn print_signals(signals: &GraphSignals) {
+    let zero_inbound: Vec<_> = signals.zero_inbound().collect();
+    println!(
+        "{} claims, {} zero-inbound",
+        signals.claims.len(),
+        zero_inbound.len()
+    );
+    println!();
+    println!(
+        "Zero-inbound: no `depends` or `because` entry anywhere in the corpus\n\
+         names these claims. That makes each one a CANDIDATE for\n\
+         superseded-and-unnoticed — not a verdict. A claim nothing points at\n\
+         can be exactly right on its own: a self-contained safety property or\n\
+         a forbidden state needs nothing to depend on it, and a healthy\n\
+         corpus is expected to carry real leaves like these. This list bounds\n\
+         where to look; it does not decide what you'll find there. Read each\n\
+         one, confirm it still holds or retire it — dismissing a leaf as\n\
+         legitimate is exactly as much a use of this report as fixing one\n\
+         isn't."
+    );
+    println!();
+    for c in &zero_inbound {
+        println!("  {}\t{}:{}", c.id, c.file, c.line);
+    }
+    println!();
+    println!(
+        "Per-claim graph position — out-degree (refs this claim declares),\n\
+         in-degree (refs naming it), review-surface (this claim's blast\n\
+         radius: how many claims would need re-checking, transitively, if it\n\
+         were removed — see `docket blast`):"
+    );
+    println!();
+    println!("id\tfile\tline\tout-degree\tin-degree\treview-surface");
+    for c in &signals.claims {
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            c.id, c.file, c.line, c.out_degree, c.in_degree, c.review_surface
+        );
     }
 }
 
