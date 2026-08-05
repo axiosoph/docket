@@ -858,14 +858,38 @@ author investigates and fixes; a wrongly-stripped real occurrence would
 instead risk a silent false `pass`, the exact drift this evaluator
 exists to catch.
 
-**The `#[cfg(test)]`/`#[test]` blank is brace-counted, not parsed**, and
-can over-consume: if a stray unbalanced brace appears anywhere inside
-the gated item's own body (in a string or char literal, say), blanking
-continues past the item's true end and swallows real code that follows
-it. That is the false-`pass` direction this evaluator exists to
-eliminate — the one direction that must never be silent — and today it
-is disclosed only in the source (`src/absence.rs`'s `brace_span`,
-`strip_rust_test_items` doc comments), not here.
+**A comment leader or opener, and a brace counted while blanking a
+`#[cfg(test)]`/`#[test]` item, are both recognized only outside a
+double-quoted string literal** — `"// not a comment"`, `"/* not a block
+open */"`, and `let s = "{";` inside a test body all searched and
+counted correctly, not mistaken for real comment or brace syntax. That
+scope is deliberately narrower than "every language's every quoting
+convention": a **single-quoted string** (SQL, Lua) or a **char literal**
+(Rust, C, Haskell) is not recognized at all — `'` is also Rust's
+lifetime sigil (`'a`), and there is no per-extension dispatch here to
+tell a lifetime from an unterminated char literal safely — and a **raw
+string** (`r"..."`, `r#"..."#`) is not either, since it does not treat
+`\` as an escape the way this scan assumes. Both are residuals, not
+silently unconsidered: a comment leader genuinely sitting inside one of
+these unrecognized shapes can still misfire in either direction,
+narrower than the false-`pass` gap this fix closes but not zero.
+
+A recognized test path (`test`/`tests`, above) has its own residual in
+the other direction: it excludes a path by spelling alone, so a real,
+always-compiled module that merely happens to be named `test`/`tests`
+(a testing tool's own `src/tests/scheduler.rs`, say) is excluded right
+alongside a genuine test tree — a false-`pass` risk this rule cannot
+distinguish from the path text alone. Kept deliberately narrow rather
+than widened (a broader net — `spec/`, `__tests__/`, a `*_test.*`
+filename — would only make this worse), and named here rather than left
+implicit.
+
+A file this search cannot read as valid UTF-8 is not searched, and its
+path is named in the report (`skipped N file(s) not valid UTF-8, not
+searched:`) alongside the verdict, `pass` included — unlike the same
+tolerance `corpus.rs`/`marker.rs` extend elsewhere, an absence claim's
+whole job is proving a negative across the tree, so an unreadable file
+is a gap in the claim itself, not a bounded, locally-visible miss.
 
 A literal assembled from fragments across several files (an error
 message pieced together from more than one crate's attributes, say) is
