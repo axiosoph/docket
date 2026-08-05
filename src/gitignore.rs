@@ -290,7 +290,26 @@ pub fn find_unreachable_references(
         // `` `/docs/...` ``, is what surfaced this). Strip it before
         // resolving, same meaning either way.
         let resolved = path.strip_prefix('/').unwrap_or(path).to_string();
-        (!too_degenerate_for_git(&resolved) && exists_on_disk(&resolved)).then_some((r, resolved))
+        // Document-shaped only, `.md` exactly — existence alone cannot
+        // tell a citation from a prose example that happens to name a
+        // real gitignored ARTIFACT: `` `build/out.txt` `` in running
+        // text genuinely exists once an author has run a build locally,
+        // same as `.ledger/2026-08-05-foo.md` genuinely exists once an
+        // author has written a note. Existence stops telling them apart
+        // right there; extension does not. Every real citation this
+        // check exists for is `.ledger/…md` (this module's own top-of-
+        // file doc example), so this costs nothing real: 18 citations on
+        // the consumer corpus this dispatch measured against, 13 on
+        // docket's own, all still fire. Markdown-link candidates are
+        // deliberately NOT filtered this way: a markdown href is
+        // explicit link syntax an author wrote to be followed, not
+        // incidental prose a backtick span merely happens to look like —
+        // the same asymmetry `path_shaped`'s own doc comment already
+        // draws between an authored link and a bare mention.
+        (!too_degenerate_for_git(&resolved)
+            && resolved.ends_with(".md")
+            && exists_on_disk(&resolved))
+        .then_some((r, resolved))
     }));
 
     let paths: Vec<String> = candidates.iter().map(|(_, r)| r.clone()).collect();
@@ -677,6 +696,53 @@ mod tests {
         repo.write("contracts/y.ncl", "");
         let code_refs = vec![link("contracts/x.ncl", "contracts/y.ncl")];
         assert!(find_unreachable_references(&repo.0, &[], &code_refs).is_empty());
+    }
+
+    // --- code_references: document-shaped only (`.md`) --------------------
+    //
+    // Existence alone cannot tell a citation from a prose example naming a
+    // real gitignored ARTIFACT: `build/out.txt` genuinely exists once an
+    // author has run a build, the same way `.ledger/foo.md` genuinely
+    // exists once an author has written a note. The code-span route
+    // additionally requires `.md`, since every real citation this check
+    // exists for is `.ledger/…md` — never applied to the `links` route,
+    // which stays governed by existence alone (an authored markdown href
+    // is not incidental prose).
+
+    #[test]
+    fn a_code_reference_to_a_real_gitignored_non_markdown_path_never_fires() {
+        let repo = git_repo("build/\n");
+        repo.write("contracts/x.ncl", "");
+        repo.write("build/out.txt", "");
+        let code_refs = vec![link("contracts/x.ncl", "build/out.txt")];
+        assert!(
+            find_unreachable_references(&repo.0, &[], &code_refs).is_empty(),
+            "a real, gitignored, non-.md code-span candidate must never fire"
+        );
+    }
+
+    #[test]
+    fn a_code_reference_to_a_real_gitignored_markdown_path_still_fires() {
+        let repo = git_repo("build/\n");
+        repo.write("contracts/x.ncl", "");
+        repo.write("build/notes.md", "");
+        let code_refs = vec![link("contracts/x.ncl", "build/notes.md")];
+        let found = find_unreachable_references(&repo.0, &[], &code_refs);
+        assert_eq!(found.len(), 1, "{found:#?}");
+        assert_eq!(found[0].resolved, "build/notes.md");
+    }
+
+    #[test]
+    fn a_link_to_a_real_gitignored_non_markdown_path_still_fires() {
+        // The asymmetry, pinned directly: the SAME non-.md target, gitignored
+        // and genuinely existing, still fires through the `links` route —
+        // the `.md` restriction is code-span-only.
+        let repo = git_repo("build/\n");
+        repo.write("docs/a.md", "");
+        repo.write("build/out.txt", "");
+        let links = vec![link("docs/a.md", "/build/out.txt")];
+        let found = find_unreachable_references(&repo.0, &links, &[]);
+        assert_eq!(found.len(), 1, "{found:#?}");
     }
 
     // --- too_degenerate_for_git ------------------------------------------

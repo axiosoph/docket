@@ -673,6 +673,24 @@ the same latent false-Fail. Checked with a plain filesystem stat against
 the corpus root, before the `git` batch, so a nonexistent candidate costs
 nothing beyond that.
 
+**The code-span route is further restricted to document-shaped targets —
+a `.md` extension exactly — the `links` route is not.** Existence alone
+cannot tell a citation from a prose example that names a real gitignored
+ARTIFACT: `` `build/out.txt` `` genuinely exists once an author has run a
+build locally, the same way `.ledger/2026-08-05-foo.md` genuinely exists
+once an author has written a note — the existence check above cannot
+distinguish them, since both are real files on disk. The extension can:
+every real citation this check exists for is `.ledger/…md`, so requiring
+it costs nothing real and drops the artifact-mention false positive by
+construction rather than by heuristic. Applied to `code_references` only,
+never to `links`: a markdown href is explicit link syntax an author wrote
+to be followed, not the incidental prose a bare backtick span merely
+happens to resemble — `[the build output](/build/out.txt)` still fires,
+`` `build/out.txt` `` does not, for the identical gitignored, existing
+target. A broader document set (a bare directory, say) is purely additive
+if a future corpus needs it; `.md` is what every real citation measured
+against actually is.
+
 **Directional.** Only a tracked document's link to an ignored path is
 checked; the reverse — an ignored file linking into the repository — is
 not, since only the repository's own reader-visible content is this

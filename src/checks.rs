@@ -1649,28 +1649,63 @@ mod tests {
 
     #[test]
     fn the_same_gitignore_pattern_still_fires_when_the_path_genuinely_exists() {
-        // The true positive `foo/bar` is silenced against above: the same
-        // `.gitignore` pattern, the same citation text, but this time
-        // `foo/bar` is real content on the author's disk — the check must
-        // still catch it. Without this, the existence filter above could
-        // pass by having simply turned the check off.
+        // The true positive `foo/bar.md` is silenced against above: the
+        // same `.gitignore` pattern, the same citation text, but this
+        // time `foo/bar.md` is real content on the author's disk — the
+        // check must still catch it. Without this, the existence filter
+        // above could pass by having simply turned the check off.
+        // `.md`-shaped (not bare `foo/bar`) so this stays a true positive
+        // under the document-shaped restriction below too, which the
+        // bare-path form would no longer satisfy.
         let dir = tempdir();
         dir.git_init();
-        dir.write(".gitignore", "bar\n");
+        dir.write(".gitignore", "bar.md\n");
         dir.write(
             "docket.ncl",
             r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
         );
         dir.write(
             "docs/specs/a.md",
-            "### [x]\n\nSee `foo/bar` for the working notes.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+            "### [x]\n\nSee `foo/bar.md` for the working notes.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
         );
-        dir.write("foo/bar", "");
+        dir.write("foo/bar.md", "");
         let report = run(&dir);
         let failures = only(&report, "unreachable-reference");
         assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
         assert_eq!(failures[0].severity, Severity::Fail);
-        assert!(failures[0].message.contains("foo/bar"));
+        assert!(failures[0].message.contains("foo/bar.md"));
+    }
+
+    #[test]
+    fn a_code_span_naming_a_real_gitignored_non_markdown_artifact_never_fires() {
+        // The defect existence alone cannot close: `build/out.txt` is a
+        // genuinely gitignored path that genuinely EXISTS — an author who
+        // ran a real build locally has it on disk exactly the same way an
+        // author with a real `.ledger/` note does. Existence cannot tell
+        // "prose example naming a real build artifact" apart from "a
+        // citation to a document only the author can reach"; extension
+        // can, since every real citation this check exists for is
+        // `.ledger/…md`. The code-span route restricts to `.md`
+        // specifically for this reason — never the markdown-link route,
+        // which stays exactly as it was after the existence fix.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", "build/\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "### [x]\n\nSee `build/out.txt` for an example of the generated shape.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        dir.write("build/out.txt", "");
+        let report = run(&dir);
+        assert!(
+            only(&report, "unreachable-reference").is_empty(),
+            "a non-.md code-span candidate must never fire, even when it genuinely exists and is genuinely gitignored: {:#?}",
+            report.diagnostics
+        );
     }
 
     #[test]
@@ -1713,6 +1748,33 @@ mod tests {
             "{:#?}",
             report.diagnostics
         );
+    }
+
+    #[test]
+    fn a_markdown_link_to_a_real_gitignored_non_markdown_artifact_still_fires() {
+        // The document-shaped restriction is code-span-only by design —
+        // pinned here at the layer a user sees, not merely asserted in a
+        // comment. A markdown link is explicit link syntax an author
+        // wrote to be followed, unlike a backtick span's incidental
+        // prose, so `build/out.txt` linked this way stays a genuine
+        // `unreachable-reference` Fail exactly as it did before the
+        // code-span restriction existed.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", "build/\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "### [x]\n\nSee [the build output](/build/out.txt) for details.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        dir.write("build/out.txt", "");
+        let report = run(&dir);
+        let failures = only(&report, "unreachable-reference");
+        assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(failures[0].severity, Severity::Fail);
     }
 
     #[test]
