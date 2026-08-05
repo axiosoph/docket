@@ -611,18 +611,55 @@ struct IdAnchor {
     kind: AnchorKind,
 }
 
-/// Where an inline-form definition's (bold- or html-form) prose scope
-/// ends: the next heading of ANY level, or the next definition of
-/// EITHER other inline form, whichever comes first. An inline
-/// definition is a sentence inside a section, not a section of its own
-/// — unlike a heading-form definition, whose scope survives a deeper
-/// subheading (`nested_headings_find_the_nearest_bracket_kebab_ancestor`),
-/// nothing beneath the next heading, and nothing past the next sibling
-/// definition, belongs to it. Shared by both `AnchorKind::Bold` and
-/// `AnchorKind::Html` rather than duplicated per form, since the rule
-/// itself does not depend on which inline form is asking — a bold
-/// definition's scope now closes at the next html definition too, and
-/// vice versa, symmetrically.
+/// Whether html anchor `[def_start, def_end)` sits immediately beside a
+/// heading — nothing but whitespace between them, in EITHER order (the
+/// anchor may precede or follow its heading) — and if so, that heading's
+/// index into `raw_headings`.
+///
+/// **Why this reclassification exists, not merely an optimization:** an
+/// html anchor is positionally polymorphic in a way bold-form never is.
+/// A bold span (`**[id]**: text`) is inherently inline — there is never
+/// an adjacent heading it could name, so treating it as a section marker
+/// would be meaningless. An html anchor beside a heading, by contrast,
+/// genuinely names that SECTION, and discarding the adjacency
+/// information (treating it as merely inline) produces a real defect:
+/// `inline_scope_end` closes at the very next heading, which — when the
+/// anchor sits immediately before its own heading — is that heading
+/// itself, collapsing `[scope_start, scope_end)` to nothing and silently
+/// dropping every link and code span in the section the author plainly
+/// meant to claim. A free-standing anchor with no adjacent heading has
+/// no such information to discard, and stays genuinely inline
+/// (`AnchorKind::Html`, `inline_scope_end`) — this function is what
+/// decides which case a given anchor is in, checked once at `id_anchors`
+/// construction rather than folded into the scope-computation match arm.
+fn heading_adjacent_to(
+    source: &str,
+    def_start: usize,
+    def_end: usize,
+    raw_headings: &[RawHeading],
+) -> Option<usize> {
+    raw_headings.iter().position(|h| {
+        (def_end <= h.start && source[def_end..h.start].trim().is_empty())
+            || (h.end <= def_start && source[h.end..def_start].trim().is_empty())
+    })
+}
+
+/// Where an inline-form definition's (bold- or FREE-STANDING html-form)
+/// prose scope ends: the next heading of ANY level, or the next
+/// definition of EITHER other inline form, whichever comes first. An
+/// inline definition is a sentence inside a section, not a section of
+/// its own — unlike a heading-form definition, whose scope survives a
+/// deeper subheading
+/// (`nested_headings_find_the_nearest_bracket_kebab_ancestor`), nothing
+/// beneath the next heading, and nothing past the next sibling
+/// definition, belongs to it. Shared by both `AnchorKind::Bold` and a
+/// non-heading-adjacent `AnchorKind::Html` rather than duplicated per
+/// form, since the rule itself does not depend on which inline form is
+/// asking — a bold definition's scope now closes at the next FREE-STANDING
+/// html definition too, and vice versa, symmetrically. A heading-adjacent
+/// html anchor never reaches this function at all —
+/// `heading_adjacent_to` reclassifies it to `AnchorKind::Heading` before
+/// scope computation ever runs.
 fn inline_scope_end(
     after: usize,
     raw_headings: &[RawHeading],
@@ -969,10 +1006,27 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
             id: b.id.clone(),
             kind: AnchorKind::Bold(i),
         }))
-        .chain(raw_html_defs.iter().enumerate().map(|(i, h)| IdAnchor {
-            start: h.start,
-            id: h.id.clone(),
-            kind: AnchorKind::Html(i),
+        .chain(raw_html_defs.iter().enumerate().map(|(i, h)| {
+            match heading_adjacent_to(source, h.start, h.end, &raw_headings) {
+                // Heading-adjacent: this anchor names the SECTION, not a
+                // sentence — reclassified to `Heading`, inheriting that
+                // heading's level and extent exactly as if the heading
+                // itself had carried a bracket-kebab id (`heading_adjacent_to`'s
+                // own doc comment states why this must not fall through
+                // to `inline_scope_end`). `start` is the earlier of the
+                // two markers, so the pair's ownership position is
+                // unaffected by which order the author wrote them in.
+                Some(heading_idx) => IdAnchor {
+                    start: h.start.min(raw_headings[heading_idx].start),
+                    id: h.id.clone(),
+                    kind: AnchorKind::Heading(heading_idx),
+                },
+                None => IdAnchor {
+                    start: h.start,
+                    id: h.id.clone(),
+                    kind: AnchorKind::Html(i),
+                },
+            }
         }))
         .collect();
     id_anchors.sort_by_key(|a| a.start);
@@ -1832,6 +1886,70 @@ mod tests {
         let mut got = ids(&res);
         got.sort_unstable();
         assert_eq!(got, vec!["bold-claim", "heading-claim", "html-claim"]);
+    }
+
+    // --- html anchors adjacent to a heading (the migration's real shape) --
+    //
+    // The defect the architect's ruling caught: a heading-adjacent anchor
+    // treated as inline closes its own scope at the very next heading —
+    // its OWN heading, when the anchor precedes it — collapsing
+    // `[scope_start, scope_end)` to nothing and silently dropping every
+    // link and code span in the section. `heading_adjacent_to`
+    // reclassifies these to `AnchorKind::Heading`, inheriting the
+    // heading's level and extent, before scope computation ever runs.
+
+    #[test]
+    fn an_anchor_immediately_before_its_heading_inherits_the_headings_scope() {
+        // The exact shape the migration will produce 473 times: an
+        // invisible anchor naming a titled heading's id.
+        let src = "<a id=\"lock-sufficiency\"></a>\n#### Lock sufficiency\n\nThe lock MUST pin. [link](x.md)\n\n```claim\nkind: requirement\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["lock-sufficiency"]);
+        assert_eq!(res.claims[0].prose_links, vec!["x.md".to_string()]);
+    }
+
+    #[test]
+    fn an_anchor_immediately_after_its_heading_also_inherits_the_headings_scope() {
+        // The other authoring order — heading first, anchor right after
+        // it — must resolve identically.
+        let src = "#### Lock sufficiency\n<a id=\"lock-sufficiency\"></a>\n\nThe lock MUST pin. [link](x.md)\n\n```claim\nkind: requirement\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["lock-sufficiency"]);
+        assert_eq!(res.claims[0].prose_links, vec!["x.md".to_string()]);
+    }
+
+    #[test]
+    fn a_heading_adjacent_anchors_scope_survives_a_deeper_subheading() {
+        // Inherited from Heading-form directly, the same property
+        // `nested_headings_find_the_nearest_bracket_kebab_ancestor` pins
+        // for an ordinary bracket-kebab heading: unlike an inline
+        // definition, a section's scope is not cut short by a deeper
+        // subheading beneath it.
+        let src = "<a id=\"parent\"></a>\n## Parent\n\n[outer](outer-target)\n\n### Child\n\n[inner](inner-target)\n\n```claim\nkind: requirement\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["parent"]);
+        let mut links = res.claims[0].prose_links.clone();
+        links.sort_unstable();
+        assert_eq!(links, vec!["inner-target", "outer-target"]);
+    }
+
+    #[test]
+    fn a_heading_adjacent_anchor_does_not_widen_past_the_next_same_level_heading() {
+        let src = "<a id=\"a\"></a>\n## A\n\n[link-a](target-a)\n\n```claim\nkind: requirement\nevaluator: test\n```\n\n## B\n\n[link-b](target-b)\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["a"]);
+        assert_eq!(res.claims[0].prose_links, vec!["target-a".to_string()]);
+    }
+
+    #[test]
+    fn a_free_standing_html_anchor_still_uses_the_inline_scope_rule() {
+        // Not adjacent to any heading — must NOT be reclassified; the
+        // existing inline behavior (stops at the next heading of any
+        // level or next sibling definition) still applies.
+        let src = "Some lead-in prose.\n\n<a id=\"free-standing\"></a>\n\n[link-a](target-a)\n\n#### Notes\n\n[link-b](target-b)\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/a.md", src);
+        assert_eq!(ids(&res), vec!["free-standing"]);
+        assert_eq!(res.claims[0].prose_links, vec!["target-a".to_string()]);
     }
 
     // --- unregistered definitions (coverage count) ------------------------

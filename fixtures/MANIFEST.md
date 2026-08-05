@@ -56,6 +56,7 @@ called out below.
 | `html-anchor-false-positives/` | — (all pass) | See below. The false-positive floor: an `<a href="…">` with no `id`, an unclosed `<a id="…">`, and a closed pair carrying real content between the tags — none recognized as a definition. |
 | `html-anchor-malformed-id/` | `malformed-id` (`Warn`) | See below. A non-kebab and an empty `id` attribute, both on immediately-closed pairs. Exits **0**. |
 | `html-anchor-dangling-link/` | `dangling-reference` (`Warn`) | See below. A link to an html anchor that does not exist anywhere in the corpus. Exits **0**. |
+| `html-anchor-heading-adjacent/` | — (all pass) | See below. The migration's real shape: an anchor immediately beside a heading, both authoring orders, one nested under a deeper subheading — inherits the heading's scope rather than the inline one. |
 | `c2-duplicate-across-forms/` | `C2` | `docs/specs/a.md` declares `[dup-across-forms]` in heading form, `docs/specs/b.md` declares the same id in bold form. Proves a duplicate arising from two *different* recognizers is still one C2 finding pair, each naming the other's site. |
 | `unregistered-definition/` | `unregistered-definition` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition with no `claim` block, plus one registered heading-form definition for contrast. Exits **0** — `Warn` severity, the coverage count. |
 | `malformed-id/` | `malformed-id` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition whose id fails the kebab-case grammar (both the real-corpus shape: an otherwise-kebab id with one stray uppercase segment), a bracketed-but-multi-word false positive that must not fire, and one registered heading-form definition for contrast. Exits **0** — `Warn` severity, never blocking. |
@@ -526,7 +527,7 @@ files were scanned.
   two `unregistered-definition` warnings on stderr, naming the file,
   line, and id of each.
 
-## `html-anchor-definitions/`, `html-anchor-false-positives/`, `html-anchor-malformed-id/`, `html-anchor-dangling-link/`
+## `html-anchor-definitions/`, `html-anchor-false-positives/`, `html-anchor-malformed-id/`, `html-anchor-dangling-link/`, `html-anchor-heading-adjacent/`
 
 The third definition form: `<a id="…"></a>`, invisible in rendered
 output — the head's ruling that a claim id must never pollute
@@ -541,6 +542,28 @@ an html-anchored claim is an ordinary `Claim` once extracted, so C1–C5,
 `blast`, `signals`, `dangling-reference`, and `unregistered-definition`
 all already handle it via the same code path every other definition
 form uses.
+
+**Scope is position-dependent, corrected by an architect ruling before
+this landed.** The first cut of this feature treated every html anchor
+as inline (bold-form's own scope rule) on the reasoning that neither
+form has a heading level to key on. That reasoning does not transport: a
+bold span is *inherently* inline (a sentence has no adjacent heading to
+name), but an html anchor genuinely can sit beside one — and discarding
+that adjacency has a sharp failure mode, not a merely-suboptimal one. An
+anchor placed immediately *before* its own heading, under the inline
+rule, closes its scope at the very next heading — itself — collapsing
+`[scope_start, scope_end)` to nothing and silently dropping every link
+and code span the section actually contains.
+`fn reproduce_empty_scope_for_anchor_before_heading` reproduced this
+directly before the fix landed; it is not in the tree now because the
+fix removed the defect it was written to pin, and the tests below
+replaced it as permanent coverage. `html-anchor-heading-adjacent/`
+isolates the corrected rule: an anchor immediately beside a heading
+(nothing but whitespace between, either order) is reclassified to a
+heading-form definition, inheriting that heading's level and full
+section extent (survives a deeper subheading, closes only at the next
+same-or-higher-level heading) — only a genuinely free-standing anchor
+still uses the inline rule the other three fixtures below exercise.
 
 - **`html-anchor-definitions/`** — the positive case: `<a
   id="html-claim"></a>` anchors a `requirement` claim, referenced by a
@@ -576,6 +599,22 @@ form uses.
   "html anchors are unreachable in general." `docket check --corpus
   fixtures/html-anchor-dangling-link` exits **0** with exactly one
   `dangling-reference` warning.
+- **`html-anchor-heading-adjacent/`** — three claims in one file: a
+  `[target-claim]` other things depend on; `lock-sufficiency`, anchored
+  immediately *before* `#### Lock sufficiency`, whose `depends` entry is
+  satisfied by a prose link written inside a deeper `##### A deeper
+  subheading` nested under it — proving the section's scope both
+  inherited the heading's extent and survived the subheading beneath it;
+  and `second-claim`, anchored immediately *after* `#### Second claim`
+  (the other authoring order), resolving identically. `docket check
+  --corpus fixtures/html-anchor-heading-adjacent` exits **0**. Verified
+  by hand, not committed: disabling the heading-adjacency
+  reclassification and re-running turns this into a `C5` failure on
+  `lock-sufficiency` — the anchor-before-heading order collapses the
+  inline reading's own scope to nothing (the "next heading" it closes
+  at is its own), so the depends entry's prose link, wherever it sits,
+  falls outside it — confirming the fixture actually exercises the
+  corrected rule, not some other path to the same clean exit.
 
 ## `malformed-id/`
 

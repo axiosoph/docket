@@ -100,18 +100,36 @@ each one — rather than a silently invented claim. This is what kept
 adding a third form cheap: each recognizer needs to be roughly right,
 not perfect.
 
-**An html anchor's prose scope (C5), stated in one sentence: it ends at
-the next heading of any level, or the next definition of any other
-form, whichever comes first** — exactly bold-form's own rule, since
-neither has a heading level or a section of its own to key on, both are
-inline markers sitting *in* prose rather than opening a section of it.
-This is not a new rule invented for the third form: bold-form's own
-scope-closing logic already answered "what ends an inline definition
-with no level," and an html anchor is the same shape of problem, so it
-reuses the same answer rather than inventing a second one. Bold-form's
-own scope now also closes at the next html anchor, symmetrically — the
-addition does not silently widen an existing form's scope in one
-direction only.
+**An html anchor's prose scope (C5) depends on its position, not only its
+spelling — stated in one sentence: an anchor immediately beside a
+heading (nothing but whitespace between them, either order) is a
+heading-form definition differently spelled, inheriting that heading's
+level and full section extent; a free-standing anchor is genuinely
+inline, and closes at the next heading of any level or the next
+definition of any other inline form, whichever comes first.**
+
+This is not the same shape of problem bold-form already solved, even
+though it first looked that way. A bold span (`**[id]**: text`) is
+*inherently* inline — a sentence never has an adjacent heading it could
+name — so there was never any positional information to consult. An
+html anchor is positionally **polymorphic**: beside a heading it names a
+*section*; free-standing in prose it names a *paragraph run*. Treating
+it as always-inline discards real information exactly where it exists,
+and does so with a sharp failure mode: an anchor placed *immediately
+before* its own heading then closes its scope at the very next heading —
+its own — collapsing `[scope_start, scope_end)` to nothing and silently
+dropping every link and code span in the section. Anchor-before-heading
+and anchor-after-heading are cosmetically identical authoring choices;
+one of the two orders zeroed the claim. The classification above is the
+fix: adjacency is checked once, at definition-recognition time, and a
+heading-adjacent anchor is folded into the SAME heading-form scope
+computation §1.1's own heading rule already gives a bracketed heading —
+survives a deeper subheading beneath it, closes only at the next
+same-or-higher-level heading, exactly as if the heading itself had
+carried the bracket-kebab id. Only a genuinely free-standing anchor ever
+reaches the inline rule, and bold-form's own scope still closes at the
+next free-standing html anchor, symmetrically — the addition does not
+silently widen an existing form's scope in one direction only.
 
 Rationale, unchanged by the addition of a second form: the id already
 exists in prose as the human-readable anchor, and duplicating it into
