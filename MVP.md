@@ -959,6 +959,101 @@ evaluator: test
 depends: [reference-syntax]
 ```
 
+**`docket check --json`.** Without this flag, `check` emits exactly what
+§4.1 already describes — the bare index above, to stdout or `--out` — and
+every diagnostic as a human-readable line on stderr (below). `--json`
+changes what is emitted, not whether: it replaces the bare index with one
+document, `{ "index": …, "findings": [...] }`, on the same destination
+(stdout or `--out`), and prints nothing to stderr — the `findings` array
+already carries everything the prose lines below state, so emitting both
+would risk the two drifting apart.
+
+```json
+{
+  "index": {
+    "claims": { "…": { "…": "…" } },
+    "documents": { "…": { "…": "…" } }
+  },
+  "findings": [
+    {
+      "check": "C1",
+      "severity": "fail",
+      "file": "docs/specs/lock-file-schema.md",
+      "line": 88,
+      "claim_id": "lock-groundness",
+      "message": "unknown field(s): extra"
+    }
+  ]
+}
+```
+
+`index` is exactly §4.1's shape, unchanged. Each `findings` entry carries
+five stable fields:
+
+| field | type | meaning |
+|:---|:---|:---|
+| `check` | string | the check's own identifier — `"C1"`–`"C5"`, or one of the derived checks' names (§3) |
+| `severity` | `"fail"` \| `"warn"` | explicit, not inferred from a message prefix — `"fail"` moves `check`'s exit code to 1 (§5), `"warn"` never does |
+| `file` | string | corpus-relative path |
+| `line` | number | 1-indexed |
+| `claim_id` | string or `null` | the claim this finding is about, when one applies |
+| `message` | string | the same text the human rendering prints |
+
+**`claim_id` is `null`, not omitted, when no claim applies** — a missing
+key would leave a `--json` consumer unable to tell "no claim" from "the
+producer forgot this field," the same reasoning `signals`'s
+zero-inbound list (§4.4) states for reporting a bounded list rather than
+silence. It carries a real id for `C1`–`C5`, `orphaned-because`, and
+`absent-marker-stale` — every check whose finding is about one
+identified claim. It is always `null` for `orphan-claim` (no id could be
+found — that is the finding), `normative-prose`, `unregistered-definition`,
+`malformed-id`, `unreachable-reference`, and `dangling-reference` — each
+document- or link-scoped, not claim-scoped; `unregistered-definition`
+and `malformed-id` in particular name a bracket token in definition
+position, not a claim id, since no claim exists yet for either to
+resolve against.
+
+**One source feeds both renderings.** `--json`'s `findings` array and the
+human-readable stderr lines are the same `Diagnostic` values
+(`checks::Diagnostic`), formatted two ways at the CLI layer — never two
+independently maintained passes over the corpus that happen to agree
+today. A finding the prose rendering emits always appears in `findings`,
+and never one more: the two cannot disagree by construction.
+
+**A clean corpus's `findings` is `[]`, never an absent key** — an empty
+list and no report are different things to a parser, the same
+distinction `run`'s six outcomes (§4.3) already insist on for "nothing
+happened" versus "one specific nothing happened."
+
+**Scope: `check` only, for now.** `blast`, `run`, and `signals` each
+already emit some machine-readable shape today (`blast`'s tab-separated
+lines, `run`'s outcome line, `signals`' tables) but none has a `--json`
+flag of its own. The convention above — one flag, one combined document
+named for what the command reports — generalizes to each without a
+schema change here; giving each command its own flag is deliberately
+left undone rather than speculatively built ahead of a real consumer.
+
+#### [json-findings-shape]
+
+`docket check --json` emits one document, `{ "index", "findings" }`,
+to the same destination the bare index (§4.1) already uses, and prints
+no diagnostic prose to stderr. `index` is unchanged from
+[index-shape](#index-shape). Each
+`findings` entry carries `check`, `severity` (`"fail"` or `"warn"`,
+explicit rather than inferred from the message), `file`, `line`,
+`claim_id` (a string or `null`), and `message` — the same value the
+human rendering prints, so the two can never disagree. `claim_id` is
+non-null exactly for `C1`–`C5`, `orphaned-because`, and
+`absent-marker-stale`; `null` for every document- or link-scoped check.
+Without `--json`, both existing outputs (the bare index, and stderr's
+human-readable diagnostic lines) are unchanged.
+
+```claim
+kind: constraint
+evaluator: test
+depends: [index-shape]
+```
+
 ### 4.2 Blast radius
 
 ```

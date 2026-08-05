@@ -50,7 +50,12 @@ pub enum RegisterError {
     Nickel(#[from] NickelError),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `#[serde(rename_all = "lowercase")]` makes `--json` output the exact
+/// tokens register.ncl already speaks in (`"fail"`/`"warn"`) rather than
+/// a Rust-cased `"Fail"`/`"Warn"` a consumer would have to normalize —
+/// one vocabulary, not a Rust-side and a wire-side spelling of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Severity {
     Fail,
     Warn,
@@ -62,12 +67,21 @@ pub enum Severity {
 /// string ("C1", "orphan-claim", …) rather than a Rust enum: the set of
 /// checks is now declared in Nickel, and Rust has no exhaustiveness
 /// obligation over it to justify re-declaring the vocabulary here.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `claim_id` is `None` for a diagnostic with no associated claim
+/// (`orphan-claim`'s whole point is that no id could be found;
+/// `normative-prose`, `unreachable-reference`, and `dangling-reference`
+/// are document- or link-scoped, not claim-scoped; `unregistered-definition`
+/// and `malformed-id` name a bracket token in definition position, not a
+/// claim id, since no claim exists yet) — represented explicitly rather
+/// than left for a `--json` consumer to infer from an absent key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Diagnostic {
     pub check: String,
     pub severity: Severity,
     pub file: String,
     pub line: usize,
+    pub claim_id: Option<String>,
     pub message: String,
 }
 
@@ -408,6 +422,7 @@ struct OutputDiagnostic {
     severity: String,
     file: String,
     line: usize,
+    claim_id: Option<String>,
     message: String,
 }
 
@@ -475,6 +490,7 @@ pub fn run_checks(
             },
             file: d.file,
             line: d.line,
+            claim_id: d.claim_id,
             message: d.message,
         })
         .collect();

@@ -41,6 +41,13 @@ enum Command {
         /// argument.
         #[arg(long)]
         register: Option<PathBuf>,
+        /// Emit one JSON document — `{ "index": …, "findings": [...] }`
+        /// (MVP.md §4.1) — to stdout/`--out` instead of the bare index,
+        /// and print no diagnostic prose to stderr. Without this flag,
+        /// both outputs are unchanged: the index alone on stdout/`--out`,
+        /// human-readable diagnostic lines on stderr.
+        #[arg(long)]
+        json: bool,
     },
     /// Print the transitive blast radius of a ref — a claim id or a
     /// `<doc-path>#<anchor>` document anchor (§4.2, §1.3).
@@ -103,7 +110,8 @@ fn main() -> ExitCode {
             corpus: corpus_root,
             out,
             register,
-        } => run_check(&corpus_root, out.as_deref(), register.as_deref()),
+            json,
+        } => run_check(&corpus_root, out.as_deref(), register.as_deref(), json),
         Command::Blast {
             target,
             corpus: corpus_root,
@@ -124,7 +132,12 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_check(corpus_root: &Path, out: Option<&Path>, register_override: Option<&Path>) -> ExitCode {
+fn run_check(
+    corpus_root: &Path,
+    out: Option<&Path>,
+    register_override: Option<&Path>,
+    json: bool,
+) -> ExitCode {
     let cfg = match config::load_config(corpus_root) {
         Ok(cfg) => cfg,
         Err(e) => return usage_error(&e),
@@ -167,32 +180,54 @@ fn run_check(corpus_root: &Path, out: Option<&Path>, register_override: Option<&
         }
     };
 
-    let evaluation = match checks::run_checks(&loaded, &cfg, &register_path, &markers) {
-        Ok(evaluation) => evaluation,
-        Err(e) => return usage_error(&e),
-    };
-    let report = evaluation.report;
+    let checks::RegisterResult { index, report } =
+        match checks::run_checks(&loaded, &cfg, &register_path, &markers) {
+            Ok(evaluation) => evaluation,
+            Err(e) => return usage_error(&e),
+        };
 
-    let json = serde_json::to_string_pretty(&evaluation.index).expect("Index serializes");
+    // `--json`: one document, `{ "index": …, "findings": [...] }`
+    // (MVP.md §4.1), replacing the bare index rather than adding a
+    // second stream — the findings array already carries everything the
+    // stderr prose below states, so emitting both risks the two drifting
+    // apart. Without the flag, stdout/`--out` and stderr are exactly
+    // what they always were: this branch changes nothing about that
+    // path.
+    let body = if json {
+        #[derive(serde::Serialize)]
+        struct JsonOutput<'a> {
+            index: &'a docket::model::Index,
+            findings: &'a [checks::Diagnostic],
+        }
+        serde_json::to_string_pretty(&JsonOutput {
+            index: &index,
+            findings: &report.diagnostics,
+        })
+        .expect("index and findings serialize")
+    } else {
+        serde_json::to_string_pretty(&index).expect("Index serializes")
+    };
     match out {
         Some(path) => {
-            if let Err(e) = std::fs::write(path, &json) {
+            if let Err(e) = std::fs::write(path, &body) {
                 eprintln!("error: could not write {}: {e}", path.display());
                 return ExitCode::from(2);
             }
         }
-        None => println!("{json}"),
+        None => println!("{body}"),
     }
 
-    for diagnostic in &report.diagnostics {
-        let severity = match diagnostic.severity {
-            checks::Severity::Fail => "error",
-            checks::Severity::Warn => "warning",
-        };
-        eprintln!(
-            "{severity}: {}: {}:{}: {}",
-            diagnostic.check, diagnostic.file, diagnostic.line, diagnostic.message
-        );
+    if !json {
+        for diagnostic in &report.diagnostics {
+            let severity = match diagnostic.severity {
+                checks::Severity::Fail => "error",
+                checks::Severity::Warn => "warning",
+            };
+            eprintln!(
+                "{severity}: {}: {}:{}: {}",
+                diagnostic.check, diagnostic.file, diagnostic.line, diagnostic.message
+            );
+        }
     }
 
     if report.passed() {
