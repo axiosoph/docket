@@ -229,9 +229,24 @@ match `## 60. …`.
 
 Section numbers rather than slugified heading text, deliberately: heading
 *wording* churns far more often than section *numbering* in the corpora
-this tool targets, so numbers are the more stable anchor. The failure mode
-when a document is renumbered is loud — C4 fails immediately — rather than
-silent.
+this tool targets, so numbers are the more stable anchor.
+
+**This is a known live defect, not a safety property, and the failure
+mode is not loud.** A renumber that inserts, removes, or reorders a
+section only fails loudly (C4) when a citation stops resolving to
+*anything*. A renumber that shifts an existing citation onto a
+*different real section* resolves perfectly and points at the wrong
+content, silently — `docs/models/atom-model#6` still means "whatever is
+now numbered 6," which may no longer be what the citation's author
+meant. This is strictly worse than a dangling reference: the dangling
+one is visible and gets fixed; the wrong-but-resolving one is invisible
+and stays wrong. The corpus-side remedy is to cite a claim id rather
+than a section number wherever the target has one — a claim id is
+stable under renumbering by construction, the same guarantee §1.2
+already gives every other `depends`/`because` entry — and is the
+direction the consumer corpus this tool was built against is moving in.
+The document-anchor form stays supported for sections that have not (or
+cannot) acquire a claim id of their own.
 
 **Heading slugs — a second, orthogonal addressing scheme for ordinary
 prose links.** `depends`/`because` entries stay numeric (above); every

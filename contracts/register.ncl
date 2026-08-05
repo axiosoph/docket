@@ -40,15 +40,16 @@ let claim = import "claim.ncl" in
 # What did NOT change, deliberately: `depends`/`because`'s own citation
 # grammar (MVP.md §1.3's `<doc-path>#<anchor>`) still resolves its
 # `doc_anchor` entries through `anchor_matches`'s numeric-prefix rule
-# alone (`resolves`, below) — a real corpus's `depends`/`because` fields
-# still cite a document by section *number*, e.g. `composition-model#6`,
-# and MVP.md §1.3 still gives the reason (numbering churns less than
-# wording). That citation is a **stale handle** (renumber the document
-# and every citation silently points elsewhere, with no diagnostic,
-# because the number still resolves) — a real defect, but fixing it
-# needs a decision nobody has made (do models grow claim ids of their
-# own, or does the citation move to some other stable handle), so it
-# stays exactly as it was; only reported, not touched, here.
+# alone (`resolves`, below) — a numeric section citation, e.g.
+# `composition-model#6`, is a **stale handle**: renumber the document and
+# the citation silently points elsewhere, with no diagnostic, because the
+# number still resolves (MVP.md §1.3 states this plainly now — it is
+# strictly worse than a dangling reference, not a safety property). The
+# remedy is a corpus-side rewrite, not a docket design question: cite the
+# target's claim id instead of its section number wherever one exists —
+# stable under renumbering by construction, the same guarantee every
+# other `depends`/`because` entry already has. That rewrite is out of
+# scope here; this migration only reports the defect.
 #
 # Real slug computation is used for two things ONLY, both about
 # *ordinary prose links* rather than `depends`/`because` entries
