@@ -755,6 +755,78 @@ kind: constraint
 evaluator: test
 ```
 
+### 4.4 Signals
+
+```
+docket signals
+```
+
+Reports derived properties of the reference graph the register already
+carries — nothing an author declares, nothing new to check against
+(§1.2's `depends`/`because` edges are the only input). Every value here
+is computed purely from the corpus already loaded for `check`/`blast`;
+`signals` adds no field to the claim block and no new check.
+
+For every claim, three numbers:
+
+| signal | means |
+|:---|:---|
+| out-degree | how many `depends`/`because` entries the claim declares, to a claim id or a document anchor |
+| in-degree | how many `depends`/`because` entries anywhere in the corpus name this claim's bare id directly |
+| review-surface | the size of this claim's blast radius (§4.2) — every claim that transitively depends on or is justified by it |
+
+Out-degree and in-degree are independent: a claim can declare several
+dependencies of its own while nothing else in the corpus cites it, and
+the reverse. Review-surface is not a new traversal — it is
+`blast_radius(id).entries.len()` for every claim, reusing §4.2's walk
+rather than a parallel computation that could drift from it. It names
+what removing the claim costs: its direct citers break outright (C4 or
+`orphaned-because`), and the rest are exactly the "set a reviewer must
+re-check" §4.2 already defines — not a claim that the rest becomes
+literally unreachable in any stronger sense.
+
+**The headline signal is in-degree zero.** A claim nothing cites —
+no `depends` and no `because` entry anywhere in the corpus names it — is
+a **candidate for superseded-and-unnoticed**, the mechanical form of
+this project's dominant failure mode: nothing depends on it and nothing
+justifies itself by it, so a reader following the graph would never
+reach it. `signals` lists every such claim under a heading that states
+plainly what the list is and is not:
+
+> A claim nothing points at can be exactly right on its own — a
+> self-contained safety property, a forbidden state — and needs no one
+> to depend on it. This list **bounds where to look; it does not decide
+> what you'll find there.** Confirm each one still holds, or retire it;
+> either is a legitimate outcome, and a healthy corpus is expected to
+> carry real leaves like these.
+
+This is deliberate, not a hedge to soften a real finding: the false-alarm
+rate on a zero-inbound list is expected to be high, and a report a reader
+learns to distrust is worse than no report at all (the same reasoning
+README.md gives for never letting status drift from what a run actually
+found).
+
+**Never fails.** Every value `signals` reports is a candidate for a
+reader to weigh, not a check result — its exit code carries no severity
+signal the way `check`'s does (§5), and it changes no existing check's
+diagnostics, index, or exit code.
+
+#### [signals-report]
+
+`docket signals` reports, per claim, out-degree and in-degree over the
+[reference syntax](reference-syntax) `depends`/`because` entries already
+declare, plus review-surface — reusing [blast radius](blast-semantics)'s
+own walk rather than a parallel computation — and lists every
+in-degree-zero claim as a candidate for superseded-and-unnoticed, a
+bounded search, not a verdict. It introduces no new field on the claim
+block and changes no existing check's diagnostics or exit code.
+
+```claim
+kind: constraint
+evaluator: test
+depends: [reference-syntax, blast-semantics]
+```
+
 ## 5. Exit codes
 
 `check`'s exit code tracks its report's severity: a report holding only
@@ -765,11 +837,12 @@ still exits 0.
 |:---|:--:|:---|
 | `check` | 0 | all checks pass (`Warn`-only reports included) |
 | `check` | 1 | one or more `Fail`-severity checks failed |
-| `check`, `blast`, `run` | 2 | usage or configuration error (bad `docket.ncl`, unreadable path, unknown claim id, a `blast` ref or `run` claim id that doesn't resolve) |
+| `check`, `blast`, `run`, `signals` | 2 | usage or configuration error (bad `docket.ncl`, unreadable path, unknown claim id, a `blast` ref or `run` claim id that doesn't resolve) |
 | `run` | 0 | outcome `pass`, `none`, or `review` |
 | `run` | 1 | outcome `fail` |
 | `run` | 3 | outcome `absent` |
 | `run` | 4 | outcome `vacuous` |
+| `signals` | 0 | always, once the corpus loads — every signal is a candidate for a reader to weigh, never a failure (§4.4) |
 
 A caller gating CI on `run`'s exit code can tell "write the marker" from
 "the evaluator regressed" from "the evaluator ran but checked nothing"

@@ -52,6 +52,7 @@ called out below.
 | `unregistered-definition/` | `unregistered-definition` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition with no `claim` block, plus one registered heading-form definition for contrast. Exits **0** — `Warn` severity, the coverage count. |
 | `malformed-id/` | `malformed-id` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition whose id fails the kebab-case grammar (both the real-corpus shape: an otherwise-kebab id with one stray uppercase segment), a bracketed-but-multi-word false positive that must not fire, and one registered heading-form definition for contrast. Exits **0** — `Warn` severity, never blocking. |
 | `unreachable-reference/` | `unreachable-reference` (`Fail`) | See below. `docs/specs/a.md`'s claim `[unreachable-target]` links `../../.scratch/notes.md` in prose; the fixture's own `.gitignore` marks `.scratch/` ignored. Exits **1**. |
+| `signals-zero-inbound/` | — (all pass) | Not a check fixture — see below. Isolates `docket signals`: one claim with a citer, one that cites but is never cited itself, one that neither cites nor is cited. |
 
 **`duplicate-stem/` is retired**, not just its row here. MVP.md §1.3 was
 amended once a real corpus produced three `README.md` files under one
@@ -514,6 +515,36 @@ question this check can answer at all
 (`gitignore::tests::a_corpus_root_that_is_not_a_git_repository_degrades_to_silence`,
 `gitignore::tests::a_missing_git_binary_degrades_to_silence_rather_than_a_crash`,
 `checks::tests::a_corpus_that_is_not_a_git_repository_never_fires_unreachable_reference`).
+
+## `signals-zero-inbound/`
+
+Isolates `docket signals` (MVP.md §4.4): the derived-degree report over
+the same reference graph `blast` already walks, headlined by zero-inbound
+claims — a candidate list for superseded-and-unnoticed, never a verdict.
+
+`docs/specs/a.md` carries three claims, chosen so out-degree and in-degree
+read as genuinely independent axes rather than one number seen twice:
+
+- `[base]` — no `depends`/`because` of its own, cited by `derived`.
+  out-degree 0, in-degree 1, review-surface 1 (`derived` is its whole
+  blast radius).
+- `[derived]` — `depends: [base]`, with a matching same-file anchor-form
+  prose link (`[base](#base)`, so C5 stays clean); nothing in the corpus
+  cites `derived` itself. out-degree 1, in-degree **0**, review-surface 0
+  — the case that motivates the fixture: a claim with real outgoing
+  dependencies can still be zero-inbound, because in-degree counts who
+  cites *it*, not what it cites.
+- `[standalone-invariant]` — neither `depends` nor `because`, and nothing
+  cites it either. out-degree 0, in-degree 0, review-surface 0 — the
+  self-contained-leaf shape the report's own framing calls out: a
+  legitimate zero-inbound claim, not a defect to fix.
+
+`docket signals --corpus fixtures/signals-zero-inbound` lists `derived`
+and `standalone-invariant` under zero-inbound (2 of 3 claims) and prints
+all three rows in the per-claim table above with exactly the
+out-degree/in-degree/review-surface values named above. The corpus passes
+`docket check` cleanly — like `blast-doc-anchor/`, this fixture
+demonstrates a query's behavior, not a check failure.
 
 ## Judgment calls made while writing these fixtures
 

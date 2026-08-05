@@ -48,18 +48,30 @@ pub struct BlastResult {
     pub cycles: Vec<Cycle>,
 }
 
-pub fn blast_radius(corpus: &Corpus, start: &str) -> BlastResult {
-    // Keyed by the cited ref's canonical string, so a claim-id cite and a
-    // document-anchor cite both register a reverse edge under the same
-    // vocabulary `start` (a raw ref argument) is written in. The two key
-    // spaces never collide: a claim id is bare kebab-case, a document
-    // anchor's string always contains `#` (CiteRef::Display).
+/// The reverse-citation map every graph-derived query walks: keyed by the
+/// cited ref's canonical string, so a claim-id cite and a document-anchor
+/// cite both register a reverse edge under the same vocabulary a raw ref
+/// argument is written in. The two key spaces never collide: a claim id is
+/// bare kebab-case, a document anchor's string always contains `#`
+/// (`CiteRef::Display`).
+///
+/// `pub(crate)` rather than private: `signals.rs` needs the same reverse
+/// edges for in-degree and reuses this rather than re-deriving its own
+/// copy of how an edge is keyed — the exact duplication R6
+/// (`.ledger/2026-07-30-reference-kinds-and-document-resolution.md`) warns
+/// against, applied to this crate's own internals.
+pub(crate) fn citers_map(corpus: &Corpus) -> HashMap<String, Vec<&Claim>> {
     let mut citers: HashMap<String, Vec<&Claim>> = HashMap::new();
     for claim in &corpus.claims {
         for (_kind, cite) in claim.refs() {
             citers.entry(cite.to_string()).or_default().push(claim);
         }
     }
+    citers
+}
+
+pub fn blast_radius(corpus: &Corpus, start: &str) -> BlastResult {
+    let citers = citers_map(corpus);
 
     let mut visited: HashSet<&str> = HashSet::new();
     let mut stack: Vec<&str> = vec![start];

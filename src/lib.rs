@@ -9,3 +9,4 @@ pub mod marker;
 pub mod model;
 pub mod nickel;
 pub mod run;
+pub mod signals;
