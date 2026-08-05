@@ -701,18 +701,18 @@ fails but at least one is recognized as vacuous, the outcome is
 `vacuous`.
 
 **Evaluator markers.** A marker is a line, anywhere in the corpus tree,
-containing the literal text `docket:` followed by a claim id and a
+containing the literal text `@docket:` followed by a claim id and a
 command:
 
 ```
-// docket: lock-groundness :: cargo test ground_values_only -- --exact
-\* docket: spine-chain-complete :: tlc -config Model.cfg Model.tla
--- docket: no-double-spend :: alloy exec -c Model.als NoDoubleSpend
+// @docket: lock-groundness :: cargo test ground_values_only -- --exact
+\* @docket: spine-chain-complete :: tlc -config Model.cfg Model.tla
+-- @docket: no-double-spend :: alloy exec -c Model.als NoDoubleSpend
 ```
 
 **The scanner never parses the comment leader.** `//`, `\*`, `--`, or
-anything else preceding `docket:` is not recognized syntax — only the
-literal token `docket:` is matched, wherever it appears on a line. This
+anything else preceding `@docket:` is not recognized syntax — only the
+literal token `@docket:` is matched, wherever it appears on a line. This
 is deliberate and language-agnostic: a corpus's evaluators are not all
 one language (proofs in Lean, model checks in TLA+ and Alloy, tests in
 whatever the implementation uses), and a comment lexer would have to be
@@ -724,7 +724,7 @@ at a prompt.
 
 **The vacuity opt-out.** A marker's id may carry a trailing `!`,
 immediately after the id and before any whitespace —
-`docket: <id>! :: <command>` — exempting that marker from vacuity
+`@docket: <id>! :: <command>` — exempting that marker from vacuity
 detection: its exit status alone is trusted, unconditionally. This
 exists for an evaluator kind the runner has no output recognizer for, so
 that evaluator can still report a genuine `pass`. It is a deliberate,

@@ -308,7 +308,7 @@ claim, because its marker travels with it.
 ### The marker spans languages, because evaluators are heterogeneous
 
 ```rust
-// docket: lock-groundness
+// @docket: lock-groundness
 #[test]
 fn ground_values_only() { … }
 ```
@@ -393,7 +393,7 @@ Mechanically this is the same marker in the same place, which is the point
 — one mechanism, two capabilities:
 
 ```rust
-// docket: czd-oid-disjoint
+// @docket: czd-oid-disjoint
 pub struct Czd<T>(…);
 ```
 

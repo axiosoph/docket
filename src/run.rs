@@ -335,7 +335,7 @@ pub fn run_claim(
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         // Only a *successful* command needs a second look: a nonzero
         // exit is already `Fail`, and a real failure's own exit status
-        // is diagnosis enough. An exempt marker (`docket: <id>! :: …`)
+        // is diagnosis enough. An exempt marker (`@docket: <id>! :: …`)
         // skips this unconditionally — the author's deliberate assertion
         // that the exit status alone is conclusive for this evaluator.
         let vacuous = if success && !m.exempt {

@@ -49,7 +49,7 @@ enum Command {
         #[arg(long, default_value = ".")]
         corpus: PathBuf,
     },
-    /// Execute a claim's evaluator (a `docket: <id> :: <command>` marker
+    /// Execute a claim's evaluator (a `@docket: <id> :: <command>` marker
     /// found anywhere in the corpus tree) and report pass / fail /
     /// absent (see docket::run).
     Run {
@@ -254,7 +254,7 @@ fn print_run_result(result: &RunResult) {
 
     if result.outcome == Outcome::Absent {
         println!(
-            "  no `docket: {} :: <command>` marker found under the corpus",
+            "  no `@docket: {} :: <command>` marker found under the corpus",
             result.claim_id
         );
         return;

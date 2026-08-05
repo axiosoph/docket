@@ -9,7 +9,7 @@ path and corpus roots don't overlap.
 
 The `run-*/` fixtures additionally carry a `src/` tree — the runner
 (`docket run <id>`, `src/marker.rs`/`src/run.rs`) scans the *whole*
-corpus root for `docket: <id> :: <command>` markers, not only `docs/`,
+corpus root for `@docket: <id> :: <command>` markers, not only `docs/`,
 so their evaluator markers live beside a stand-in Rust test the way a
 real corpus's would. All seven still `docket check` cleanly (see their
 own row): they isolate `run` behavior, not a `C`-check failure.
@@ -38,9 +38,9 @@ called out below.
 | `blast-doc-anchor/` | — (all pass) | Not a check fixture — see below. Isolates a `blast` behaviour rather than a check. |
 | `anchor-link-satisfies-claim-id/` | — (all pass) | Not a check fixture — see below. Isolates C5's anchor-form acceptance for a claim-id declaration. |
 | `golden/` | — (all pass) | See below. |
-| `run-pass/` | — (all pass; `docket run always-true` exits 0) | Not a `C`-check fixture — see below. `src/lib.rs` carries `// docket: always-true :: true`; the marker's command exits 0. |
-| `run-fail/` | — (all pass; `docket run always-false` exits 1) | Not a `C`-check fixture — see below. `src/lib.rs` carries `// docket: always-false :: false`; the marker's command exits 1. |
-| `run-absent/` | — (all pass; `docket run unbacked-claim` exits 3) | Not a `C`-check fixture — see below. `[unbacked-claim]` declares `evaluator: test`; no `docket:` marker for it exists anywhere in the corpus. |
+| `run-pass/` | — (all pass; `docket run always-true` exits 0) | Not a `C`-check fixture — see below. `src/lib.rs` carries `// @docket: always-true :: true`; the marker's command exits 0. |
+| `run-fail/` | — (all pass; `docket run always-false` exits 1) | Not a `C`-check fixture — see below. `src/lib.rs` carries `// @docket: always-false :: false`; the marker's command exits 1. |
+| `run-absent/` | — (all pass; `docket run unbacked-claim` exits 3) | Not a `C`-check fixture — see below. `[unbacked-claim]` declares `evaluator: test`; no `@docket:` marker for it exists anywhere in the corpus. |
 | `run-none/` | — (all pass; `docket run not-yet-implemented` exits 0) | Not a `C`-check fixture — see below. `[not-yet-implemented]` declares `evaluator: none`; a marker for it exists (`:: false`) but must never be consulted. |
 | `run-vacuous-missing/` | — (all pass; `docket run missing-test-target` exits 4) | Not a `C`-check fixture — see below. The marker names a test that was renamed/deleted; its command still exits 0. |
 | `run-vacuous-ignored/` | — (all pass; `docket run ignored-test-target` exits 4) | Not a `C`-check fixture — see below. The marker names a real `#[ignore]`d test; cargo collects and skips it, still exiting 0. |
@@ -213,7 +213,7 @@ second fixture.
 ## `run-pass/`, `run-fail/`, `run-absent/`, `run-none/`, `run-vacuous-missing/`, `run-vacuous-ignored/`, `run-vacuous-exempt/`
 
 Isolate `docket run <claim-id>` (`src/marker.rs`, `src/run.rs`): given a
-claim, execute the `docket: <id> :: <command>` marker(s) that discharge
+claim, execute the `@docket: <id> :: <command>` marker(s) that discharge
 it and report `pass` / `fail` / `absent` / `none` / `vacuous` — the
 three-outcome distinction the runner's own dispatch names as its most
 easily lost property (`absent` must never read as `fail`), the fourth,
@@ -223,17 +223,17 @@ green-by-construction hole: a marker's command can exit 0 while its own
 output proves nothing was actually checked.
 
 - **`run-pass/`** — `docs/specs/a.md` declares `[always-true]`
-  (`evaluator: test`); `src/lib.rs` carries `// docket: always-true ::
+  (`evaluator: test`); `src/lib.rs` carries `// @docket: always-true ::
   true`. `docket run always-true --corpus fixtures/run-pass` prints
   `pass  always-true  test` plus the one marker's `ok` line, and exits
   **0**.
-- **`run-fail/`** — `[always-false]`, marker `// docket: always-false ::
+- **`run-fail/`** — `[always-false]`, marker `// @docket: always-false ::
   false`. `docket run always-false --corpus fixtures/run-fail` prints
   `fail  always-false  test` plus a `FAIL (exit 1)` line, and exits
   **1**. Watched red directly (not merely asserted): `false` always
   exits 1, so this is the actual failure path, not an assumed one.
 - **`run-absent/`** — `[unbacked-claim]` (`evaluator: test`), and
-  **no** `docket:` marker for it anywhere in the corpus. `docket run
+  **no** `@docket:` marker for it anywhere in the corpus. `docket run
   unbacked-claim --corpus fixtures/run-absent` prints `absent
   unbacked-claim  test` and the literal "no marker found" line — never
   the `fail` label or a `FAIL (exit …)` line, which is exactly the
@@ -242,7 +242,7 @@ output proves nothing was actually checked.
   gets.
 - **`run-none/`** — `[not-yet-implemented]` (`evaluator: none`, under
   `docs/architecture/**`), *and* `src/lib.rs` carries a marker for it
-  (`// docket: not-yet-implemented :: false`) whose command would fail
+  (`// @docket: not-yet-implemented :: false`) whose command would fail
   if run. `docket run not-yet-implemented --corpus fixtures/run-none`
   prints `none  not-yet-implemented  none` with no marker line at all,
   and exits **0** — proving the marker is never consulted, not merely
@@ -270,7 +270,7 @@ output proves nothing was actually checked.
 - **`run-vacuous-exempt/`** — `[exempt-target]` (`evaluator: proof`, a
   stand-in for an evaluator kind — Lean/TLA+/Alloy — the runner has no
   output recognizer for at all); the marker's id carries a trailing `!`
-  (`docket: exempt-target! :: printf '...'`) whose command's output is
+  (`@docket: exempt-target! :: printf '...'`) whose command's output is
   deliberately built to match the same vacuity signal the two fixtures
   above trigger. `docket run exempt-target --corpus
   fixtures/run-vacuous-exempt` prints `pass  exempt-target  proof` and

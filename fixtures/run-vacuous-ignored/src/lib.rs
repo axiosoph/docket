@@ -5,7 +5,7 @@
 // ...`. The `printf` reproduces that exact, measured summary line
 // rather than invoking a real `cargo test` — see `run-vacuous-missing/`
 // for why.
-// docket: ignored-test-target :: printf 'running 1 test\ntest ignored_test_target ... ignored\n\ntest result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s\n'
+// @docket: ignored-test-target :: printf 'running 1 test\ntest ignored_test_target ... ignored\n\ntest result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s\n'
 
 #[test]
 #[ignore]

@@ -1,4 +1,4 @@
-//! Evaluator markers: `docket: <claim-id> :: <command>` lines, found
+//! Evaluator markers: `@docket: <claim-id> :: <command>` lines, found
 //! anywhere in the corpus tree.
 //!
 //! MVP.md's claim block names only an evaluator *kind* (`test`,
@@ -14,7 +14,7 @@
 //! evaluator-in-the-document coupling the churn argument rejects).
 //!
 //! **This marker grammar is a considered extension of, not identical
-//! to, README.md's illustrative example** (`// docket: lock-groundness`
+//! to, README.md's illustrative example** (`// @docket: lock-groundness`
 //! with nothing after it). That example locates an evaluator for
 //! *coverage counting* — "does something discharge this claim" — which
 //! only needs existence. Running an evaluator needs more: proof,
@@ -26,20 +26,20 @@
 //! knows the right invocation. So the marker carries it explicitly:
 //!
 //! ```text
-//! // docket: lock-groundness :: cargo test ground_values_only -- --exact
-//! \* docket: spine-chain-complete :: tlc -config Model.cfg Model.tla
-//! -- docket: no-double-spend :: alloy exec -c Model.als NoDoubleSpend
+//! // @docket: lock-groundness :: cargo test ground_values_only -- --exact
+//! \* @docket: spine-chain-complete :: tlc -config Model.cfg Model.tla
+//! -- @docket: no-double-spend :: alloy exec -c Model.als NoDoubleSpend
 //! ```
 //!
 //! One grammar, three comment leaders — the *leader* is never parsed at
 //! all (README.md's own point: "a corpus's evaluators are not all one
 //! language... a line comment can mark all of them"). This scanner
-//! looks for the literal text `docket:` anywhere on a line, which is
+//! looks for the literal text `@docket:` anywhere on a line, which is
 //! exactly as language-agnostic and sidesteps writing a comment lexer
 //! for every language a corpus's evaluators happen to be in.
 //!
 //! **The id may carry a trailing `!`**, immediately after it and before
-//! any whitespace: `docket: <id>! :: <command>`. This exempts the
+//! any whitespace: `@docket: <id>! :: <command>`. This exempts the
 //! marker from the runner's vacuity detection (run.rs) — its exit
 //! status alone is trusted, unconditionally. It exists for an evaluator
 //! kind the runner has no output recognizer for (README.md's own list —
@@ -78,14 +78,14 @@ use crate::corpus::{CorpusError, walk_files};
 use crate::model::{ClaimId, Line};
 use std::path::Path;
 
-/// One `docket: <id> :: <command>` marker, located.
+/// One `@docket: <id> :: <command>` marker, located.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Marker {
     pub id: ClaimId,
     pub command: String,
     pub file: String,
     pub line: Line,
-    /// `docket: <id>! :: <command>` — a deliberate, per-marker assertion
+    /// `@docket: <id>! :: <command>` — a deliberate, per-marker assertion
     /// that this command's success really does mean something was
     /// checked, so the runner's vacuity detection (run.rs) must not be
     /// applied to it. Exists for the evaluator kind vacuity detection
@@ -96,7 +96,7 @@ pub struct Marker {
     pub exempt: bool,
 }
 
-const KEYWORD: &str = "docket:";
+const KEYWORD: &str = "@docket:";
 
 /// Whether `s` is a non-empty run of kebab-case segments — the same
 /// grammar `extract::bracket_kebab_id` enforces for `[id]` headings,
@@ -112,10 +112,10 @@ fn is_kebab_case(s: &str) -> bool {
         })
 }
 
-/// `docket:` preceded by nothing, or by a byte that isn't itself part of
+/// `@docket:` preceded by nothing, or by a byte that isn't itself part of
 /// a longer identifier — so a marker is recognized whether it opens a
-/// line comment (`// docket: …`) or follows one (`\* docket: …`), while
-/// `not_docket:` (part of some other identifier) is not mistaken for
+/// line comment (`// @docket: …`) or follows one (`\* @docket: …`), while
+/// `not_@docket:` (part of some other identifier) is not mistaken for
 /// one. Returns the byte offset of the match.
 fn find_keyword(line: &str) -> Option<usize> {
     let mut from = 0;
@@ -133,16 +133,16 @@ fn find_keyword(line: &str) -> Option<usize> {
     None
 }
 
-/// Parse one line for a marker. `None` covers both "no `docket:` on this
-/// line at all" and "`docket:` is present but not followed by
-/// `<kebab-id> :: <command>`" — including a bare `// docket: <id>` with
+/// Parse one line for a marker. `None` covers both "no `@docket:` on this
+/// line at all" and "`@docket:` is present but not followed by
+/// `<kebab-id> :: <command>`" — including a bare `// @docket: <id>` with
 /// no `::` suffix (README.md's illustrative form for the separate
 /// coverage-index feature, or just not a marker). Both are equally
 /// invisible to the runner: a marker this parser cannot execute is
 /// indistinguishable, to the runner, from no marker at all.
 ///
 /// The id may carry a trailing `!` (no intervening whitespace) marking
-/// it vacuity-exempt — `docket: <id>! :: <command>` — the author's
+/// it vacuity-exempt — `@docket: <id>! :: <command>` — the author's
 /// explicit assertion that this command's exit status alone is
 /// conclusive (run.rs).
 fn parse_marker_line(line: &str) -> Option<(ClaimId, bool, String)> {
@@ -172,7 +172,7 @@ fn parse_marker_line(line: &str) -> Option<(ClaimId, bool, String)> {
 
 /// Scan every file under `root` (the same walk `corpus::load_corpus`
 /// uses, minus its `.md`-only filter — an evaluator marker lives in
-/// source, not documentation) for `docket:` markers.
+/// source, not documentation) for `@docket:` markers.
 ///
 /// A file that doesn't decode as UTF-8 is skipped, not an error — the
 /// same tolerance `corpus.rs` documents for a binary model-checker dump
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn parses_a_rust_line_comment_marker() {
         assert_eq!(
-            parse_marker_line("// docket: lock-groundness :: cargo test ground_values_only"),
+            parse_marker_line("// @docket: lock-groundness :: cargo test ground_values_only"),
             Some((
                 "lock-groundness".to_string(),
                 false,
@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn parses_a_tla_plus_line_comment_marker() {
         assert_eq!(
-            parse_marker_line("\\* docket: spine-chain-complete :: tlc Model.tla"),
+            parse_marker_line("\\* @docket: spine-chain-complete :: tlc Model.tla"),
             Some((
                 "spine-chain-complete".to_string(),
                 false,
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn parses_an_alloy_line_comment_marker() {
         assert_eq!(
-            parse_marker_line("-- docket: no-double-spend :: alloy exec Model.als"),
+            parse_marker_line("-- @docket: no-double-spend :: alloy exec Model.als"),
             Some((
                 "no-double-spend".to_string(),
                 false,
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn a_trailing_bang_on_the_id_marks_the_marker_vacuity_exempt() {
         assert_eq!(
-            parse_marker_line("// docket: no-double-spend! :: alloy exec Model.als"),
+            parse_marker_line("// @docket: no-double-spend! :: alloy exec Model.als"),
             Some((
                 "no-double-spend".to_string(),
                 true,
@@ -268,7 +268,7 @@ mod tests {
         // stray token would, rather than being silently absorbed as
         // exempt.
         assert_eq!(
-            parse_marker_line("// docket: no-double-spend ! :: alloy exec Model.als"),
+            parse_marker_line("// @docket: no-double-spend ! :: alloy exec Model.als"),
             None
         );
     }
@@ -280,7 +280,7 @@ mod tests {
         // invisible rather than a malformed-marker error: a claim
         // backed only by this form reports `absent`, not a parse
         // failure.
-        assert_eq!(parse_marker_line("// docket: lock-groundness"), None);
+        assert_eq!(parse_marker_line("// @docket: lock-groundness"), None);
     }
 
     #[test]
@@ -291,15 +291,18 @@ mod tests {
     #[test]
     fn docket_as_part_of_a_longer_identifier_is_not_a_keyword_match() {
         assert_eq!(
-            parse_marker_line("// not_docket: x :: y"),
+            parse_marker_line("// not_@docket: x :: y"),
             None,
-            "the boundary check must reject a `docket:` that is part of a longer token"
+            "the boundary check must reject a `@docket:` that is part of a longer token"
         );
     }
 
     #[test]
     fn an_uppercase_or_non_kebab_id_does_not_parse() {
-        assert_eq!(parse_marker_line("// docket: Lock_Groundness :: cmd"), None);
+        assert_eq!(
+            parse_marker_line("// @docket: Lock_Groundness :: cmd"),
+            None
+        );
     }
 
     #[test]
@@ -309,7 +312,7 @@ mod tests {
         // but a Rust test filter like `mod::test_name` does) — the
         // split must not require `::` to be the *only* occurrence.
         assert_eq!(
-            parse_marker_line("// docket: x :: cargo test mod::test_name -- --exact"),
+            parse_marker_line("// @docket: x :: cargo test mod::test_name -- --exact"),
             Some((
                 "x".to_string(),
                 false,
@@ -321,9 +324,9 @@ mod tests {
     #[test]
     fn scans_a_small_tree_and_reports_file_and_line() {
         let dir = tempdir();
-        dir.write("src/lib.rs", "// nothing here\n// docket: x :: true\n");
+        dir.write("src/lib.rs", "// nothing here\n// @docket: x :: true\n");
         dir.write("docs/notes.md", "no markers\n");
-        dir.write(".git/config", "// docket: hidden :: true\n");
+        dir.write(".git/config", "// @docket: hidden :: true\n");
 
         let markers = scan_markers(dir.path()).unwrap();
         assert_eq!(markers.len(), 1);
@@ -336,7 +339,7 @@ mod tests {
     #[test]
     fn skips_a_non_utf8_file_without_erroring() {
         let dir = tempdir();
-        dir.write("src/marked.rs", "// docket: x :: true\n");
+        dir.write("src/marked.rs", "// @docket: x :: true\n");
         dir.write_bytes("src/binary.bin", &[0xff, 0xfe, 0x00, 0x01]);
 
         let markers = scan_markers(dir.path()).unwrap();
@@ -349,7 +352,7 @@ mod tests {
         let dir = tempdir();
         dir.write(
             "src/lib.rs",
-            "// docket: a :: true\nfn x() {}\n// docket: b :: false\n",
+            "// @docket: a :: true\nfn x() {}\n// @docket: b :: false\n",
         );
 
         let markers = scan_markers(dir.path()).unwrap();
