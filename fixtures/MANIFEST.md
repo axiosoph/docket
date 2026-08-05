@@ -57,6 +57,8 @@ called out below.
 | `malformed-id/` | `malformed-id` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition whose id fails the kebab-case grammar (both the real-corpus shape: an otherwise-kebab id with one stray uppercase segment), a bracketed-but-multi-word false positive that must not fire, and one registered heading-form definition for contrast. Exits **0** — `Warn` severity, never blocking. |
 | `unreachable-reference/` | `unreachable-reference` (`Fail`) | See below. `docs/specs/a.md`'s claim `[unreachable-target]` links `../../.scratch/notes.md` in prose; the fixture's own `.gitignore` marks `.scratch/` ignored. Exits **1**. |
 | `dangling-reference/` | `dangling-reference` (`Warn`) | See below. `docs/guides/a.md` carries **no claim block at all** — a how-to genre permits none — and links `does-not-exist`, which resolves to nothing. Isolates the capability `bare-reference-no-failure/` cannot: a document with zero claims still has its links resolved. Exits **0**. |
+| `heading-slug-genuinely-missing-still-dangles/` | `dangling-reference` (`Warn`) | See below. The false-positive floor for heading-slug resolution: a link into a real, existing document, naming a heading number that document never had. Proves slug resolution didn't get *loose* alongside the fix that made real slugs resolve. |
+| `heading-slug-near-miss-still-dangles/` | `dangling-reference` (`Warn`) | See below. A link whose anchor differs from a real heading's real slug by exactly one character. Same floor as the fixture above, at the tightest possible margin. |
 | `signals-zero-inbound/` | — (all pass) | Not a check fixture — see below. Isolates `docket signals`: one claim with a citer, one that cites but is never cited itself, one that neither cites nor is cited. |
 | `run-absence-pass/` | — (all pass; `docket run no-retry-header` exits 0) | Not a `C`-check fixture — see below. `[no-retry-header]` declares `evaluator: absent`; its marker's literal, `Retry-After`, does not occur anywhere in `src/lib.rs`. |
 | `run-absence-fail/` | — (all pass; `docket run retry-header-returned` exits 1) | Not a `C`-check fixture — see below. Same shape as `run-absence-pass/`, except `src/lib.rs` contains the literal — the absence claim is broken. |
@@ -222,17 +224,22 @@ failed C5: the anchor form normalized to a doc-anchor
 which covers that same-shape negative case directly rather than as a
 second fixture.
 
-## `heading-slug-resolves-dangling/` and `heading-slug-satisfies-c5/`
+## `heading-slug-resolves-dangling/`, `heading-slug-satisfies-c5/`, `heading-slug-genuinely-missing-still-dangles/`, `heading-slug-near-miss-still-dangles/`
 
 Real, GitHub-style heading-slug computation (`model::heading_slug`,
 `InputHeading.slug`, `register.ncl`'s `heading_slug_resolves`/
 `same_heading`): the register now indexes every heading's real anchor —
 what a renderer and an ordinary relative markdown link both use — not
-only the section-number prefix `depends`/`because` entries cite. Two
-false-positive floors for the same fix are pinned directly in
-`checks::tests` (`dangling_reference_still_fires_for_a_near_miss_slug`,
-`c5_still_fails_when_the_slug_form_link_names_a_different_heading`)
-rather than as third and fourth fixtures.
+only the section-number prefix `depends`/`because` entries cite. The two
+false-positive floors below are also pinned directly in `checks::tests`
+(`dangling_reference_still_fires_for_a_near_miss_slug`,
+`c5_still_fails_when_the_slug_form_link_names_a_different_heading`) —
+duplicated here deliberately, not redundantly: a real slug matcher is
+exactly the shape where "the count went to zero" can mean either "got
+correct" or "got loose," and the two read identically from a diagnostic
+count alone. The fixtures make the distinguishing behavior visible at
+the layer a user actually sees (`docket check`'s own output), not only
+inside the test suite.
 
 - **`heading-slug-resolves-dangling/`** — `docs/guides/a.md` (a how-to
   genre, no claim block anywhere, the same shape `dangling-reference/`
@@ -258,6 +265,22 @@ rather than as third and fourth fixtures.
   requires a real, renderer-resolvable anchor) at once — this is the
   shape 23 real-corpus claims were stuck in. `docket check --corpus
   fixtures/heading-slug-satisfies-c5` exits **0** with zero diagnostics.
+- **`heading-slug-genuinely-missing-still-dangles/`** — `docs/guides/a.md`
+  links `../models/composition-model.md#99-this-heading-does-not-exist`;
+  `composition-model.md` is a real, scanned document, but has no heading
+  numbered 99 — nothing in it computes to that slug either. `docket check
+  --corpus fixtures/heading-slug-genuinely-missing-still-dangles` reports
+  exactly one `dangling-reference` warning and exits **0** (`Warn` never
+  flips the exit code). Proves resolving a *real* heading's slug did not
+  come at the cost of resolving *any* slug-shaped anchor.
+- **`heading-slug-near-miss-still-dangles/`** — same target document and
+  heading as `heading-slug-resolves-dangling/`, but `docs/guides/a.md`
+  links the real slug with its last character changed
+  (`...only-statz`, not `...only-state`). `docket check --corpus
+  fixtures/heading-slug-near-miss-still-dangles` reports exactly one
+  `dangling-reference` warning and exits **0**. The tightest version of
+  the same floor: slug comparison is exact-string, not fuzzy or
+  prefix-based.
 
 ## `run-pass/`, `run-fail/`, `run-absent/`, `run-none/`, `run-vacuous-missing/`, `run-vacuous-ignored/`, `run-vacuous-exempt/`, `run-absence-pass/`, `run-absence-fail/`
 
