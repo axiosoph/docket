@@ -350,18 +350,28 @@ punctuation like em dashes and section signs, and — as of the fix that
 added the combining-mark table — NFD-composed accents and other scripts'
 combining marks, the form many editors, filesystems, and copy-pasted
 GitHub URLs actually produce: `café` written as `e` + a bare combining
-acute accent, not the single precomposed `é`). Two characterized
-divergences remain, neither a shape any of this tool's real corpora carry
+acute accent, not the single precomposed `é`). Three characterized
+divergences remain, none a shape any of this tool's real corpora carry
 today: **38 very recent Unicode 16.0 codepoints** (Arabic Quranic
 annotation marks, two Telugu/Kannada signs) that `github-slugger`'s
 blacklist has not caught up to and still strips, which this table keeps
 regardless — a byte-perfect port would need to carve these back out, and
 does not, the same judgment call this residual note already makes for
-the gap below; and **Symbol-category codepoints `github-slugger` does not
-strip but this approximation still does** — emoji chief among them (an
-emoji is not itself alphanumeric, a combining mark, or ASCII punctuation,
-so "keep" never fires for it) — derived at the regex level, not run
-end-to-end against a live corpus the way the combining-mark case was.
+the gaps below; **seven unassigned (Unicode category `Cn`) codepoints —
+`0x192C`–`0x192F` and `0x11F3B`–`0x11F3D`** — swept into the table as a
+side effect of merging its surrounding ranges rather than deliberately
+kept; harmless and in the same safe direction as the gap above (no
+codepoint can meaningfully appear in a heading before Unicode assigns it
+a meaning), but not something a byte-perfect port would carry, so named
+here rather than left for the table alone to reveal; and
+**Symbol-category codepoints `github-slugger` does not strip but this
+approximation still does** — emoji chief among them (an emoji is not
+itself alphanumeric, a combining mark, or ASCII punctuation, so "keep"
+never fires for it). Measured, not merely derived: a heading `## Rocket
+🚀 Launch` produces the slug `rocket--launch` (emoji dropped, the
+resulting doubled hyphen kept as-is, matching `"a/b"` → `"ab"` above) —
+a prose link to `#rocket-🚀-launch` (the un-stripped form `github-slugger`
+would produce) dangles, while `#rocket--launch` resolves.
 
 Two consumers, both about *prose links*, neither about `depends`/`because`
 itself: `dangling-reference` (§3) resolves a link naming a heading by its
