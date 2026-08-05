@@ -535,8 +535,10 @@ noticing.
 `evaluator: absent` is that claim, discharged the same way every other
 mechanical evaluator is discharged: a marker, found and re-run, not
 testimony. The one thing that differs is which way the check points —
-the marker names a literal, and its command exiting "found" is `fail`,
-not `pass`. Every other piece of the register is unchanged: the same
+the marker names a literal, not a command: nothing is spawned, ever, no
+matter what the literal looks like. The literal is searched for,
+verbatim, across the corpus's non-documentation source, and "found" is
+`fail`, not `pass`. Every other piece of the register is unchanged: the same
 grammar, the same corroboration/vouch split (this is a corroboration,
 just of a negative), the same severity model for the check that catches
 a marker drifting out of step with the prose that named it
