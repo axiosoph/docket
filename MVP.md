@@ -635,6 +635,27 @@ to carry any of these on the day this check ships — an unreachable
 reference is wrong the moment it is written, with the same cheap,
 unambiguous remedy C4's dangling `depends` has (rewire or remove).
 
+**A candidate must exist on disk, for both inputs — not a weakening, the
+check's actual semantics.** `unreachable-reference` means "resolves, but a
+reader can't follow it" (above: "the target is present, only
+unreachable" — this was always the stated contract, restored here to
+match, not newly invented). A path-shaped candidate naming nothing that
+exists is not a treacherous local-only reference at all; it is a typo or
+a prose example that happens to collide with an unrelated `.gitignore`
+pattern (`` `foo/bar` `` in running text, when `.gitignore` ignores any
+directory named `bar`), and neither case is this check's business — the
+former is `dangling-reference`'s question for a markdown link (and simply
+not a citation at all for a code span, which that check was never wired
+to see), the latter is nobody's. This applies identically to `links` and
+`code_references`: the code-span-widening dispatch surfaced it because
+prose backtick spans collide with `.gitignore` far more often than
+deliberately-authored links do, but the underlying gap — no existence
+check at all — predated the widening and applied equally to markdown
+links; the fix closes it for both rather than leaving the link path with
+the same latent false-Fail. Checked with a plain filesystem stat against
+the corpus root, before the `git` batch, so a nonexistent candidate costs
+nothing beyond that.
+
 **Directional.** Only a tracked document's link to an ignored path is
 checked; the reverse — an ignored file linking into the repository — is
 not, since only the repository's own reader-visible content is this

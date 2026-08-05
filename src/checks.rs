@@ -1553,6 +1553,7 @@ mod tests {
             "docs/specs/x.md",
             "### [x]\n\nSee [notes](../../.scratch/notes.md).\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
         );
+        dir.write(".scratch/notes.md", "");
         let report = run(&dir);
         let failures = only(&report, "unreachable-reference");
         assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
@@ -1579,6 +1580,7 @@ mod tests {
             "docs/specs/x.md",
             "### [x]\n\nSee `.scratch/notes.md` for background.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
         );
+        dir.write(".scratch/notes.md", "");
         let report = run(&dir);
         let failures = only(&report, "unreachable-reference");
         assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
@@ -1609,6 +1611,111 @@ mod tests {
     }
 
     #[test]
+    fn a_prose_example_matching_a_gitignore_pattern_but_naming_nothing_that_exists_is_silent() {
+        // The over-permissiveness defect this migration widened into:
+        // `path_shaped` only tests for a `/` or a `.`, so any backtick
+        // span happening to match a `.gitignore` pattern was a Fail-grade
+        // finding with no requirement that it name a file that exists —
+        // turning an ordinary illustrative example ("a two-part key like
+        // `foo/bar`") into a false unreachable-reference. `unreachable-
+        // reference` means "resolves, but a reader can't follow it"; a
+        // target present nowhere is not a reference at all, so this must
+        // never fire (and never fire dangling-reference either — a
+        // backtick span is not a link, so it was never that check's
+        // candidate to begin with).
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", "bar\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "### [x]\n\nFor example, a two-part key like `foo/bar` shows the general shape.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, "unreachable-reference").is_empty(),
+            "a path-shaped prose example naming nothing that exists must never fire: {:#?}",
+            report.diagnostics
+        );
+        assert!(
+            only(&report, "dangling-reference").is_empty(),
+            "a backtick span was never a link, so it is not dangling-reference's concern either: {:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn the_same_gitignore_pattern_still_fires_when_the_path_genuinely_exists() {
+        // The true positive `foo/bar` is silenced against above: the same
+        // `.gitignore` pattern, the same citation text, but this time
+        // `foo/bar` is real content on the author's disk — the check must
+        // still catch it. Without this, the existence filter above could
+        // pass by having simply turned the check off.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", "bar\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "### [x]\n\nSee `foo/bar` for the working notes.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        dir.write("foo/bar", "");
+        let report = run(&dir);
+        let failures = only(&report, "unreachable-reference");
+        assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(failures[0].severity, Severity::Fail);
+        assert!(failures[0].message.contains("foo/bar"));
+    }
+
+    #[test]
+    fn a_markdown_link_matching_a_gitignore_pattern_but_naming_nothing_that_exists_is_dangling_not_unreachable()
+     {
+        // The same existence requirement applied consistently to the
+        // markdown-link surface, not only the widened backtick one: before
+        // this fix, `find_unreachable_references` never checked existence
+        // for either input (confirmed directly — the pre-existing tests
+        // for the `links` path never wrote their target to disk), so a
+        // link resolving to a gitignore-matching but nonexistent path was
+        // *also* a latent false Fail. Anchored (`#elsewhere`) so the link
+        // is `is_ref_shaped` and actually reaches `dangling-reference`'s
+        // resolution question (a same-document, no-anchor link is out of
+        // that check's ref grammar entirely, a separate, pre-existing
+        // scope boundary unrelated to this fix). It resolves to nothing in
+        // the corpus, so it correctly falls through to `dangling-reference`
+        // (Warn) instead — the check this module's own doc comment always
+        // said was the right home for "the target does not exist".
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", "bar\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "### [x]\n\nSee [notes](foo/bar#elsewhere) for background.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, "unreachable-reference").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+        assert_eq!(
+            only(&report, "dangling-reference").len(),
+            1,
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
     fn a_genre_matched_nickel_contract_file_fires_unreachable_reference() {
         // Symptom 2: `contracts/*.ncl` was outside the corpus entirely
         // (genres match `.md` only, and claim/heading extraction cannot
@@ -1627,6 +1734,7 @@ mod tests {
             "contracts/x.ncl",
             "# see `.ledger/2026-01-01-notes.md` for the decision\n",
         );
+        dir.write(".ledger/2026-01-01-notes.md", "");
         let report = run(&dir);
         let failures = only(&report, "unreachable-reference");
         assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
@@ -2015,6 +2123,7 @@ mod tests {
             "docs/specs/x.md",
             "### [x]\n\nSee [notes](../../.scratch/notes.md).\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
         );
+        dir.write(".scratch/notes.md", "");
         let report = run(&dir);
         assert_eq!(
             only(&report, "unreachable-reference").len(),

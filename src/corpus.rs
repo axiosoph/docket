@@ -445,6 +445,7 @@ mod tests {
             "docs/a.md",
             "### [x]\n\nSee [notes](../.scratch/notes.md).\n\n```claim\nkind: constraint\n```\n",
         );
+        dir.write(".scratch/notes.md", "");
 
         let config = load_config(dir.path()).unwrap();
         let loaded = load_corpus(dir.path(), &config).unwrap();
@@ -476,6 +477,7 @@ mod tests {
             "contracts/x.ncl",
             "# see `.ledger/2026-01-01-notes.md` for the decision\n",
         );
+        dir.write(".ledger/2026-01-01-notes.md", "");
 
         let config = load_config(dir.path()).unwrap();
         let loaded = load_corpus(dir.path(), &config).unwrap();

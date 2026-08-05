@@ -256,12 +256,26 @@ pub fn find_unreachable_references(
     links: &[DocumentLink],
     code_references: &[DocumentLink],
 ) -> Vec<IgnoredReference> {
+    // `unreachable-reference` means "resolves, but a reader can't follow
+    // it" — this module's own doc comment already draws that line against
+    // `dangling-reference` ("distinct from... the target does not exist",
+    // top of file). A candidate that names nothing on disk is not a
+    // treacherous local-only reference at all; it's a typo or a prose
+    // example that happens to be path-shaped (`` `foo/bar` `` in running
+    // text matching an unrelated `.gitignore` pattern), and that is
+    // `dangling-reference`'s question for a markdown link, or simply not a
+    // citation at all for a code span — never this check's business.
+    // Filtered here, before the `git` batch, so a nonexistent candidate
+    // costs nothing beyond a `Path::exists` stat.
+    let exists_on_disk = |resolved: &str| corpus_root.join(resolved).exists();
+
     let mut candidates: Vec<(&DocumentLink, String)> = links
         .iter()
         .filter_map(|link| {
             let path = path_shaped(&link.dest)?;
             let resolved = resolve(&link.file, path)?;
-            (!too_degenerate_for_git(&resolved)).then_some((link, resolved))
+            (!too_degenerate_for_git(&resolved) && exists_on_disk(&resolved))
+                .then_some((link, resolved))
         })
         .collect();
     candidates.extend(code_references.iter().filter_map(|r| {
@@ -276,7 +290,7 @@ pub fn find_unreachable_references(
         // `` `/docs/...` ``, is what surfaced this). Strip it before
         // resolving, same meaning either way.
         let resolved = path.strip_prefix('/').unwrap_or(path).to_string();
-        (!too_degenerate_for_git(&resolved)).then_some((r, resolved))
+        (!too_degenerate_for_git(&resolved) && exists_on_disk(&resolved)).then_some((r, resolved))
     }));
 
     let paths: Vec<String> = candidates.iter().map(|(_, r)| r.clone()).collect();
@@ -458,6 +472,7 @@ mod tests {
     fn a_link_into_a_gitignored_directory_is_reported() {
         let repo = git_repo(".scratch/\n");
         repo.write("docs/specs/a.md", "");
+        repo.write(".scratch/notes.md", "");
         let links = vec![link("docs/specs/a.md", "../../.scratch/notes.md")];
         let found = find_unreachable_references(&repo.0, &links, &[]);
         assert_eq!(found.len(), 1);
@@ -614,6 +629,7 @@ mod tests {
     fn a_code_reference_to_a_gitignored_path_is_reported() {
         let repo = git_repo(".ledger/\n");
         repo.write("contracts/x.ncl", "");
+        repo.write(".ledger/2026-01-01-notes.md", "");
         let code_refs = vec![link("contracts/x.ncl", ".ledger/2026-01-01-notes.md")];
         let found = find_unreachable_references(&repo.0, &[], &code_refs);
         assert_eq!(found.len(), 1);
@@ -636,6 +652,7 @@ mod tests {
         let repo = git_repo("/.ledger/\n");
         repo.write("contracts/x.ncl", "");
         repo.write("contracts/.ledger/notes.md", "");
+        repo.write(".ledger/notes.md", "");
         let code_refs = vec![link("contracts/x.ncl", ".ledger/notes.md")];
         let found = find_unreachable_references(&repo.0, &[], &code_refs);
         assert_eq!(found.len(), 1);
@@ -678,6 +695,7 @@ mod tests {
     fn a_bare_slash_code_reference_never_poisons_the_whole_batch() {
         let repo = git_repo(".ledger/\n");
         repo.write("MVP.md", "");
+        repo.write(".ledger/notes.md", "");
         let code_refs = vec![link("MVP.md", "/"), link("MVP.md", ".ledger/notes.md")];
         let found = find_unreachable_references(&repo.0, &[], &code_refs);
         assert_eq!(
@@ -692,6 +710,7 @@ mod tests {
     fn a_dotdot_code_reference_never_poisons_the_whole_batch() {
         let repo = git_repo(".ledger/\n");
         repo.write("MVP.md", "");
+        repo.write(".ledger/notes.md", "");
         let code_refs = vec![link("MVP.md", ".."), link("MVP.md", ".ledger/notes.md")];
         let found = find_unreachable_references(&repo.0, &[], &code_refs);
         assert_eq!(found.len(), 1, "{found:#?}");
@@ -705,6 +724,7 @@ mod tests {
         // insurance against the identical git behaviour on that side too.
         let repo = git_repo(".ledger/\n");
         repo.write("docs/a.md", "");
+        repo.write(".ledger/notes.md", "");
         let links = vec![
             link("docs/a.md", "/"),
             link("docs/a.md", "../.ledger/notes.md"),
