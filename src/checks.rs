@@ -175,6 +175,20 @@ struct InputUnreachableReference {
     resolved: String,
 }
 
+/// A document-wide link, independent of any claim's C5 scope — the
+/// register's document-level resolution surface
+/// (`.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`).
+/// `dest` is the raw href, exactly like `InputClaim::prose_links`'
+/// entries; register.ncl normalizes and resolves it the same way,
+/// reusing `normalize_prose_link`/`resolves` rather than a second
+/// mechanism.
+#[derive(Serialize)]
+struct InputDocumentLink {
+    file: String,
+    line: usize,
+    dest: String,
+}
+
 #[derive(Serialize)]
 struct Input {
     claims: Vec<InputClaim>,
@@ -185,6 +199,7 @@ struct Input {
     unregistered_definitions: Vec<InputUnregisteredDefinition>,
     malformed_ids: Vec<InputMalformedId>,
     unreachable_references: Vec<InputUnreachableReference>,
+    links: Vec<InputDocumentLink>,
 }
 
 /// A YAML claim block re-parsed into JSON, for C1 — mirrors what the
@@ -301,6 +316,16 @@ fn build_input(loaded: &LoadedCorpus, config: &Config) -> Input {
         })
         .collect();
 
+    let links = loaded
+        .links
+        .iter()
+        .map(|l| InputDocumentLink {
+            file: l.file.clone(),
+            line: l.line.0,
+            dest: l.dest.clone(),
+        })
+        .collect();
+
     Input {
         claims,
         documents,
@@ -310,6 +335,7 @@ fn build_input(loaded: &LoadedCorpus, config: &Config) -> Input {
         unregistered_definitions,
         malformed_ids,
         unreachable_references,
+        links,
     }
 }
 
@@ -669,6 +695,16 @@ mod tests {
         let report = run(&dir);
         assert_eq!(only(&report, "C4").len(), 1);
         assert!(only(&report, "C5").is_empty(), "{:#?}", report.diagnostics);
+        // The same target, read document-wide, must not ALSO surface as a
+        // separate `dangling-reference` — C4 already owns "this claim is
+        // broken" for a declared depends/because target, at its own
+        // severity; reporting the identical broken target a second time
+        // under a different diagnosis would be noise, not a second finding.
+        assert!(
+            only(&report, "dangling-reference").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
     }
 
     #[test]
@@ -713,9 +749,16 @@ mod tests {
         // Criterion 4, the noise-suppression property (R1's core reason
         // for the third kind): a prose link that is declared as neither
         // `depends` nor `because` is bare — it asserts no dependence, so
-        // its target not resolving is not this tool's concern at all. No
-        // C4, no orphaned-because, no C5 (the new C5 only requires
-        // declared refs to have a prose link, never the reverse).
+        // its target not resolving does not break anything. No C4, no
+        // orphaned-because, no C5 (the new C5 only requires declared refs
+        // to have a prose link, never the reverse) — and `report.passed()`
+        // stays true, since a `Warn` never flips the exit code.
+        //
+        // It is no longer SILENT, though
+        // (`.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`):
+        // "bare asserts nothing" is a claim about severity, not about
+        // visibility — a dangling bare reference is now a `dangling-reference`
+        // finding, which is what changed here.
         let dir = tempdir();
         dir.write(
             "docket.ncl",
@@ -726,9 +769,19 @@ mod tests {
             "### [x]\n\nSee also [related, unrelated work](does-not-exist), mentioned in passing.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
         );
         let report = run(&dir);
+        assert!(only(&report, "C4").is_empty(), "{:#?}", report.diagnostics);
+        assert!(only(&report, "C5").is_empty(), "{:#?}", report.diagnostics);
         assert!(
-            report.diagnostics.is_empty(),
-            "a bare reference must produce no diagnostic at all: {:#?}",
+            only(&report, "orphaned-because").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+        let findings = only(&report, "dangling-reference");
+        assert_eq!(findings.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(findings[0].severity, Severity::Warn);
+        assert!(
+            report.passed(),
+            "a bare reference must never fail the report: {:#?}",
             report.diagnostics
         );
     }
@@ -1486,6 +1539,130 @@ mod tests {
         assert!(report.passed(), "{:#?}", report.diagnostics);
         assert!(
             only(&report, "unregistered-definition").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    // --- dangling-reference ------------------------------------------------
+    //
+    // `.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`:
+    // links are collected and resolved per DOCUMENT now, not only within a
+    // claim's C5 scope. These tests cover the new surface; C5's own
+    // claim-scoped tests above are untouched and still pin its behavior.
+
+    #[test]
+    fn a_document_with_no_claims_at_all_still_has_its_links_resolved() {
+        // The dispatch's core deliverable: a claimless guide has no C5
+        // scope to collect a link into, so before this change its links
+        // went nowhere — not even a check ever saw them. This document
+        // declares no claim block anywhere.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/guides/**", kinds = [], quadrant = "how-to" } ] }"#,
+        );
+        dir.write(
+            "docs/guides/setup.md",
+            "# Setup\n\nSee [the spec](does-not-exist) for background.\n",
+        );
+        let report = run(&dir);
+        let findings = only(&report, "dangling-reference");
+        assert_eq!(findings.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(findings[0].file, "docs/guides/setup.md");
+        assert_eq!(findings[0].severity, Severity::Warn);
+        assert!(
+            report.passed(),
+            "dangling-reference must never fail the report: {:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_document_with_no_claims_and_a_resolving_link_produces_no_finding() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/guides/**", kinds = [], quadrant = "how-to" },
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+              ],
+            }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "### [target]\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        dir.write(
+            "docs/guides/setup.md",
+            "# Setup\n\nSee [the spec](../specs/a#target) for background.\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, "dangling-reference").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_link_outside_a_claims_scope_never_satisfies_its_declaration_even_though_it_resolves() {
+        // The load-bearing constraint the dispatch names explicitly: C5's
+        // claim-scoping must survive unchanged even though resolution now
+        // runs over the whole document. The link sits in [a]'s prose, well
+        // before [b]'s heading — document-wide, it resolves fine (the
+        // claim it names is real), but [b]'s own `depends` on the same id
+        // must still fail C5, because nothing in [b]'s own scope links it.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [target-claim]\n\n```claim\nkind: constraint\nevaluator: test\n```\n\n\
+             ### [a]\n\nSee [it](target-claim).\n\n\
+             ### [b]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [target-claim]\n```\n",
+        );
+        let report = run(&dir);
+        let failures = only(&report, "C5");
+        assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
+        assert!(failures[0].message.contains("target-claim"));
+        // The link itself, read document-wide, resolves — no
+        // dangling-reference finding for it.
+        assert!(
+            only(&report, "dangling-reference").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_gitignored_link_fires_unreachable_reference_only_never_also_dangling() {
+        // `unreachable-reference` already covers the gitignored case
+        // (O4's "unreachable", distinct from "dangles") — reused, not
+        // duplicated, per the dispatch.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", ".scratch/\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nSee [notes](../../.scratch/notes.md).\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        let report = run(&dir);
+        assert_eq!(
+            only(&report, "unreachable-reference").len(),
+            1,
+            "{:#?}",
+            report.diagnostics
+        );
+        assert!(
+            only(&report, "dangling-reference").is_empty(),
             "{:#?}",
             report.diagnostics
         );

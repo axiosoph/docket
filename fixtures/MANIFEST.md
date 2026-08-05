@@ -31,7 +31,7 @@ called out below.
 | `c5-prose-cites-mismatch/` | `C5` | `docs/specs/a.md` declares `[target-claim]` (cited, and it resolves — so `C4` passes) and `[mismatched-claim]`, which declares `depends: [target-claim]` but whose prose body carries no matching link. `[target-claim]` exists specifically so the citation resolves and `C4` cannot also fire. |
 | `orphan-claim/` | `orphan-claim` | `docs/specs/a.md` is a claim block with no preceding heading in the file at all — the minimal case of "no `[id]`-shaped heading precedes it" (MVP.md §1.1). |
 | `orphaned-because/` | `orphaned-because` | `docs/specs/a.md`'s claim declares `because: [nonexistent-claim]`, which resolves to nothing. A matching prose link is present so `C5` still passes. Exits **0** — `orphaned-because` is `Warn` severity, distinct from `C4`'s `Fail`; see below. |
-| `bare-reference-no-failure/` | — (all pass) | Not a check fixture — see below. `docs/specs/a.md`'s claim declares neither `depends` nor `because`, but its prose links to a target that does not exist in the corpus. Proves the noise-suppression property: an undeclared (bare) reference is never resolved against the corpus at all. |
+| `bare-reference-no-failure/` | `dangling-reference` (`Warn`) | See below. `docs/specs/a.md`'s claim declares neither `depends` nor `because`, but its prose links to a target that does not exist in the corpus. Proves the noise-suppression property: an undeclared (bare) reference is never a `C4`/`C5`/`orphaned-because` finding — its target missing is at most a `Warn`, never a broken claim. |
 | `explanation-forbids-kinds/` | — (config error) | Not a `C`-check fixture — see below. Isolates the `quadrant`/`kinds` derived rule (MVP.md §2), a `docket.ncl` config error, not a corpus-content check. |
 | `normative-prose-unclaimed/` | `normative-prose` | `docs/adr/0001-decision.md` (genre `docs/adr/**`, `kinds = []`) carries a bare `MUST` in its own prose, with no claim block anywhere in the file. See below. |
 | `normative-prose-quoted/` | — (all pass) | Not a check fixture — see below. The identical keyword, present only inside a block quote and inside an inline code span, in the same `kinds = []` genre. |
@@ -52,6 +52,7 @@ called out below.
 | `unregistered-definition/` | `unregistered-definition` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition with no `claim` block, plus one registered heading-form definition for contrast. Exits **0** — `Warn` severity, the coverage count. |
 | `malformed-id/` | `malformed-id` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition whose id fails the kebab-case grammar (both the real-corpus shape: an otherwise-kebab id with one stray uppercase segment), a bracketed-but-multi-word false positive that must not fire, and one registered heading-form definition for contrast. Exits **0** — `Warn` severity, never blocking. |
 | `unreachable-reference/` | `unreachable-reference` (`Fail`) | See below. `docs/specs/a.md`'s claim `[unreachable-target]` links `../../.scratch/notes.md` in prose; the fixture's own `.gitignore` marks `.scratch/` ignored. Exits **1**. |
+| `dangling-reference/` | `dangling-reference` (`Warn`) | See below. `docs/guides/a.md` carries **no claim block at all** — a how-to genre permits none — and links `does-not-exist`, which resolves to nothing. Isolates the capability `bare-reference-no-failure/` cannot: a document with zero claims still has its links resolved. Exits **0**. |
 | `signals-zero-inbound/` | — (all pass) | Not a check fixture — see below. Isolates `docket signals`: one claim with a citer, one that cites but is never cited itself, one that neither cites nor is cited. |
 
 **`duplicate-stem/` is retired**, not just its row here. MVP.md §1.3 was
@@ -134,7 +135,8 @@ either corpus is capable of failing.
 
 Isolate the reference-kinds severity split (MVP.md §1.2, §3): a `depends`
 target and a `because` target carry different remedies when dangling, and
-a reference declared as neither is not this tool's concern at all.
+a reference declared as neither can never break a claim — it is at most
+a `dangling-reference` finding, the weakest of the three.
 
 - **`orphaned-because/`** — `docs/specs/a.md`'s claim
   `[orphaned-because-claim]` declares `because: [nonexistent-claim]`, with
@@ -150,13 +152,15 @@ a reference declared as neither is not this tool's concern at all.
   `[bare-ref-claim]` declares neither `depends` nor `because` at all; its
   prose links to `nonexistent-target`, which resolves to nothing in the
   corpus. `docket check --corpus fixtures/bare-reference-no-failure` exits
-  **0** with **zero** diagnostics — not a warning, not a failure. This is
-  the noise-suppression property: an undeclared prose link is a bare
-  reference by construction (nothing marks it as one; the absence of a
-  `depends`/`because` entry *is* the marking), so it is never resolved
-  against the corpus, and a target's deletion produces no signal at all.
-  Also proves C5's replaced rule is one-directional: an undeclared prose
-  link is never required to correspond to a declared entry.
+  **0** with exactly one `dangling-reference` warning — not a `C4`/`C5`
+  finding, not a failure. This is the noise-suppression property, refined
+  by `.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`:
+  an undeclared prose link is a bare reference by construction (nothing
+  marks it as one; the absence of a `depends`/`because` entry *is* the
+  marking), so its target missing never breaks a claim — but it is no
+  longer *silent*: bare means unable to fail, not unable to be seen. Also
+  proves C5's replaced rule is one-directional: an undeclared prose link
+  is never required to correspond to a declared entry.
 
 ## `blast-doc-anchor/`
 
@@ -516,6 +520,49 @@ question this check can answer at all
 `gitignore::tests::a_missing_git_binary_degrades_to_silence_rather_than_a_crash`,
 `checks::tests::a_corpus_that_is_not_a_git_repository_never_fires_unreachable_reference`).
 
+## `dangling-reference/`
+
+`.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`:
+links are collected and resolved per **document**, not only within a
+claim's C5 prose-link scope. Before this, a document with no claims had
+no scope to collect a link into at all — its links were extracted and
+then went nowhere, not even reported. `Warn` severity, like
+`unregistered-definition`/`malformed-id`: an undeclared link asserts no
+dependence (MVP.md §1.2's reference-kinds table), so its target missing
+is a finding, never a broken claim — this is the check `bare-reference-no-failure/`
+already demonstrates for a link inside a claim's own scope; this fixture
+isolates the wider case that check cannot reach.
+
+`docs/guides/a.md` (genre `docs/guides/**`, `kinds = []`, a how-to genre
+that permits no claim blocks at all) links `does-not-exist`, which
+resolves to nothing. No claim block anywhere in the corpus, so C1–C5,
+`orphan-claim`, and `orphaned-because` are all structurally incapable of
+firing — nothing but `dangling-reference` is live. `docket check --corpus
+fixtures/dangling-reference` exits **0** with exactly one
+`dangling-reference` warning naming the file, the line, and the link as
+written.
+
+**Reuses `unreachable-reference`'s notion rather than duplicating it.** A
+link that resolves but is gitignored is `unreachable-reference`'s
+finding, not this one; a declared `depends`/`because` target that
+dangles is C4/`orphaned-because`'s finding, at their own severity — a
+target reachable through both a declaration and a document-wide mention
+is reported once, under whichever check owns it, never twice under two
+diagnoses for the same broken link
+(`checks::tests::a_dangling_depends_with_a_matching_prose_link_fails_only_c4_not_c5`,
+extended to also assert `dangling-reference` stays silent there;
+`checks::tests::a_gitignored_link_fires_unreachable_reference_only_never_also_dangling`).
+
+**C5's claim-scoping is untouched.** Resolution now runs document-wide,
+but *satisfying a declaration* still does not: a link elsewhere in the
+document, outside the citing claim's own C5 window, never counts toward
+that claim's `depends`/`because` coverage
+(`checks::tests::a_link_outside_a_claims_scope_never_satisfies_its_declaration_even_though_it_resolves`
+pins this directly — a link that resolves fine, document-wide, still
+leaves a same-corpus claim's own C5 check failing, because the two
+questions — "does this link go anywhere" and "did this claim link to
+its own citation" — stay separate).
+
 ## `signals-zero-inbound/`
 
 Isolates `docket signals` (MVP.md §4.4): the derived-degree report over
@@ -604,8 +651,10 @@ removed, since the resolution is part of the record.
    inline) so the fixture set exercises both, not just one by default.
    Two new fixtures (`orphaned-because/`, `bare-reference-no-failure/`)
    isolate the properties no existing fixture could: the `Warn`-severity
-   split, and the noise-suppression guarantee that a bare reference is
-   never resolved against the corpus at all.
+   split, and the noise-suppression guarantee that a bare reference can
+   never fail — refined later by `dangling-reference/` once a bare
+   reference's target missing became a (`Warn`) finding rather than
+   silence.
 
 ## Execution status
 

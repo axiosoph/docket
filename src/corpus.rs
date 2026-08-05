@@ -3,7 +3,9 @@
 //! not scanned" (MVP.md §2).
 
 use crate::config::{AmbiguousGenre, Config};
-use crate::extract::{self, MalformedId, NormativeOccurrence, OrphanClaim, UnregisteredDefinition};
+use crate::extract::{
+    self, DocumentLink, MalformedId, NormativeOccurrence, OrphanClaim, UnregisteredDefinition,
+};
 use crate::gitignore::{self, IgnoredReference};
 use crate::model::{Corpus, Document};
 use std::path::{Path, PathBuf};
@@ -51,6 +53,19 @@ pub struct LoadedCorpus {
     /// asks `git`), so it belongs beside the rest of this module's I/O,
     /// not downstream of it.
     pub unreachable_references: Vec<IgnoredReference>,
+    /// Every corpus-relative link found anywhere in a scanned document,
+    /// independent of any claim's C5 prose-link scope — the document-wide
+    /// resolution surface
+    /// (`.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`).
+    /// `unreachable_references` above is one check computed FROM this same
+    /// set (the gitignored-target case); `checks.rs`/`register.ncl` also
+    /// resolve it against corpus documents and claim ids for the
+    /// `dangling-reference` diagnostic — the not-gitignored-but-nonexistent
+    /// case O4 distinguishes from "unreachable". A document with zero
+    /// claims still has links, which is the whole point: `prose_links`
+    /// only ever sees the ones inside a claim's own C5 window, so a
+    /// claimless guide's links would otherwise go nowhere.
+    pub links: Vec<DocumentLink>,
 }
 
 /// Load every genre-matched file under `corpus_root`.
@@ -129,6 +144,7 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
         unregistered_definitions,
         malformed_ids,
         unreachable_references,
+        links,
     })
 }
 
@@ -403,6 +419,32 @@ mod tests {
             loaded.unreachable_references[0].resolved,
             ".scratch/notes.md"
         );
+    }
+
+    #[test]
+    fn collects_links_from_a_document_that_declares_no_claims_at_all() {
+        // The whole point of the document-wide `links` field
+        // (`.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`):
+        // `Claim::prose_links` has no scope to collect into when a
+        // document carries no claims, so a claimless guide's links used
+        // to go nowhere. This field collects them regardless.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/**", kinds = [], quadrant = "how-to" } ] }"#,
+        );
+        dir.write(
+            "docs/guide.md",
+            "# Guide\n\nSee [the spec](specs/a.md#1) for background.\n",
+        );
+
+        let config = load_config(dir.path()).unwrap();
+        let loaded = load_corpus(dir.path(), &config).unwrap();
+
+        assert!(loaded.corpus.claims.is_empty());
+        assert_eq!(loaded.links.len(), 1);
+        assert_eq!(loaded.links[0].file, "docs/guide.md");
+        assert_eq!(loaded.links[0].dest, "specs/a.md#1");
     }
 
     #[test]

@@ -136,7 +136,7 @@ different depending on which:
 |:---|:---|:---|
 | `depends` | the claim's truth or meaning requires the target | the claim is **broken** — rewire or remove |
 | `because` | the claim's justification is the target | the claim **still stands**, under-justified — restate the reason, or discover it was vestigial |
-| bare reference | context; asserts no dependence | nothing |
+| bare reference | context; asserts no dependence | **nothing breaks** — reported as `dangling-reference` (`Warn`, §3), never failed on |
 
 Only `depends` and `because` are fields on the block. A **bare** reference
 has no field of its own — it is a prose link declared as neither, the
@@ -515,6 +515,48 @@ repository, or an environment with no `git` on `PATH`, degrades to
 silence rather than a false verdict or a crash — there is no
 reader-reachability question to answer without a repository to ask.
 
+**`dangling-reference`, links are a document's facts, not only a
+claim's.** §1.1's link surface (a claim's prose scope, C5's `L`) is
+collected and satisfies a declaration at that scope on purpose — a
+declared reference is a promise that a reader following the *claim's own
+prose* meets the citation, and a link elsewhere in the document must
+never discharge that promise
+(`.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`).
+But a document's links are a wider set than any claim's scope: a genre
+that permits no claim blocks at all (a how-to guide, `kinds = []`) still
+points at things, and before this check, those links were extracted and
+then went nowhere — not resolved, not reported, invisible to every check
+at once, the same silent-gap shape `unregistered-definition` and
+`malformed-id` each closed for definitions.
+
+So every corpus-relative link in every scanned document — declared or
+not, inside a claim's scope or not — is resolved the same way C4
+resolves a `depends`/`because` target: against corpus documents and
+claim ids, using the anchor form's already-established exception (a
+doc-anchor whose anchor equals a real claim id resolves regardless of
+which document it names, the same acceptance §1.3 already gives C5's
+declared-refs question). A target that resolves is silent, same as
+everywhere else in this tool. One that does not is `dangling-reference`
+— **`Warn`, not `Fail`**: the reference-kinds table (§1.2) already
+settles this — a bare reference asserts no dependence, so its target
+missing breaks nothing, only leaves a citation that goes nowhere.
+
+**Two exclusions, so a broken target is never reported twice.** A link
+that resolves but is gitignored is `unreachable-reference`'s finding,
+not this one — reused, not duplicated. A link whose normalized target
+matches a `depends`/`because` entry somewhere in the corpus is C4's or
+`orphaned-because`'s finding at their own severity; this check stays
+silent on it, since "this claim is broken" and "this link goes nowhere"
+would otherwise say the same thing twice about the same broken href.
+
+**Out of scope for this check, deliberately.** A link naming a whole
+document with no anchor has no representation in the ref grammar §1.3
+already defines (the same gap C5 already has) — silently unaddressed
+here, not newly introduced. Resolving into source files or literals
+quoted in prose is a wider surface this check does not cover: only
+corpus documents and claim ids are consulted, the same resolution C4
+already performs, extended in scope rather than in kind.
+
 **`normative-prose`, derived from `kinds = []`, not a sixth numbered
 check.** §2's `kinds = []` already means a genre may hold no claim
 blocks — which already means nothing normatively binding lives in it.
@@ -830,8 +872,8 @@ depends: [reference-syntax, blast-semantics]
 ## 5. Exit codes
 
 `check`'s exit code tracks its report's severity: a report holding only
-`Warn`-severity diagnostics (`orphaned-because`, `unregistered-definition`)
-still exits 0.
+`Warn`-severity diagnostics (`orphaned-because`, `unregistered-definition`,
+`malformed-id`, `dangling-reference`) still exits 0.
 
 | command | code | meaning |
 |:---|:--:|:---|
