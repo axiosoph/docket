@@ -825,11 +825,28 @@ mod tests {
 
     // --- evaluator: absent -------------------------------------------
 
-    fn absence_corpus_with(src: &str) -> Corpus {
-        corpus_with(src)
+    /// Drop-guarded, mirroring the house pattern every other test module
+    /// in this crate already uses (`absence.rs`, `marker.rs`, `corpus.rs`,
+    /// `checks.rs`, `config.rs`, `gitignore.rs`): a bare trailing
+    /// `remove_dir_all` does not run on a panicking assertion, so a
+    /// failing test used to leak its temp dir.
+    struct AbsenceTempDir(std::path::PathBuf);
+    impl AbsenceTempDir {
+        fn path(&self) -> &Path {
+            &self.0
+        }
+        fn write(&self, relative: &str, contents: &str) {
+            let path = self.0.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
     }
-
-    fn absence_tempdir() -> std::path::PathBuf {
+    impl Drop for AbsenceTempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn absence_tempdir() -> AbsenceTempDir {
         let dir = std::env::temp_dir().join(format!(
             "docket-run-absence-test-{}-{}",
             std::process::id(),
@@ -839,37 +856,34 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        AbsenceTempDir(dir)
     }
 
     #[test]
     fn an_absence_marker_whose_literal_is_confirmed_absent_passes() {
         let dir = absence_tempdir();
-        std::fs::write(dir.join("marker.txt"), "no trace of it here\n").unwrap();
+        dir.write("marker.txt", "no trace of it here\n");
 
-        let corpus = absence_corpus_with(
+        let corpus = corpus_with(
             "### [no-retry-header]\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
         );
         let markers = vec![marker("no-retry-header", "Retry-After")];
-        let result = run_claim(&corpus, "no-retry-header", &dir, &markers).unwrap();
+        let result = run_claim(&corpus, "no-retry-header", dir.path(), &markers).unwrap();
         assert_eq!(result.outcome, Outcome::Pass);
         assert!(result.markers[0].success);
         assert_eq!(result.markers[0].exit_code, Some(0));
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn an_absence_marker_whose_literal_is_found_in_source_fails() {
         let dir = absence_tempdir();
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("src/lib.rs"), "let h = \"Retry-After\";\n").unwrap();
+        dir.write("src/lib.rs", "let h = \"Retry-After\";\n");
 
-        let corpus = absence_corpus_with(
+        let corpus = corpus_with(
             "### [no-retry-header]\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
         );
         let markers = vec![marker("no-retry-header", "Retry-After")];
-        let result = run_claim(&corpus, "no-retry-header", &dir, &markers).unwrap();
+        let result = run_claim(&corpus, "no-retry-header", dir.path(), &markers).unwrap();
         assert_eq!(result.outcome, Outcome::Fail);
         assert!(!result.markers[0].success);
         assert_eq!(result.markers[0].exit_code, Some(1));
@@ -878,8 +892,6 @@ mod tests {
             "{}",
             result.markers[0].stdout
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -887,7 +899,7 @@ mod tests {
         // `Outcome::Absent` keeps its existing meaning unchanged for
         // `evaluator: absent` (module docs): no marker means nothing was
         // searched at all, not a vacuous confirmation.
-        let corpus = absence_corpus_with(
+        let corpus = corpus_with(
             "### [no-retry-header]\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
         );
         let result = run_claim(&corpus, "no-retry-header", Path::new("."), &[]).unwrap();
@@ -901,17 +913,15 @@ mod tests {
         // would blow up a shell if `sh -c`'d proves the branch never
         // reaches `Command::new("sh")`.
         let dir = absence_tempdir();
-        let corpus = absence_corpus_with(
+        let corpus = corpus_with(
             "### [weird-literal]\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
         );
         let markers = vec![marker(
             "weird-literal",
             "$(rm -rf /nonexistent-marker-path)",
         )];
-        let result = run_claim(&corpus, "weird-literal", &dir, &markers).unwrap();
+        let result = run_claim(&corpus, "weird-literal", dir.path(), &markers).unwrap();
         assert_eq!(result.outcome, Outcome::Pass);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -922,39 +932,34 @@ mod tests {
         // an ordinary multi-marker claim already has (see
         // `all_markers_must_pass_for_the_claim_to_pass`), repurposed.
         let dir = absence_tempdir();
-        std::fs::write(dir.join("marker.txt"), "clean\n").unwrap();
+        dir.write("marker.txt", "clean\n");
 
-        let corpus = absence_corpus_with(
+        let corpus = corpus_with(
             "### [assembled-error-gone]\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
         );
         let markers = vec![
             marker("assembled-error-gone", "fragment-one"),
             marker("assembled-error-gone", "fragment-two"),
         ];
-        let result = run_claim(&corpus, "assembled-error-gone", &dir, &markers).unwrap();
+        let result = run_claim(&corpus, "assembled-error-gone", dir.path(), &markers).unwrap();
         assert_eq!(result.outcome, Outcome::Pass);
         assert_eq!(result.markers.len(), 2);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn one_present_fragment_among_several_absence_markers_still_fails_the_claim() {
         let dir = absence_tempdir();
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("src/lib.rs"), "\"fragment-two\"\n").unwrap();
+        dir.write("src/lib.rs", "\"fragment-two\"\n");
 
-        let corpus = absence_corpus_with(
+        let corpus = corpus_with(
             "### [assembled-error-gone]\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
         );
         let markers = vec![
             marker("assembled-error-gone", "fragment-one"),
             marker("assembled-error-gone", "fragment-two"),
         ];
-        let result = run_claim(&corpus, "assembled-error-gone", &dir, &markers).unwrap();
+        let result = run_claim(&corpus, "assembled-error-gone", dir.path(), &markers).unwrap();
         assert_eq!(result.outcome, Outcome::Fail);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -963,15 +968,13 @@ mod tests {
         // unchanged) but has no defined effect for `evaluator: absent` —
         // vacuity detection never runs on this path regardless.
         let dir = absence_tempdir();
-        let corpus = absence_corpus_with(
+        let corpus = corpus_with(
             "### [no-retry-header]\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
         );
         let markers = vec![exempt_marker("no-retry-header", "Retry-After")];
-        let result = run_claim(&corpus, "no-retry-header", &dir, &markers).unwrap();
+        let result = run_claim(&corpus, "no-retry-header", dir.path(), &markers).unwrap();
         assert_eq!(result.outcome, Outcome::Pass);
         assert_eq!(result.markers[0].vacuous, None);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // --- bare markers (marker.rs's "The bare form") -----------------------
