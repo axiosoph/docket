@@ -51,12 +51,16 @@ fn comment_syntax(extension: &str) -> CommentSyntax {
             line: Some("//"),
             block: Some(("/*", "*/")),
         },
-        "py" | "sh" | "bash" | "zsh" | "rb" | "toml" | "yaml" | "yml" | "ncl" | "nix" | "pl" => {
+        "py" | "sh" | "bash" | "zsh" | "rb" | "toml" | "yaml" | "yml" | "ncl" | "pl" => {
             CommentSyntax {
                 line: Some("#"),
                 block: None,
             }
         }
+        "nix" => CommentSyntax {
+            line: Some("#"),
+            block: Some(("/*", "*/")),
+        },
         "tla" => CommentSyntax {
             line: Some("\\*"),
             block: Some(("(*", "*)")),
@@ -65,7 +69,19 @@ fn comment_syntax(extension: &str) -> CommentSyntax {
             line: Some("--"),
             block: Some(("/-", "-/")),
         },
-        "als" | "sql" | "hs" | "lua" | "adb" | "ads" => CommentSyntax {
+        "sql" => CommentSyntax {
+            line: Some("--"),
+            block: Some(("/*", "*/")),
+        },
+        "hs" => CommentSyntax {
+            line: Some("--"),
+            block: Some(("{-", "-}")),
+        },
+        "lua" => CommentSyntax {
+            line: Some("--"),
+            block: Some(("--[[", "]]")),
+        },
+        "als" | "adb" | "ads" => CommentSyntax {
             line: Some("--"),
             block: None,
         },
@@ -232,10 +248,14 @@ fn is_test_path(relative: &str) -> bool {
 /// Search the corpus for `literal` as a plain substring, everywhere
 /// except documentation (`.md` — the claim's own document necessarily
 /// names the literal to describe its absence, so including it would
-/// make every absence claim self-defeating) and a recognized test path
-/// (`is_test_path`). A recognized-language file is searched with its
-/// comments blanked ([`strip_comments`]); a `.rs` file additionally has
-/// every `#[cfg(test)]`/`#[test]`-gated item blanked
+/// make every absence claim self-defeating), a recognized test path
+/// (`is_test_path`), and any path `git` would not track
+/// ([`crate::gitignore::ignored_paths`], one batched query for the whole
+/// candidate list) — build output and vendored dependencies are not
+/// corpus source, and a hit inside one is neither fixable at the marker
+/// nor reproducible machine to machine. A recognized-language file is
+/// searched with its comments blanked ([`strip_comments`]); a `.rs` file
+/// additionally has every `#[cfg(test)]`/`#[test]`-gated item blanked
 /// ([`strip_rust_test_items`]). An unrecognized extension is searched
 /// unstripped (`comment_syntax`'s doc comment states why that is the
 /// safe default, not an oversight). A file that doesn't decode as UTF-8
@@ -249,22 +269,42 @@ fn is_test_path(relative: &str) -> bool {
 pub fn find_literal(corpus_root: &Path, literal: &str) -> Result<Vec<SourceHit>, CorpusError> {
     let mut hits = Vec::new();
 
-    for path in corpus::walk_files(corpus_root)? {
-        let relative = path
-            .strip_prefix(corpus_root)
-            .expect("walk_files only yields paths under corpus_root")
-            .to_string_lossy()
-            .replace(std::path::MAIN_SEPARATOR, "/");
+    // `corpus::walk_files` skips only dot-prefixed entries — it has no
+    // notion of `.gitignore` at all, so build output (`target/`) and
+    // vendored dependencies (`node_modules/`) would otherwise be
+    // searched as corpus source. That is not the tolerable
+    // over-reporting direction this feature otherwise accepts (this
+    // module's own doc, "Between the two failure directions..."): a hit
+    // inside `target/` cannot be fixed at the marker, only by deleting a
+    // build directory, and the verdict becomes non-deterministic across
+    // machines depending on whether one happened to run `cargo build`.
+    // One batched `git check-ignore` for every candidate, mirroring
+    // `gitignore::find_unreachable_references`'s own pattern exactly.
+    let candidates: Vec<(std::path::PathBuf, String, String)> = corpus::walk_files(corpus_root)?
+        .into_iter()
+        .filter_map(|path| {
+            let relative = path
+                .strip_prefix(corpus_root)
+                .expect("walk_files only yields paths under corpus_root")
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            let extension = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if extension == "md" || is_test_path(&relative) {
+                return None;
+            }
+            Some((path, relative, extension))
+        })
+        .collect();
 
-        let extension = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if extension == "md" {
-            continue;
-        }
-        if is_test_path(&relative) {
+    let paths: Vec<String> = candidates.iter().map(|(_, r, _)| r.clone()).collect();
+    let ignored = crate::gitignore::ignored_paths("git", corpus_root, &paths);
+
+    for (path, relative, extension) in candidates {
+        if ignored.contains(&relative) {
             continue;
         }
 
@@ -278,12 +318,31 @@ pub fn find_literal(corpus_root: &Path, literal: &str) -> Result<Vec<SourceHit>,
             searched = strip_rust_test_items(&searched);
         }
 
-        for (i, line) in searched.lines().enumerate() {
-            if line.contains(literal) {
+        // Search the whole stripped file, not line by line: a per-line
+        // loop can only ever be *equivalent* to this for a `\n`-free
+        // literal (any match a per-line `.contains()` finds, a whole-
+        // content `match_indices()` finds too, and vice versa, since a
+        // literal without an embedded newline can never straddle a
+        // `.lines()` boundary) — but a single scan is simpler than
+        // materializing every line, and it is the form that also finds
+        // a literal that DOES carry an embedded newline should one ever
+        // reach here. Line numbers are derived from `searched` itself —
+        // never from re-locating the match in the original `contents` —
+        // for the reason `blank_into`'s doc comment states: a multi-byte
+        // character collapses to one ASCII space, so a byte offset into
+        // `searched` does not correspond to the same offset in
+        // `contents`. Counting newlines *within* `searched` sidesteps
+        // that entirely, because `searched`'s line structure — where
+        // every `\n` sits — is preserved exactly from the original file.
+        let mut last_hit_line: Option<usize> = None;
+        for (offset, _) in searched.match_indices(literal) {
+            let line = searched[..offset].matches('\n').count() + 1;
+            if last_hit_line != Some(line) {
                 hits.push(SourceHit {
                     file: relative.clone(),
-                    line: Line(i + 1),
+                    line: Line(line),
                 });
+                last_hit_line = Some(line);
             }
         }
     }
@@ -367,6 +426,19 @@ mod tests {
             let path = self.0.join(relative);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, contents).unwrap();
+        }
+        /// `git init` this directory so `find_literal`'s ignored-path
+        /// filter (`gitignore::ignored_paths`) has a real repository to
+        /// ask `check-ignore` against — mirrors `corpus.rs`'s own
+        /// `TempDir::git_init`.
+        fn git_init(&self) {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&self.0)
+                .args(["init", "--quiet"])
+                .status()
+                .expect("git must be on PATH to run this test");
+            assert!(status.success());
         }
     }
     impl Drop for TempDir {
@@ -482,6 +554,37 @@ mod tests {
     }
 
     #[test]
+    fn a_nix_block_comment_hit_does_not_count() {
+        let dir = tempdir();
+        dir.write("pkg.nix", "/* removed:\n\"Retry-After\"\n*/\n{ }\n");
+        assert!(find_literal(dir.path(), "Retry-After").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_sql_block_comment_hit_does_not_count() {
+        let dir = tempdir();
+        dir.write("q.sql", "/* removed:\n'Retry-After'\n*/\nSELECT 1;\n");
+        assert!(find_literal(dir.path(), "Retry-After").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_haskell_block_comment_hit_does_not_count() {
+        let dir = tempdir();
+        dir.write("M.hs", "{- removed:\n\"Retry-After\"\n-}\nmain = pure ()\n");
+        assert!(find_literal(dir.path(), "Retry-After").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_lua_block_comment_hit_does_not_count() {
+        let dir = tempdir();
+        dir.write(
+            "script.lua",
+            "--[[ removed:\n\"Retry-After\"\n]]\nprint(1)\n",
+        );
+        assert!(find_literal(dir.path(), "Retry-After").unwrap().is_empty());
+    }
+
+    #[test]
     fn a_cfg_test_module_is_excluded_even_though_it_sits_in_src() {
         let dir = tempdir();
         dir.write(
@@ -510,6 +613,69 @@ mod tests {
         );
         let hits = find_literal(dir.path(), "Retry-After").unwrap();
         assert_eq!(hits.len(), 1, "{hits:?}");
+    }
+
+    #[test]
+    fn a_gitignored_path_is_excluded_from_the_search() {
+        // Build output and vendored dependencies are not corpus source
+        // (module doc comment above): a hit inside `target/` cannot be
+        // fixed at the marker, only by deleting a build directory, and
+        // the same commit would verdict differently machine to machine
+        // depending on whether `cargo build` had run.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", "target/\nnode_modules/\n");
+        dir.write("target/debug/generated.rs", "\"Retry-After\"\n");
+        dir.write("node_modules/dep/index.js", "\"Retry-After\"\n");
+        dir.write("src/lib.rs", "let h = \"Content-Length\";\n");
+        assert!(find_literal(dir.path(), "Retry-After").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_literal_the_source_genuinely_splits_across_a_line_break_is_not_found() {
+        // Not a regression case for a real defect: a `\n`-free literal
+        // can never straddle a `.lines()` boundary (the newline that
+        // separates the two lines would itself have to be part of the
+        // literal), so a per-line scan and a whole-content scan agree
+        // here by construction. Rust's own backslash line-continuation
+        // is the case that looks like a counterexample and isn't: the
+        // *compiled* value is "Retry-After header", but the *raw source
+        // bytes* `find_literal` actually searches hold `\` + `\n` +
+        // leading indentation between the words, not a single space —
+        // so the literal genuinely does not occur verbatim, and `Pass`
+        // (no hit) is the correct verdict, matching MVP.md's contract
+        // ("searched for, verbatim, across the corpus's non-documentation
+        // source"). Pinned here so a future change to the search loop
+        // does not start reporting a false `Fail` on this shape.
+        let dir = tempdir();
+        dir.write(
+            "src/lib.rs",
+            "pub const MSG: &str = \"Retry-After \\\n    header\";\n",
+        );
+        assert!(
+            find_literal(dir.path(), "Retry-After header")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_hit_after_a_multi_byte_comment_reports_the_correct_line_number() {
+        // The trap a byte-offset-based line count would fall into:
+        // `blank_into` collapses every multi-byte character in a comment
+        // to a single ASCII space, so a byte offset into `searched` does
+        // NOT correspond to the same offset in the original file. Line
+        // number must come from counting `\n` within `searched` itself
+        // (whose line structure mirrors the original exactly), never
+        // from re-locating the match's offset in `contents`.
+        let dir = tempdir();
+        dir.write(
+            "src/lib.rs",
+            "// 日本語のコメント\nfn ok() {}\nlet h = \"Retry-After\";\n",
+        );
+        let hits = find_literal(dir.path(), "Retry-After").unwrap();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].line, Line(3));
     }
 
     #[test]
@@ -616,5 +782,24 @@ mod tests {
             exempt: false,
         }];
         assert!(find_stale_markers(&corpus, &markers).is_empty());
+    }
+
+    #[test]
+    fn a_literal_appearing_only_inside_a_sub_heading_does_not_suppress_staleness() {
+        // extract.rs's `prose_code` must not fold a sub-heading's own
+        // code span into a claim's prose-mention set: the sub-heading
+        // sits within the claim's scope (only a same-or-higher-level
+        // heading ends it), but a code span living in a heading is not
+        // prose *about* the claim's absence. Before the fix, this
+        // sub-heading's `` `Retry-After` `` counted as a prose mention
+        // and wrongly suppressed the warning.
+        let corpus = corpus_with(
+            "docs/specs/x.md",
+            "### [x]\n\nThe old note about it is gone now.\n\n#### `Retry-After` (historical)\n\nSome detail.\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
+        );
+        let markers = vec![marker_at("docs/specs/x.md", "x", "Retry-After", 3)];
+        let stale = find_stale_markers(&corpus, &markers);
+        assert_eq!(stale.len(), 1, "{stale:?}");
+        assert_eq!(stale[0].literal, "Retry-After");
     }
 }
