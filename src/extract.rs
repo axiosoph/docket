@@ -376,6 +376,18 @@ struct RawLink {
     dest: String,
 }
 
+/// An inline code span (`` `…` ``), captured the same way [`RawLink`]
+/// captures a link — position plus content, scoped to a claim's prose
+/// window by the same filter `prose_links` already applies. Feeds
+/// `Claim::prose_code` (the `absent-marker-stale` check's adjacency
+/// signal), nothing else; a heading's own code spans are unrelated and
+/// already folded into `Event::Code`'s existing heading-text handling
+/// below.
+struct RawCode {
+    start: usize,
+    text: String,
+}
+
 struct RawBlock {
     start: usize,
     end: usize,
@@ -478,6 +490,7 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
 
     let mut raw_headings: Vec<RawHeading> = Vec::new();
     let mut raw_links: Vec<RawLink> = Vec::new();
+    let mut raw_codes: Vec<RawCode> = Vec::new();
     let mut raw_blocks: Vec<RawBlock> = Vec::new();
     let mut raw_bold_defs: Vec<RawBoldDef> = Vec::new();
     let mut raw_malformed_bold: Vec<RawMalformedBold> = Vec::new();
@@ -666,8 +679,18 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
             Event::Code(t) => {
                 // Inline code spans occur only in inline (heading/prose)
                 // context; a fenced block's content is Text, never Code.
+                // A heading's own code span feeds only the heading's own
+                // text, never `raw_codes` (`RawCode`'s doc comment): a
+                // literal that appears solely inside a sub-heading within
+                // a claim's scope is not prose mentioning it, so it must
+                // not silence `absent-marker-stale` for that literal.
                 if let Some((_, _, _, ref mut text)) = cur_heading {
                     text.push_str(&t);
+                } else {
+                    raw_codes.push(RawCode {
+                        start: range.start,
+                        text: t.to_string(),
+                    });
                 }
             }
             Event::SoftBreak | Event::HardBreak => {
@@ -786,6 +809,13 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
             .map(|l| l.dest.clone())
             .collect();
 
+        let prose_code: Vec<String> = raw_codes
+            .iter()
+            .filter(|c| c.start >= scope_start && c.start < scope_end)
+            .filter(|c| !(c.start >= block.start && c.start < block.end))
+            .map(|c| c.text.clone())
+            .collect();
+
         let raw = parse_raw_claim_block(&block.yaml);
         let depends = raw.depends.iter().map(|c| CiteRef::parse(c)).collect();
         let because = raw.because.iter().map(|c| CiteRef::parse(c)).collect();
@@ -799,6 +829,7 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
             depends,
             because,
             prose_links,
+            prose_code,
         });
     }
 
@@ -985,6 +1016,40 @@ mod tests {
         let res = extract_document("docs/specs/x.md", src);
         let claim_b = res.claims.iter().find(|c| c.id == "b").unwrap();
         assert_eq!(claim_b.prose_links, vec!["target-b"]);
+    }
+
+    #[test]
+    fn prose_code_captures_inline_code_spans_in_the_claims_scope() {
+        // The `absent-marker-stale` check's adjacency signal
+        // (src/absence.rs): a claim's own prose can mark the literal an
+        // absence marker names, e.g. "There is no `Retry-After` header."
+        let src = "### [x]\n\nThere is no `Retry-After` header on any response.\n\n```claim\nkind: constraint\nevaluator: absent\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(res.claims[0].prose_code, vec!["Retry-After"]);
+    }
+
+    #[test]
+    fn prose_code_scope_stops_at_the_next_same_level_heading() {
+        let src = "### [a]\n\n`code-a`\n\n### [b]\n\n`code-b`\n\n```claim\nkind: constraint\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        let claim_b = res.claims.iter().find(|c| c.id == "b").unwrap();
+        assert_eq!(claim_b.prose_code, vec!["code-b"]);
+    }
+
+    #[test]
+    fn prose_code_excludes_a_code_span_living_inside_a_sub_heading() {
+        // A sub-heading sits within its parent claim's scope (only a
+        // same-or-higher-level heading ends it), but a code span inside
+        // the sub-heading's own text is not prose *about* the claim —
+        // it must not silence `absent-marker-stale` for a literal that
+        // never actually appears in the claim's prose body.
+        let src = "### [x]\n\nThe old note about it is gone now.\n\n#### `Retry-After` (historical)\n\nSome detail.\n\n```claim\nkind: constraint\nevaluator: absent\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(
+            res.claims[0].prose_code.is_empty(),
+            "{:?}",
+            res.claims[0].prose_code
+        );
     }
 
     #[test]

@@ -112,11 +112,21 @@ fn resolve(citing_file: &str, path: &str) -> Option<String> {
 /// or `git` itself is not on `PATH`: a corpus with no git history to ask
 /// has no reader-reachability question this check can answer, so silence
 /// is the correct verdict, not an error. `git_bin` is `"git"` for every
-/// real caller ([`find_unreachable_references`]); parameterized only so
-/// the "binary not found" branch is directly testable (a nonexistent name
-/// below) without depending on the test environment actually lacking
-/// `git`.
-fn ignored_paths(git_bin: &str, corpus_root: &Path, candidates: &[String]) -> HashSet<String> {
+/// real caller ([`find_unreachable_references`] and
+/// [`crate::absence::find_literal`]); parameterized only so the "binary
+/// not found" branch is directly testable (a nonexistent name below)
+/// without depending on the test environment actually lacking `git`.
+///
+/// `pub(crate)` rather than private: `absence::find_literal` reuses this
+/// unchanged to keep build output and vendored dependencies (`target/`,
+/// `node_modules/`, …) out of the search corpus, for the same reason
+/// [`find_unreachable_references`] needs it here — one batched query,
+/// same safe degradation.
+pub(crate) fn ignored_paths(
+    git_bin: &str,
+    corpus_root: &Path,
+    candidates: &[String],
+) -> HashSet<String> {
     if candidates.is_empty() {
         return HashSet::new();
     }

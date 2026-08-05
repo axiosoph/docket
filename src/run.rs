@@ -106,7 +106,87 @@
 //! regressed" from "the test checked nothing" without parsing stdout)
 //! at no cost, since there is only ever one outcome to encode per
 //! invocation.
+//!
+//! ## Absence claims (`evaluator: absent`)
+//!
+//! `.ledger/2026-08-05-references-that-leave-the-register.md`, O3: a
+//! document stating something does NOT exist is a reference too, and it
+//! breaks in the opposite direction from an ordinary one — when its
+//! target *appears*, not when it disappears. `evaluator: absent`
+//! (`contracts/claim.ncl`) is that claim, discharged by confirming a
+//! literal is absent from the corpus's non-documentation source
+//! (`absence.rs`).
+//!
+//! **The form: the SAME `@docket:` marker grammar, reinterpreted, not a
+//! new one.** An absence claim pairs with an ordinary `@docket: <id> ::
+//! <text>` marker (`marker.rs`'s grammar, unchanged) — the only
+//! difference is what `<text>` means. For every other evaluator it is a
+//! shell command this module executes; for `absent` it is the literal
+//! [`absence::find_literal`] searches for. Found ⇒ `Fail` (the
+//! document's absence assertion is false); not found ⇒ `Pass`. This was
+//! chosen over three alternatives considered and rejected:
+//!
+//! - *A new marker sigil* (e.g. `@docket: <id>~ :: <literal>`, mirroring
+//!   the exempt `!` suffix). Rejected: it would duplicate the whole
+//!   scanning/parsing surface `marker.rs` already has for zero
+//!   semantic gain — the claim's own `evaluator: absent` field already
+//!   says unambiguously how to interpret the marker's text, so a second
+//!   signal on the marker itself would be redundant, not clarifying.
+//! - *A region-scoped marker* — mark a whole paragraph as "everything
+//!   here is claimed absent." Rejected on the consumer's own evidence
+//!   (O3): a real paragraph mixed an absence claim with two
+//!   configuration keys that DO exist, and a region-scoped marker
+//!   inverted those too, manufacturing false failures. Naming the exact
+//!   literal in the marker's own text is what keeps the assertion
+//!   precisely as wide as it was written to be.
+//! - *A whole-paragraph search of the doc for `absent-marker-stale`'s
+//!   comparison, no explicit literal at all.* Rejected for the same
+//!   reason: it reintroduces the region-scoping problem for staleness
+//!   detection specifically, even if `run`'s own search stayed precise.
+//!
+//! **Why a `Fail` here is `Outcome::Fail`, not a new variant.** The
+//! runner already distinguishes five outcomes precisely because each
+//! sends a reader in a different remedial direction (see this module's
+//! opening docs). An absence claim's failure sends the reader in
+//! exactly `Fail`'s existing direction — "the evidence was attempted
+//! and did not hold," here read as "the thing the document says is
+//! gone has come back" — not a new direction needing a new label.
+//! Likewise `Outcome::Absent` keeps its existing meaning unchanged for
+//! an absence claim: "no marker exists for this claim id anywhere,"
+//! exactly as true for `evaluator: absent` as for any other evaluator.
+//! The one residual naming collision — `docket run`'s outcome column
+//! can print the word `absent` for an `evaluator: absent` claim whose
+//! marker is missing, so the SAME word appears twice in one line for a
+//! different reason each time — is accepted rather than solved:
+//! renaming the fifteen-month-old `Outcome::Absent` to disambiguate a
+//! brand-new evaluator name would be a larger, unjustified change for a
+//! cosmetic collision a reader resolves by column position alone
+//! (outcome, then claim id, then evaluator name).
+//!
+//! **Multiple markers under one claim id tile a fragmented literal.**
+//! O5: a quoted string assembled from several crates' error attributes
+//! exists in no single file, so matching it as one literal would always
+//! silently report `Pass` (false: the string trivially "doesn't exist"
+//! verbatim anywhere, whether or not its pieces still do). This module
+//! makes no attempt to reassemble fragments — that is out of scope,
+//! declared rather than silently unhandled (O5's "or it says out loud
+//! that it does not cover that case"). What it DOES support, for free,
+//! from the existing multi-marker aggregation below: an author names
+//! each fragment as its OWN marker under the same claim id, and the
+//! claim passes only if every fragment is independently absent — the
+//! same "all markers must succeed" rule an ordinary multi-marker claim
+//! already has, repurposed rather than special-cased.
+//!
+//! **Vacuity detection and the `!` exempt suffix do not apply.** No
+//! process is spawned for an absence marker, so there is no output
+//! shape to recognize as "checked nothing" — [`detect_vacuity`] is
+//! never called on this path. A `!` suffix still parses (`marker.rs`'s
+//! grammar is unchanged) but has no effect for `evaluator: absent`;
+//! this is a harmless no-op, not validated against, since forbidding it
+//! would add surface for a case that costs nothing to leave silently
+//! inert.
 
+use crate::absence;
 use crate::marker::Marker;
 use crate::model::{Claim, ClaimId, Corpus};
 use std::path::Path;
@@ -118,6 +198,8 @@ pub enum RunError {
     UnknownClaim(ClaimId),
     #[error("could not run `sh` to execute a marker's command: {0}")]
     Spawn(#[source] std::io::Error),
+    #[error("could not search the corpus for an absence marker's literal: {0}")]
+    Absence(#[source] crate::corpus::CorpusError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,19 +324,25 @@ fn detect_vacuity(stdout: &str) -> Option<&'static str> {
 }
 
 /// One marker, resolved: a commanded marker's command executed and
-/// captured, or a bare marker taken as located (see [`run_claim`]'s "bare
+/// captured; a bare marker taken as located (see [`run_claim`]'s "bare
 /// marker" handling — reachable only when this outcome's `marker.command`
 /// is `None`, which by construction means the claim's evaluator is
-/// `type`).
+/// `type`); or, for an `evaluator: absent` claim, one marker's literal,
+/// searched for (`absence::find_literal`) rather than run.
 #[derive(Debug, Clone)]
 pub struct MarkerOutcome {
     pub marker: Marker,
     pub success: bool,
-    /// `None` when the process was killed by a signal rather than
-    /// exiting (`std::process::ExitStatus::code()`'s own contract), or
+    /// `Some(code)` when the command's process ran and reported a code;
+    /// `None` when the process was instead terminated by a signal rather
+    /// than exiting (`std::process::ExitStatus::code()`'s own contract), or
     /// when `marker.command` is `None` — a bare marker has no process to
-    /// report a code for. `success` disambiguates the two: a bare marker
-    /// is always `success: true`.
+    /// report a code for (`success` disambiguates the two: a bare marker
+    /// is always `success: true`). For an absence marker, no process is
+    /// ever spawned either: this is a synthetic `Some(0)` (confirmed
+    /// absent) or `Some(1)` (found), not a real exit status, chosen to
+    /// keep this field meaningful for a caller that reports it without
+    /// needing to know which evaluator produced a given `MarkerOutcome`.
     pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
@@ -276,6 +364,16 @@ pub struct RunResult {
     /// for). One entry per matching marker for
     /// [`Outcome::Pass`]/[`Outcome::Fail`].
     pub markers: Vec<MarkerOutcome>,
+    /// Every file an `evaluator: absent` search could not read as UTF-8
+    /// and therefore did not search, pooled across every marker of this
+    /// claim, deduplicated and sorted. Always empty for every other
+    /// evaluator. Lives here rather than inside a [`MarkerOutcome`]'s
+    /// `stdout` because it is a property of the search across the whole
+    /// corpus, not of one marker's captured output — `absence::LiteralSearch`'s
+    /// own doc states why a `pass` resting on an incomplete scan must
+    /// surface this rather than let it depend on whether the marker's
+    /// output happens to get printed.
+    pub skipped: Vec<String>,
 }
 
 /// Execute `claim_id`'s evaluator and report the outcome.
@@ -310,6 +408,7 @@ pub fn run_claim(
             evaluator,
             outcome: Outcome::None,
             markers: Vec::new(),
+            skipped: Vec::new(),
         });
     }
 
@@ -327,6 +426,7 @@ pub fn run_claim(
             evaluator,
             outcome: Outcome::Review,
             markers: Vec::new(),
+            skipped: Vec::new(),
         });
     }
 
@@ -353,10 +453,25 @@ pub fn run_claim(
             evaluator,
             outcome: Outcome::Absent,
             markers: Vec::new(),
+            skipped: Vec::new(),
         });
     }
 
+    // `absent`: the marker's `command` field is a literal to search for
+    // (module docs, "Absence claims"), not a command to execute. Every
+    // other evaluator below this line still shells out exactly as
+    // before this branch existed — additive, not a change in kind for
+    // any evaluator that isn't `absent`.
+    let is_absence_evaluator = evaluator == "absent";
+
     let mut outcomes = Vec::with_capacity(matching.len());
+    // Pooled across every absence marker of this claim rather than kept
+    // per-marker: `absence::find_literal` walks the same corpus_root each
+    // time, so the same unreadable file recurs identically whichever
+    // marker's literal triggered the search — deduplicated below rather
+    // than assumed identical, since a future per-marker exclusion (the
+    // claim's own doc, say) could make that stop holding.
+    let mut skipped_files: Vec<String> = Vec::new();
     for m in matching {
         let Some(command) = &m.command else {
             // Bare marker on a `type`-graded claim (the only way it
@@ -376,34 +491,69 @@ pub fn run_claim(
             continue;
         };
 
-        // A shell, not a direct exec: a marker's command is free-form
-        // (pipes, `--` flags, shell-quoted arguments an author wrote by
-        // hand) exactly because it is meant to be whatever its author
-        // would type at a prompt to run their own evaluator, not a
-        // pre-tokenized argv this crate would have to parse.
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .current_dir(corpus_root)
-            .output()
-            .map_err(RunError::Spawn)?;
-        let success = output.status.success();
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        // Only a *successful* command needs a second look: a nonzero
-        // exit is already `Fail`, and a real failure's own exit status
-        // is diagnosis enough. An exempt marker (`@docket: <id>! :: …`)
-        // skips this unconditionally — the author's deliberate assertion
-        // that the exit status alone is conclusive for this evaluator.
-        let vacuous = if success && !m.exempt {
-            detect_vacuity(&stdout)
+        let (success, exit_code, stdout, stderr, vacuous) = if is_absence_evaluator {
+            let search = absence::find_literal(corpus_root, command).map_err(RunError::Absence)?;
+            let (success, exit_code, report) = if search.hits.is_empty() {
+                (
+                    true,
+                    Some(0),
+                    format!(
+                        "confirmed absent: {:?} was not found in searched source\n",
+                        command
+                    ),
+                )
+            } else {
+                let mut report = format!("found {:?} at:\n", command);
+                for hit in &search.hits {
+                    report.push_str(&format!("  {}:{}\n", hit.file, hit.line));
+                }
+                (false, Some(1), report)
+            };
+            // A `pass` here proves a negative across the whole tree; a
+            // file this search could not read as UTF-8 is a gap in that
+            // very claim, not a bounded, locally-visible miss the way it
+            // is for corpus.rs/marker.rs — surfaced rather than
+            // swallowed (absence::LiteralSearch's own doc states why).
+            // Pooled onto `RunResult.skipped` rather than appended to
+            // `report`: `report` becomes this marker's `stdout`, and
+            // `main.rs` only prints a marker's `stdout` when there is
+            // something to diagnose (`!success || vacuous.is_some()`) —
+            // exactly the branch a passing absence claim never takes, so
+            // a skipped file living only in `stdout` would be silent on
+            // the one outcome where it matters.
+            skipped_files.extend(search.skipped.iter().cloned());
+            (success, exit_code, report, String::new(), None)
         } else {
-            None
+            // A shell, not a direct exec: a marker's command is free-form
+            // (pipes, `--` flags, shell-quoted arguments an author wrote by
+            // hand) exactly because it is meant to be whatever its author
+            // would type at a prompt to run their own evaluator, not a
+            // pre-tokenized argv this crate would have to parse.
+            let output = Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .current_dir(corpus_root)
+                .output()
+                .map_err(RunError::Spawn)?;
+            let success = output.status.success();
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            // Only a *successful* command needs a second look: a nonzero
+            // exit is already `Fail`, and a real failure's own exit status
+            // is diagnosis enough. An exempt marker (`@docket: <id>! :: …`)
+            // skips this unconditionally — the author's deliberate assertion
+            // that the exit status alone is conclusive for this evaluator.
+            let vacuous = if success && !m.exempt {
+                detect_vacuity(&stdout)
+            } else {
+                None
+            };
+            (success, output.status.code(), stdout, stderr, vacuous)
         };
         outcomes.push(MarkerOutcome {
             marker: m.clone(),
             success,
-            exit_code: output.status.code(),
+            exit_code,
             stdout,
             stderr,
             vacuous,
@@ -425,11 +575,15 @@ pub fn run_claim(
         Outcome::Pass
     };
 
+    skipped_files.sort();
+    skipped_files.dedup();
+
     Ok(RunResult {
         claim_id: claim.id.clone(),
         evaluator,
         outcome,
         markers: outcomes,
+        skipped: skipped_files,
     })
 }
 
@@ -703,6 +857,183 @@ mod tests {
         let markers = vec![marker("x", "echo 'some other tool, all clear'")];
         let result = run_claim(&corpus, "x", Path::new("."), &markers).unwrap();
         assert_eq!(result.outcome, Outcome::Pass);
+    }
+
+    // --- evaluator: absent -------------------------------------------
+
+    /// Drop-guarded, mirroring the house pattern every other test module
+    /// in this crate already uses (`absence.rs`, `marker.rs`, `corpus.rs`,
+    /// `checks.rs`, `config.rs`, `gitignore.rs`): a bare trailing
+    /// `remove_dir_all` does not run on a panicking assertion, so a
+    /// failing test used to leak its temp dir.
+    struct AbsenceTempDir(std::path::PathBuf);
+    impl AbsenceTempDir {
+        fn path(&self) -> &Path {
+            &self.0
+        }
+        fn write(&self, relative: &str, contents: &str) {
+            let path = self.0.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+    }
+    impl Drop for AbsenceTempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn absence_tempdir() -> AbsenceTempDir {
+        let dir = std::env::temp_dir().join(format!(
+            "docket-run-absence-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        AbsenceTempDir(dir)
+    }
+
+    #[test]
+    fn an_absence_marker_whose_literal_is_confirmed_absent_passes() {
+        let dir = absence_tempdir();
+        dir.write("marker.txt", "no trace of it here\n");
+
+        let corpus = corpus_with(
+            "### [no-retry-header]\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
+        );
+        let markers = vec![marker("no-retry-header", "Retry-After")];
+        let result = run_claim(&corpus, "no-retry-header", dir.path(), &markers).unwrap();
+        assert_eq!(result.outcome, Outcome::Pass);
+        assert!(result.markers[0].success);
+        assert_eq!(result.markers[0].exit_code, Some(0));
+    }
+
+    #[test]
+    fn an_absence_marker_pass_still_names_a_file_it_could_not_search() {
+        // A `pass` resting on an incomplete scan is indistinguishable
+        // from a genuine one unless the gap is surfaced
+        // (absence::LiteralSearch's own doc) — `RunResult.skipped` must
+        // name the skipped file even though the claim still reports
+        // `Pass`. Asserted on `RunResult.skipped`, not a marker's
+        // `stdout`: `main.rs` only prints a marker's `stdout` when there
+        // is something to diagnose, a branch a `Pass` never takes, so a
+        // regression that put this back into `stdout` alone would leave
+        // the user seeing nothing while this test still passed.
+        let dir = absence_tempdir();
+        std::fs::write(dir.path().join("binary.bin"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
+
+        let corpus = corpus_with(
+            "### [no-retry-header]\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
+        );
+        let markers = vec![marker("no-retry-header", "Retry-After")];
+        let result = run_claim(&corpus, "no-retry-header", dir.path(), &markers).unwrap();
+        assert_eq!(result.outcome, Outcome::Pass);
+        assert_eq!(result.skipped, vec!["binary.bin".to_string()]);
+    }
+
+    #[test]
+    fn an_absence_marker_whose_literal_is_found_in_source_fails() {
+        let dir = absence_tempdir();
+        dir.write("src/lib.rs", "let h = \"Retry-After\";\n");
+
+        let corpus = corpus_with(
+            "### [no-retry-header]\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
+        );
+        let markers = vec![marker("no-retry-header", "Retry-After")];
+        let result = run_claim(&corpus, "no-retry-header", dir.path(), &markers).unwrap();
+        assert_eq!(result.outcome, Outcome::Fail);
+        assert!(!result.markers[0].success);
+        assert_eq!(result.markers[0].exit_code, Some(1));
+        assert!(
+            result.markers[0].stdout.contains("src/lib.rs:1"),
+            "{}",
+            result.markers[0].stdout
+        );
+    }
+
+    #[test]
+    fn an_absence_claim_with_no_marker_is_absent_not_pass() {
+        // `Outcome::Absent` keeps its existing meaning unchanged for
+        // `evaluator: absent` (module docs): no marker means nothing was
+        // searched at all, not a vacuous confirmation.
+        let corpus = corpus_with(
+            "### [no-retry-header]\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
+        );
+        let result = run_claim(&corpus, "no-retry-header", Path::new("."), &[]).unwrap();
+        assert_eq!(result.outcome, Outcome::Absent);
+    }
+
+    #[test]
+    fn an_absence_claim_never_spawns_a_shell_even_if_the_literal_looks_like_a_command() {
+        // The load-bearing distinction: the marker's text is searched
+        // for, never executed, for `evaluator: absent`. A literal that
+        // would blow up a shell if `sh -c`'d proves the branch never
+        // reaches `Command::new("sh")`.
+        let dir = absence_tempdir();
+        let corpus = corpus_with(
+            "### [weird-literal]\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
+        );
+        let markers = vec![marker(
+            "weird-literal",
+            "$(rm -rf /nonexistent-marker-path)",
+        )];
+        let result = run_claim(&corpus, "weird-literal", dir.path(), &markers).unwrap();
+        assert_eq!(result.outcome, Outcome::Pass);
+    }
+
+    #[test]
+    fn multiple_absence_markers_under_one_id_tile_a_fragmented_literal() {
+        // O5's "tile it, name each fragment's location" pattern: two
+        // fragment markers under one claim id, both must be absent for
+        // the claim to pass — the same all-markers-succeed aggregation
+        // an ordinary multi-marker claim already has (see
+        // `all_markers_must_pass_for_the_claim_to_pass`), repurposed.
+        let dir = absence_tempdir();
+        dir.write("marker.txt", "clean\n");
+
+        let corpus = corpus_with(
+            "### [assembled-error-gone]\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
+        );
+        let markers = vec![
+            marker("assembled-error-gone", "fragment-one"),
+            marker("assembled-error-gone", "fragment-two"),
+        ];
+        let result = run_claim(&corpus, "assembled-error-gone", dir.path(), &markers).unwrap();
+        assert_eq!(result.outcome, Outcome::Pass);
+        assert_eq!(result.markers.len(), 2);
+    }
+
+    #[test]
+    fn one_present_fragment_among_several_absence_markers_still_fails_the_claim() {
+        let dir = absence_tempdir();
+        dir.write("src/lib.rs", "\"fragment-two\"\n");
+
+        let corpus = corpus_with(
+            "### [assembled-error-gone]\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
+        );
+        let markers = vec![
+            marker("assembled-error-gone", "fragment-one"),
+            marker("assembled-error-gone", "fragment-two"),
+        ];
+        let result = run_claim(&corpus, "assembled-error-gone", dir.path(), &markers).unwrap();
+        assert_eq!(result.outcome, Outcome::Fail);
+    }
+
+    #[test]
+    fn an_exempt_suffix_on_an_absence_marker_is_a_harmless_no_op() {
+        // Module docs: `!` still parses (marker.rs's grammar is
+        // unchanged) but has no defined effect for `evaluator: absent` —
+        // vacuity detection never runs on this path regardless.
+        let dir = absence_tempdir();
+        let corpus = corpus_with(
+            "### [no-retry-header]\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
+        );
+        let markers = vec![exempt_marker("no-retry-header", "Retry-After")];
+        let result = run_claim(&corpus, "no-retry-header", dir.path(), &markers).unwrap();
+        assert_eq!(result.outcome, Outcome::Pass);
+        assert_eq!(result.markers[0].vacuous, None);
     }
 
     // --- bare markers (marker.rs's "The bare form") -----------------------

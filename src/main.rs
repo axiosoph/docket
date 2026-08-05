@@ -105,6 +105,19 @@ fn run_check(corpus_root: &Path, out: Option<&Path>, register_override: Option<&
         Err(e) => return usage_error(&e),
     };
 
+    // `absent-marker-stale` needs the marker scan too (`absence.rs`): a
+    // marker's own file:line is part of the diagnostic, and only
+    // `marker::scan_markers` — not `corpus::load_corpus` — has ever
+    // walked the corpus for `@docket:` lines outside `.md` files. `run`
+    // already pays this cost per invocation; `check` did not before this
+    // diagnostic existed, and does now for the same reason `run` always
+    // has: the marker index isn't optional once anything downstream
+    // needs it.
+    let markers = match marker::scan_markers(corpus_root) {
+        Ok(markers) => markers,
+        Err(e) => return usage_error(&e),
+    };
+
     // The register evaluator ships with docket, not with --corpus: an
     // explicit --register (resolved relative to the current directory,
     // like any other path argument) always wins; absent that, fall back
@@ -124,7 +137,7 @@ fn run_check(corpus_root: &Path, out: Option<&Path>, register_override: Option<&
         }
     };
 
-    let evaluation = match checks::run_checks(&loaded, &cfg, &register_path) {
+    let evaluation = match checks::run_checks(&loaded, &cfg, &register_path, &markers) {
         Ok(evaluation) => evaluation,
         Err(e) => return usage_error(&e),
     };
@@ -234,7 +247,7 @@ fn run_run(corpus_root: &Path, claim_id: &str) -> ExitCode {
             eprintln!("error: no claim with id {id:?} in this corpus");
             return ExitCode::from(2);
         }
-        Err(e @ RunError::Spawn(_)) => return usage_error(&e),
+        Err(e @ (RunError::Spawn(_) | RunError::Absence(_))) => return usage_error(&e),
     };
 
     print_run_result(&result);
@@ -265,6 +278,22 @@ fn print_run_result(result: &RunResult) {
         result.claim_id,
         result.evaluator
     );
+
+    // Printed unconditionally, ahead of the per-marker loop and its
+    // terse-on-success gating below: a skipped file is a hole in an
+    // absence claim's certification whether the claim passes or fails
+    // (run.rs's `RunResult::skipped` doc states why), so it cannot be
+    // subject to the "only print when there's something to diagnose"
+    // policy that governs a marker's own stdout/stderr.
+    if !result.skipped.is_empty() {
+        println!(
+            "  skipped {} file(s) not valid UTF-8, not searched:",
+            result.skipped.len()
+        );
+        for path in &result.skipped {
+            println!("    {path}");
+        }
+    }
 
     if result.outcome == Outcome::Absent {
         // A `type`-graded claim also accepts the bare form (marker.rs);

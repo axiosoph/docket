@@ -56,6 +56,9 @@ called out below.
 | `unreachable-reference/` | `unreachable-reference` (`Fail`) | See below. `docs/specs/a.md`'s claim `[unreachable-target]` links `../../.scratch/notes.md` in prose; the fixture's own `.gitignore` marks `.scratch/` ignored. Exits **1**. |
 | `dangling-reference/` | `dangling-reference` (`Warn`) | See below. `docs/guides/a.md` carries **no claim block at all** — a how-to genre permits none — and links `does-not-exist`, which resolves to nothing. Isolates the capability `bare-reference-no-failure/` cannot: a document with zero claims still has its links resolved. Exits **0**. |
 | `signals-zero-inbound/` | — (all pass) | Not a check fixture — see below. Isolates `docket signals`: one claim with a citer, one that cites but is never cited itself, one that neither cites nor is cited. |
+| `run-absence-pass/` | — (all pass; `docket run no-retry-header` exits 0) | Not a `C`-check fixture — see below. `[no-retry-header]` declares `evaluator: absent`; its marker's literal, `Retry-After`, does not occur anywhere in `src/lib.rs`. |
+| `run-absence-fail/` | — (all pass; `docket run retry-header-returned` exits 1) | Not a `C`-check fixture — see below. Same shape as `run-absence-pass/`, except `src/lib.rs` contains the literal — the absence claim is broken. |
+| `absent-marker-stale/` | `absent-marker-stale` (`Warn`) | See below. `[no-retry-header]`'s marker names `Retry-After`, but the claim's prose was rewritten to no longer mention it as a code span. Exits **0** — `Warn` severity, never blocking. |
 
 **`duplicate-stem/` is retired**, not just its row here. MVP.md §1.3 was
 amended once a real corpus produced three `README.md` files under one
@@ -217,7 +220,7 @@ failed C5: the anchor form normalized to a doc-anchor
 which covers that same-shape negative case directly rather than as a
 second fixture.
 
-## `run-pass/`, `run-fail/`, `run-absent/`, `run-none/`, `run-vacuous-missing/`, `run-vacuous-ignored/`, `run-vacuous-exempt/`
+## `run-pass/`, `run-fail/`, `run-absent/`, `run-none/`, `run-vacuous-missing/`, `run-vacuous-ignored/`, `run-vacuous-exempt/`, `run-absence-pass/`, `run-absence-fail/`
 
 Isolate `docket run <claim-id>` (`src/marker.rs`, `src/run.rs`): given a
 claim, execute the `@docket: <id> :: <command>` marker(s) that discharge
@@ -284,9 +287,42 @@ output proves nothing was actually checked.
   exits **0** — proving the exemption is read and actually bypasses
   detection, not merely that no signal happened to match.
 
-All seven `docket check --corpus fixtures/run-*` cleanly at exit 0 — the
-`run` outcomes above are a distinct code path (`main.rs`'s `Command::Run`),
-never a `C`-check.
+- **`run-absence-pass/`** — `[no-retry-header]` (`evaluator: absent`,
+  `src/absence.rs`); its marker, embedded in `docs/specs/a.md`'s own
+  prose (the `<!--\n@docket: ... \n-->` three-line form MVP.md's "Run"
+  section recommends — a single-line HTML comment would swallow the
+  trailing `-->` into the literal, since the marker grammar already
+  takes the rest of the line verbatim), names `Retry-After`; `src/lib.rs`
+  never mentions it. `docket run no-retry-header --corpus
+  fixtures/run-absence-pass` prints `pass  no-retry-header  absent` plus
+  the marker's `ok` line, and exits **0** — the literal's absence,
+  confirmed.
+- **`run-absence-fail/`** — `[retry-header-returned]`, identical shape,
+  except `src/lib.rs` contains the literal (a string, real code — the
+  fixture's whole point). `docket run retry-header-returned --corpus
+  fixtures/run-absence-fail` prints `fail  retry-header-returned  absent`
+  plus a `FAIL (exit 1)` line naming exactly where the literal was found
+  (`src/lib.rs:4`), and exits **1** — the same `fail` outcome and exit
+  code an ordinary broken claim gets, not a sixth code (`run.rs`'s module
+  docs, "Absence claims").
+
+Both `run-absence-*` fixtures `docket check` cleanly at exit 0, same as
+the other seven above — the `run` outcomes are a distinct code path
+(`main.rs`'s `Command::Run`), never a `C`-check.
+
+## `absent-marker-stale/`
+
+Isolates `absent-marker-stale` (`src/absence.rs`'s `find_stale_markers`,
+`register.ncl`): `[no-retry-header]`'s marker still names `Retry-After`,
+but the surrounding prose was rewritten to no longer carry it as a code
+span — the drift the check exists to catch
+(`.ledger/2026-08-05-references-that-leave-the-register.md`, O3).
+`docket check --corpus fixtures/absent-marker-stale` reports one `warn`
+diagnostic naming the claim id and the stale literal, and exits **0** —
+`Warn` severity, like `unregistered-definition`/`malformed-id`: this
+asserts nothing about whether the underlying absence still holds (that
+is `run`'s job, over source), only that the marker may no longer
+describe anything the document currently says.
 
 ## `golden/`
 

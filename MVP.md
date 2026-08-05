@@ -119,7 +119,7 @@ diagnostic of any kind.
 | field | required | type |
 |:---|:--|:---|
 | `kind` | yes | one of `requirement`, `invariant`, `constraint` |
-| `evaluator` | yes | one of `proof`, `model-check`, `type`, `property-test`, `test`, `example`, `review`, `none` |
+| `evaluator` | yes | one of `proof`, `model-check`, `type`, `property-test`, `test`, `example`, `absent`, `review`, `none` |
 | `depends` | no (default `[]`) | array of refs |
 | `because` | no (default `[]`) | array of refs |
 
@@ -557,6 +557,23 @@ quoted in prose is a wider surface this check does not cover: only
 corpus documents and claim ids are consulted, the same resolution C4
 already performs, extended in scope rather than in kind.
 
+**`absent-marker-stale`, derived from the marker scan, not a sixth
+numbered check.** §4.3 adds `evaluator: absent` — a claim discharged by
+confirming a named literal is absent from the corpus's non-documentation
+source, not by evidence that something holds
+(`.ledger/2026-08-05-references-that-leave-the-register.md`, O3). Its
+marker pairs the claim to the exact literal, wherever in the document
+the author marked it; this check catches the marker and the prose it
+sits beside falling out of step — a marker naming a literal no code span
+in that claim's own prose currently mentions. `Warn` severity, like
+`unregistered-definition`: it asserts nothing about whether the absence
+itself still holds (that is `run`'s job, over source, at a failing
+severity) — only that the marker may no longer describe anything the
+document currently says. Only checked for a marker living in the SAME
+file as the claim it names; a marker elsewhere in the corpus has no
+prose scope to compare against and is silently out of this check's
+scope.
+
 **`normative-prose`, derived from `kinds = []`, not a sixth numbered
 check.** §2's `kinds = []` already means a genre may hold no claim
 blocks — which already means nothing normatively binding lives in it.
@@ -800,6 +817,88 @@ though the command still exits zero. Detection only ever *downgrades* a
 recognized success; a command whose output matches no known shape is
 `pass`, not `vacuous`.
 
+**`evaluator: absent` — the marker's text is a literal, not a
+command.** For every other evaluator, a marker's text after `::` is
+`sh -c`'d. For `absent` it is instead searched for, verbatim, across the
+corpus's non-documentation source
+(`.ledger/2026-08-05-references-that-leave-the-register.md`, O3: a
+document stating something does NOT exist is a reference too, and it
+breaks in the opposite direction — when its target *appears*). Found ⇒
+`fail`; not found ⇒ `pass`. No new marker syntax: the claim's own
+`evaluator: absent` field is what tells the runner to interpret the
+marker's text this way, so the grammar in "Evaluator markers," above, is
+unchanged.
+
+```
+<!--
+@docket: no-retry-header :: Retry-After
+-->
+```
+
+Placed on its own line (nothing follows the literal on that line) so the
+whole literal is captured — a trailing `-->` on the SAME line as the
+marker would otherwise be swallowed into the literal, since the grammar
+already takes the rest of the line verbatim.
+
+The search excludes documentation (`.md` — the claim's own document
+necessarily names the literal to describe its absence, so including it
+would make every absence claim fail immediately), a recognized test
+path (a `test`/`tests` path component), and any path `git` would not
+track (`target/`, `node_modules/`, and the like) — build output and
+vendored dependencies are not corpus source, and a hit inside one is
+neither fixable at the marker nor reproducible machine to machine, since
+the verdict would then depend on whether a build had happened to run.
+A recognized language's comments are stripped before matching (`//`- and
+`/* */`-style for the C family, `#`-style for Python/shell/TOML/Nickel/Nix,
+and so on — never `#` for Rust, where it opens an attribute, not a
+comment); Rust source additionally has every `#[cfg(test)]`/`#[test]`-gated
+item blanked. An unrecognized extension is searched **unstripped** — the
+conservative default: an unstripped comment risks a false `fail` an
+author investigates and fixes; a wrongly-stripped real occurrence would
+instead risk a silent false `pass`, the exact drift this evaluator
+exists to catch.
+
+**A comment leader or opener, and a brace counted while blanking a
+`#[cfg(test)]`/`#[test]` item, are both recognized only outside a
+double-quoted string literal** — `"// not a comment"`, `"/* not a block
+open */"`, and `let s = "{";` inside a test body all searched and
+counted correctly, not mistaken for real comment or brace syntax. That
+scope is deliberately narrower than "every language's every quoting
+convention": a **single-quoted string** (SQL, Lua) or a **char literal**
+(Rust, C, Haskell) is not recognized at all — `'` is also Rust's
+lifetime sigil (`'a`), and there is no per-extension dispatch here to
+tell a lifetime from an unterminated char literal safely — and a **raw
+string** (`r"..."`, `r#"..."#`) is not either, since it does not treat
+`\` as an escape the way this scan assumes. Both are residuals, not
+silently unconsidered: a comment leader genuinely sitting inside one of
+these unrecognized shapes can still misfire in either direction,
+narrower than the false-`pass` gap this fix closes but not zero.
+
+A recognized test path (`test`/`tests`, above) has its own residual in
+the other direction: it excludes a path by spelling alone, so a real,
+always-compiled module that merely happens to be named `test`/`tests`
+(a testing tool's own `src/tests/scheduler.rs`, say) is excluded right
+alongside a genuine test tree — a false-`pass` risk this rule cannot
+distinguish from the path text alone. Kept deliberately narrow rather
+than widened (a broader net — `spec/`, `__tests__/`, a `*_test.*`
+filename — would only make this worse), and named here rather than left
+implicit.
+
+A file this search cannot read as valid UTF-8 is not searched, and its
+path is named in the report (`skipped N file(s) not valid UTF-8, not
+searched:`) alongside the verdict, `pass` included — unlike the same
+tolerance `corpus.rs`/`marker.rs` extend elsewhere, an absence claim's
+whole job is proving a negative across the tree, so an unreadable file
+is a gap in the claim itself, not a bounded, locally-visible miss.
+
+A literal assembled from fragments across several files (an error
+message pieced together from more than one crate's attributes, say) is
+not reassembled by this search — that is out of scope, not silently
+mishandled. Multiple markers under one claim id, each naming one
+fragment, tile it instead: the claim passes only if every fragment is
+independently confirmed absent, the same all-markers-must-succeed rule
+an ordinary multi-marker claim already has.
+
 #### [run-outcomes]
 
 `docket run <claim-id>` executes every marker naming that claim id and
@@ -818,6 +917,22 @@ claim reports `absent`.
 ```claim
 kind: constraint
 evaluator: test
+```
+
+#### [absent-evaluator]
+
+`evaluator: absent` is discharged by confirming a marker's literal is
+absent from the corpus's non-documentation source rather than by
+evidence something holds; found ⇒ `fail`, not found ⇒ `pass`, using the
+same marker grammar every [run outcome](#run-outcomes) uses, its text
+reinterpreted as the literal to search for rather than a command to run.
+`absent-marker-stale` (§3) reports, at `Warn` severity, a marker whose
+literal no longer appears as a code span in that claim's own prose.
+
+```claim
+kind: constraint
+evaluator: test
+depends: [run-outcomes]
 ```
 
 ### 4.4 Signals

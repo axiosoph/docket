@@ -548,6 +548,32 @@ let unreachable_reference_diagnostics = fun refs =>
     refs
 in
 
+# --- absent-marker-stale: an absence marker whose literal the claim's --
+# own prose no longer names (`src/absence.rs`, `run.rs`'s "Absence
+# claims" module docs;
+# `.ledger/2026-08-05-references-that-leave-the-register.md`, O3). Rust
+# already decided the fact (it needs both the corpus and the marker
+# scan, the same reason `unreachable-reference` is decided in Rust) —
+# this only formats it. `Warn` severity, like `unregistered-definition`:
+# this asserts nothing about whether the absence itself still holds
+# (that is `run`'s job, over source, at a load-bearing severity) — only
+# that the marker may no longer describe anything the document
+# currently says, which is advisory, not a defect that should block a
+# commit already in flight.
+
+let stale_absence_marker_diagnostics = fun markers =>
+  std.array.map
+    (fun m => {
+      check = "absent-marker-stale",
+      severity = "warn",
+      file = m.file,
+      line = m.line,
+      message =
+        "absence marker for \"%{m.id}\" names \"%{m.literal}\", which no longer appears as a code span in that claim's own prose — stale marker, or the prose drifted",
+    })
+    markers
+in
+
 # --- dangling-reference: a document-wide link with no target. ----------
 # (`.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`,
 # `.ledger/2026-08-05-references-that-leave-the-register.md` O4's
@@ -697,7 +723,8 @@ let evaluate_impl = fun input =>
         declared_refs
         input.unreachable_references
         input.links
-      ),
+      )
+      @ (stale_absence_marker_diagnostics input.stale_absence_markers),
   }
 in
 { evaluate = evaluate_impl }
