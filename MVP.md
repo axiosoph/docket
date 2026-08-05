@@ -842,17 +842,30 @@ already takes the rest of the line verbatim.
 
 The search excludes documentation (`.md` — the claim's own document
 necessarily names the literal to describe its absence, so including it
-would make every absence claim fail immediately) and a recognized test
-path (a `test`/`tests` path component). A recognized language's comments
-are stripped before matching (`//`- and `/* */`-style for the C family,
-`#`-style for Python/shell/TOML/Nickel/Nix, and so on — never `#` for
-Rust, where it opens an attribute, not a comment); Rust source
-additionally has every `#[cfg(test)]`/`#[test]`-gated item blanked. An
-unrecognized extension is searched **unstripped** — the conservative
-default: an unstripped comment risks a false `fail` an author
-investigates and fixes; a wrongly-stripped real occurrence would instead
-risk a silent false `pass`, the exact drift this evaluator exists to
-catch.
+would make every absence claim fail immediately), a recognized test
+path (a `test`/`tests` path component), and any path `git` would not
+track (`target/`, `node_modules/`, and the like) — build output and
+vendored dependencies are not corpus source, and a hit inside one is
+neither fixable at the marker nor reproducible machine to machine, since
+the verdict would then depend on whether a build had happened to run.
+A recognized language's comments are stripped before matching (`//`- and
+`/* */`-style for the C family, `#`-style for Python/shell/TOML/Nickel/Nix,
+and so on — never `#` for Rust, where it opens an attribute, not a
+comment); Rust source additionally has every `#[cfg(test)]`/`#[test]`-gated
+item blanked. An unrecognized extension is searched **unstripped** — the
+conservative default: an unstripped comment risks a false `fail` an
+author investigates and fixes; a wrongly-stripped real occurrence would
+instead risk a silent false `pass`, the exact drift this evaluator
+exists to catch.
+
+**The `#[cfg(test)]`/`#[test]` blank is brace-counted, not parsed**, and
+can over-consume: if a stray unbalanced brace appears anywhere inside
+the gated item's own body (in a string or char literal, say), blanking
+continues past the item's true end and swallows real code that follows
+it. That is the false-`pass` direction this evaluator exists to
+eliminate — the one direction that must never be silent — and today it
+is disclosed only in the source (`src/absence.rs`'s `brace_span`,
+`strip_rust_test_items` doc comments), not here.
 
 A literal assembled from fragments across several files (an error
 message pieced together from more than one crate's attributes, say) is
