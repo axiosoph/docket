@@ -329,12 +329,20 @@ pub fn find_stale_markers(corpus: &Corpus, markers: &[Marker]) -> Vec<StaleAbsen
             .iter()
             .filter(|m| m.id == claim.id && m.file == claim.file)
         {
-            if !claim.prose_code.iter().any(|c| c == &m.command) {
+            // A bare marker (`command: None`, marker.rs's "bare form")
+            // carries no literal to compare against the claim's prose —
+            // the same reason `run.rs`'s `absent` evaluator never accepts
+            // one as a match, only a commanded marker offers a literal an
+            // `absent` claim can be discharged (or found stale) by.
+            let Some(command) = &m.command else {
+                continue;
+            };
+            if !claim.prose_code.iter().any(|c| c == command) {
                 out.push(StaleAbsenceMarker {
                     file: m.file.clone(),
                     line: m.line,
                     id: claim.id.clone(),
-                    literal: m.command.clone(),
+                    literal: command.clone(),
                 });
             }
         }
@@ -536,7 +544,7 @@ mod tests {
     fn marker_at(file: &str, id: &str, command: &str, line: usize) -> Marker {
         Marker {
             id: id.to_string(),
-            command: command.to_string(),
+            command: Some(command.to_string()),
             file: file.to_string(),
             line: Line(line),
             exempt: false,
@@ -585,6 +593,28 @@ mod tests {
             "### [x]\n\nNo backtick code span mentions the marker's literal here.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
         );
         let markers = vec![marker_at("docs/specs/x.md", "x", "cargo test x", 3)];
+        assert!(find_stale_markers(&corpus, &markers).is_empty());
+    }
+
+    #[test]
+    fn a_bare_marker_on_an_absent_claim_is_never_stale() {
+        // marker.rs's bare form (`command: None`) carries no literal to
+        // compare against the claim's prose — meaningless for this check,
+        // the same way run.rs's `absent` evaluator never accepts a bare
+        // marker as a match. Confirms the merge with feat/bare-marker
+        // (which introduced `Marker::command: Option<String>`) didn't
+        // leave this check panicking or misreading `None` as a literal.
+        let corpus = corpus_with(
+            "docs/specs/x.md",
+            "### [x]\n\nThere is no `Retry-After` header.\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
+        );
+        let markers = vec![Marker {
+            id: "x".to_string(),
+            command: None,
+            file: "docs/specs/x.md".to_string(),
+            line: Line(3),
+            exempt: false,
+        }];
         assert!(find_stale_markers(&corpus, &markers).is_empty());
     }
 }
