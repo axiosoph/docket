@@ -81,7 +81,11 @@ fn comment_syntax(extension: &str) -> CommentSyntax {
             line: Some("--"),
             block: Some(("--[[", "]]")),
         },
-        "als" | "adb" | "ads" => CommentSyntax {
+        "als" => CommentSyntax {
+            line: Some("--"),
+            block: Some(("/*", "*/")),
+        },
+        "adb" | "ads" => CommentSyntax {
             line: Some("--"),
             block: None,
         },
@@ -427,9 +431,21 @@ pub fn find_literal(corpus_root: &Path, literal: &str) -> Result<LiteralSearch, 
         // `contents`. Counting newlines *within* `searched` sidesteps
         // that entirely, because `searched`'s line structure — where
         // every `\n` sits — is preserved exactly from the original file.
+        //
+        // Line number tracked incrementally rather than re-counting
+        // `searched[..offset]` from byte 0 on every hit: `match_indices`
+        // yields offsets in increasing order with non-overlapping spans,
+        // so counting only the `\n`s between the previous match's start
+        // and this one's — then carrying that running total forward —
+        // visits each byte of `searched` at most once across the whole
+        // loop, rather than once per hit (O(n) total instead of
+        // O(n · hits) on a file with many matches).
         let mut last_hit_line: Option<usize> = None;
+        let mut line = 1usize;
+        let mut counted_upto = 0usize;
         for (offset, _) in searched.match_indices(literal) {
-            let line = searched[..offset].matches('\n').count() + 1;
+            line += searched[counted_upto..offset].matches('\n').count();
+            counted_upto = offset;
             if last_hit_line != Some(line) {
                 hits.push(SourceHit {
                     file: relative.clone(),
@@ -811,6 +827,18 @@ mod tests {
             "script.lua",
             "--[[ removed:\n\"Retry-After\"\n]]\nprint(1)\n",
         );
+        assert!(
+            find_literal(dir.path(), "Retry-After")
+                .unwrap()
+                .hits
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn an_alloy_block_comment_hit_does_not_count() {
+        let dir = tempdir();
+        dir.write("model.als", "/* removed:\n\"Retry-After\"\n*/\nsig S {}\n");
         assert!(
             find_literal(dir.path(), "Retry-After")
                 .unwrap()

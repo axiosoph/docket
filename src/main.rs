@@ -279,6 +279,22 @@ fn print_run_result(result: &RunResult) {
         result.evaluator
     );
 
+    // Printed unconditionally, ahead of the per-marker loop and its
+    // terse-on-success gating below: a skipped file is a hole in an
+    // absence claim's certification whether the claim passes or fails
+    // (run.rs's `RunResult::skipped` doc states why), so it cannot be
+    // subject to the "only print when there's something to diagnose"
+    // policy that governs a marker's own stdout/stderr.
+    if !result.skipped.is_empty() {
+        println!(
+            "  skipped {} file(s) not valid UTF-8, not searched:",
+            result.skipped.len()
+        );
+        for path in &result.skipped {
+            println!("    {path}");
+        }
+    }
+
     if result.outcome == Outcome::Absent {
         // A `type`-graded claim also accepts the bare form (marker.rs);
         // every other grade needs a command, so the message only promises

@@ -364,6 +364,16 @@ pub struct RunResult {
     /// for). One entry per matching marker for
     /// [`Outcome::Pass`]/[`Outcome::Fail`].
     pub markers: Vec<MarkerOutcome>,
+    /// Every file an `evaluator: absent` search could not read as UTF-8
+    /// and therefore did not search, pooled across every marker of this
+    /// claim, deduplicated and sorted. Always empty for every other
+    /// evaluator. Lives here rather than inside a [`MarkerOutcome`]'s
+    /// `stdout` because it is a property of the search across the whole
+    /// corpus, not of one marker's captured output — `absence::LiteralSearch`'s
+    /// own doc states why a `pass` resting on an incomplete scan must
+    /// surface this rather than let it depend on whether the marker's
+    /// output happens to get printed.
+    pub skipped: Vec<String>,
 }
 
 /// Execute `claim_id`'s evaluator and report the outcome.
@@ -398,6 +408,7 @@ pub fn run_claim(
             evaluator,
             outcome: Outcome::None,
             markers: Vec::new(),
+            skipped: Vec::new(),
         });
     }
 
@@ -415,6 +426,7 @@ pub fn run_claim(
             evaluator,
             outcome: Outcome::Review,
             markers: Vec::new(),
+            skipped: Vec::new(),
         });
     }
 
@@ -441,6 +453,7 @@ pub fn run_claim(
             evaluator,
             outcome: Outcome::Absent,
             markers: Vec::new(),
+            skipped: Vec::new(),
         });
     }
 
@@ -452,6 +465,13 @@ pub fn run_claim(
     let is_absence_evaluator = evaluator == "absent";
 
     let mut outcomes = Vec::with_capacity(matching.len());
+    // Pooled across every absence marker of this claim rather than kept
+    // per-marker: `absence::find_literal` walks the same corpus_root each
+    // time, so the same unreadable file recurs identically whichever
+    // marker's literal triggered the search — deduplicated below rather
+    // than assumed identical, since a future per-marker exclusion (the
+    // claim's own doc, say) could make that stop holding.
+    let mut skipped_files: Vec<String> = Vec::new();
     for m in matching {
         let Some(command) = &m.command else {
             // Bare marker on a `type`-graded claim (the only way it
@@ -473,7 +493,7 @@ pub fn run_claim(
 
         let (success, exit_code, stdout, stderr, vacuous) = if is_absence_evaluator {
             let search = absence::find_literal(corpus_root, command).map_err(RunError::Absence)?;
-            let (success, exit_code, mut report) = if search.hits.is_empty() {
+            let (success, exit_code, report) = if search.hits.is_empty() {
                 (
                     true,
                     Some(0),
@@ -494,15 +514,14 @@ pub fn run_claim(
             // very claim, not a bounded, locally-visible miss the way it
             // is for corpus.rs/marker.rs — surfaced rather than
             // swallowed (absence::LiteralSearch's own doc states why).
-            if !search.skipped.is_empty() {
-                report.push_str(&format!(
-                    "  skipped {} file(s) not valid UTF-8, not searched:\n",
-                    search.skipped.len()
-                ));
-                for path in &search.skipped {
-                    report.push_str(&format!("    {path}\n"));
-                }
-            }
+            // Pooled onto `RunResult.skipped` rather than appended to
+            // `report`: `report` becomes this marker's `stdout`, and
+            // `main.rs` only prints a marker's `stdout` when there is
+            // something to diagnose (`!success || vacuous.is_some()`) —
+            // exactly the branch a passing absence claim never takes, so
+            // a skipped file living only in `stdout` would be silent on
+            // the one outcome where it matters.
+            skipped_files.extend(search.skipped.iter().cloned());
             (success, exit_code, report, String::new(), None)
         } else {
             // A shell, not a direct exec: a marker's command is free-form
@@ -556,11 +575,15 @@ pub fn run_claim(
         Outcome::Pass
     };
 
+    skipped_files.sort();
+    skipped_files.dedup();
+
     Ok(RunResult {
         claim_id: claim.id.clone(),
         evaluator,
         outcome,
         markers: outcomes,
+        skipped: skipped_files,
     })
 }
 
@@ -891,8 +914,13 @@ mod tests {
     fn an_absence_marker_pass_still_names_a_file_it_could_not_search() {
         // A `pass` resting on an incomplete scan is indistinguishable
         // from a genuine one unless the gap is surfaced
-        // (absence::LiteralSearch's own doc) — the report must name the
-        // skipped file even though the claim still reports `Pass`.
+        // (absence::LiteralSearch's own doc) — `RunResult.skipped` must
+        // name the skipped file even though the claim still reports
+        // `Pass`. Asserted on `RunResult.skipped`, not a marker's
+        // `stdout`: `main.rs` only prints a marker's `stdout` when there
+        // is something to diagnose, a branch a `Pass` never takes, so a
+        // regression that put this back into `stdout` alone would leave
+        // the user seeing nothing while this test still passed.
         let dir = absence_tempdir();
         std::fs::write(dir.path().join("binary.bin"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
 
@@ -902,11 +930,7 @@ mod tests {
         let markers = vec![marker("no-retry-header", "Retry-After")];
         let result = run_claim(&corpus, "no-retry-header", dir.path(), &markers).unwrap();
         assert_eq!(result.outcome, Outcome::Pass);
-        assert!(
-            result.markers[0].stdout.contains("binary.bin"),
-            "{}",
-            result.markers[0].stdout
-        );
+        assert_eq!(result.skipped, vec!["binary.bin".to_string()]);
     }
 
     #[test]
