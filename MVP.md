@@ -329,22 +329,39 @@ numeric convention, and a corpus that only ever wrote `[…](#6)`-shaped
 prose links would ship anchors that don't work anywhere but here.
 
 Slug computation (`docket`'s own `model::heading_slug`): lowercase the
-heading text, drop every character that is not a Unicode letter/digit or
-an ASCII space/hyphen/underscore — dropped outright, never replaced, so
-`"a/b"` collapses to `"ab"` and `"1.5 Foo"` collapses to `"15-foo"` — then
-turn each surviving space into its own hyphen (consecutive spaces become
-consecutive hyphens; never collapsed). Within one document, a repeated
-slug is deduplicated in heading order: first occurrence bare, then `-1`,
-`-2`, … This is a direct, verified port of `github-slugger`'s published
-algorithm (lowercase → strip a large Unicode punctuation/symbol blacklist
-→ spaces to hyphens → per-document dedup), approximated by "keep
-alphanumeric-or-space/hyphen/underscore" rather than porting that
-several-thousand-codepoint blacklist verbatim. The two are confirmed
-identical on every heading shape this tool's own real corpora carry
-(numbered headings, inline code, brackets, non-ASCII punctuation like em
-dashes and section signs) and can diverge only on Unicode blocks — rare
-symbol scripts, mathematical alphanumeric symbols — none of those corpora
-use.
+heading text, drop every character that is not a Unicode letter/digit,
+combining mark, or an ASCII space/hyphen/underscore — dropped outright,
+never replaced, so `"a/b"` collapses to `"ab"` and `"1.5 Foo"` collapses
+to `"15-foo"` — then turn each surviving space into its own hyphen
+(consecutive spaces become consecutive hyphens; never collapsed). Within
+one document, a repeated slug is deduplicated in heading order: first
+occurrence bare, then `-1`, `-2`, … This is a direct, verified port of
+`github-slugger`'s published algorithm (lowercase → strip a large Unicode
+punctuation/symbol blacklist → spaces to hyphens → per-document dedup),
+approximated by "keep alphanumeric-or-combining-mark-or-space/hyphen/underscore"
+rather than porting that several-thousand-codepoint blacklist verbatim —
+the blacklist itself was parsed from `github-slugger`'s published
+`regex.js` to derive both the combining-mark table and the divergences
+below, not recalled or assumed.
+
+The two are confirmed identical on every heading shape this tool's own
+real corpora carry (numbered headings, inline code, brackets, non-ASCII
+punctuation like em dashes and section signs, and — as of the fix that
+added the combining-mark table — NFD-composed accents and other scripts'
+combining marks, the form many editors, filesystems, and copy-pasted
+GitHub URLs actually produce: `café` written as `e` + a bare combining
+acute accent, not the single precomposed `é`). Two characterized
+divergences remain, neither a shape any of this tool's real corpora carry
+today: **38 very recent Unicode 16.0 codepoints** (Arabic Quranic
+annotation marks, two Telugu/Kannada signs) that `github-slugger`'s
+blacklist has not caught up to and still strips, which this table keeps
+regardless — a byte-perfect port would need to carve these back out, and
+does not, the same judgment call this residual note already makes for
+the gap below; and **Symbol-category codepoints `github-slugger` does not
+strip but this approximation still does** — emoji chief among them (an
+emoji is not itself alphanumeric, a combining mark, or ASCII punctuation,
+so "keep" never fires for it) — derived at the regex level, not run
+end-to-end against a live corpus the way the combining-mark case was.
 
 Two consumers, both about *prose links*, neither about `depends`/`because`
 itself: `dangling-reference` (§3) resolves a link naming a heading by its
