@@ -233,10 +233,54 @@ this tool targets, so numbers are the more stable anchor. The failure mode
 when a document is renumbered is loud — C4 fails immediately — rather than
 silent.
 
+**Heading slugs — a second, orthogonal addressing scheme for ordinary
+prose links.** `depends`/`because` entries stay numeric (above); every
+heading is *also* indexed under its real, GitHub-style anchor — what an
+ordinary relative markdown link's `#fragment` actually names, and what
+GitHub itself renders. This is not a replacement for anchor derivation
+and does not touch `depends`/`because` resolution at all: it exists
+because a documentation corpus's prose links are written for a renderer
+and a link checker, neither of which has ever heard of this tool's
+numeric convention, and a corpus that only ever wrote `[…](#6)`-shaped
+prose links would ship anchors that don't work anywhere but here.
+
+Slug computation (`docket`'s own `model::heading_slug`): lowercase the
+heading text, drop every character that is not a Unicode letter/digit or
+an ASCII space/hyphen/underscore — dropped outright, never replaced, so
+`"a/b"` collapses to `"ab"` and `"1.5 Foo"` collapses to `"15-foo"` — then
+turn each surviving space into its own hyphen (consecutive spaces become
+consecutive hyphens; never collapsed). Within one document, a repeated
+slug is deduplicated in heading order: first occurrence bare, then `-1`,
+`-2`, … This is a direct, verified port of `github-slugger`'s published
+algorithm (lowercase → strip a large Unicode punctuation/symbol blacklist
+→ spaces to hyphens → per-document dedup), approximated by "keep
+alphanumeric-or-space/hyphen/underscore" rather than porting that
+several-thousand-codepoint blacklist verbatim. The two are confirmed
+identical on every heading shape this tool's own real corpora carry
+(numbered headings, inline code, brackets, non-ASCII punctuation like em
+dashes and section signs) and can diverge only on Unicode blocks — rare
+symbol scripts, mathematical alphanumeric symbols — none of those corpora
+use.
+
+Two consumers, both about *prose links*, neither about `depends`/`because`
+itself: `dangling-reference` (§3) resolves a link naming a heading by its
+real slug, alongside the existing numeric rule; and C5's "document anchor"
+case, next, gains a second way to be satisfied.
+
 **Which link forms satisfy a declaration (C5).** A `depends`/`because`
-entry naming a **document anchor** is satisfied only by an exact match —
-its normalized path and anchor must equal the entry's. An entry naming a
-**claim id**, though, is satisfied by either of two prose-link forms:
+entry naming a **document anchor** is satisfied by an exact match — its
+normalized path and anchor must equal the entry's — **or** by a prose
+link, in real heading-slug form, that names the *same heading* the
+entry's numeric anchor resolves to (cross-checked by heading identity,
+not by requiring either side to match the other's vocabulary). This
+second path exists because the entry's own numeric anchor
+(`composition-model#6`) is never itself a link a renderer or link
+checker would resolve to that heading — only the slug form is — so
+without it, a doc-anchor declaration could never be satisfied by a link
+an author would actually write unprompted, the same bind the claim-id
+case below was already in before its own second form was accepted. An
+entry naming a **claim id**, similarly, is satisfied by either of two
+prose-link forms:
 
 - the **bare id** as the href, `[…](spine-chain-complete)` — resolved only
   by this tool's normalization, since it is neither a path nor a fragment;
@@ -245,8 +289,8 @@ its normalized path and anchor must equal the entry's. An entry naming a
   whose anchor component equals the id, independent of which document it
   names.
 
-Both are accepted, non-exclusively: a documentation corpus must stay
-readable by ordinary tooling, and the bare form is not that — no
+All accepted, non-exclusively: a documentation corpus must stay
+readable by ordinary tooling, and the bare claim-id form is not that — no
 markdown renderer resolves it to anything and no link checker accepts an
 href that names no file, so a corpus that used it exclusively would ship
 links this tool alone can follow. The anchor form is what a renderer
@@ -279,7 +323,11 @@ document anchor; document identifiers are the corpus-relative path with
 `.md` removed, not a basename; a prose link normalizes to the same
 vocabulary by resolving against the citing file's directory before
 comparison; an anchor matches a heading by non-alphanumeric-bounded
-prefix, not exact text.
+prefix, not exact text; a heading is also indexed under its real
+GitHub-style slug, a second addressing scheme used only to resolve
+ordinary prose links (`dangling-reference`) and to recognize when one
+names the same heading a numeric doc-anchor entry already does (C5) —
+never to resolve `depends`/`because` itself.
 
 ```claim
 kind: constraint
@@ -411,15 +459,19 @@ The replacement:
 Formally: let `D` be a claim's `depends` ∪ `because` entries and `L` its
 normalized prose-link targets (which array an entry came from does not
 matter here). A document-anchor entry in `D` matches `L` by exact target
-equality; a claim-id entry matches by target equality **or** by any `L`
-entry whose anchor component equals the id (§1.3, "Which link forms
-satisfy a declaration") — the anchor form has no other representation,
-since a claim id carries no anchor of its own. The rule is `D ⊆ L` under
-that matching, not `D = L`. Everything declared must be linked, so a
-reader following prose reaches what the graph says matters; nothing
-requires the reverse, so an incidental mention costs nothing to leave
-undeclared, and nothing is hidden — undeclared *means* bare, and bare
-asserts nothing.
+equality **or** by any `L` entry naming the *same heading* in real
+GitHub-slug form (§1.3, "Heading slugs") — the numeric anchor `D` itself
+carries is never a link a renderer resolves to that heading, so without
+this second path a doc-anchor declaration could only ever be satisfied
+by a link no ordinary tooling would accept. A claim-id entry matches by
+target equality **or** by any `L` entry whose anchor component equals
+the id (§1.3, "Which link forms satisfy a declaration") — the anchor
+form has no other representation, since a claim id carries no anchor of
+its own. The rule is `D ⊆ L` under that matching, not `D = L`.
+Everything declared must be linked, so a reader following prose reaches
+what the graph says matters; nothing requires the reverse, so an
+incidental mention costs nothing to leave undeclared, and nothing is
+hidden — undeclared *means* bare, and bare asserts nothing.
 
 **This also relocates a job C5 was never able to do.** No formulation of
 set equality — old or new — can catch *undeclared dependence*: an author
@@ -535,11 +587,15 @@ resolves a `depends`/`because` target: against corpus documents and
 claim ids, using the anchor form's already-established exception (a
 doc-anchor whose anchor equals a real claim id resolves regardless of
 which document it names, the same acceptance §1.3 already gives C5's
-declared-refs question). A target that resolves is silent, same as
-everywhere else in this tool. One that does not is `dangling-reference`
-— **`Warn`, not `Fail`**: the reference-kinds table (§1.2) already
-settles this — a bare reference asserts no dependence, so its target
-missing breaks nothing, only leaves a citation that goes nowhere.
+declared-refs question) — **plus one path C4 does not have**: a
+doc-anchor whose anchor is a heading's real GitHub slug (§1.3, "Heading
+slugs") also resolves, since an ordinary prose link is written in that
+form, not the numeric form `depends`/`because` itself still uses. A
+target that resolves is silent, same as everywhere else in this tool.
+One that does not is `dangling-reference` — **`Warn`, not `Fail`**: the
+reference-kinds table (§1.2) already settles this — a bare reference
+asserts no dependence, so its target missing breaks nothing, only leaves
+a citation that goes nowhere.
 
 **Two exclusions, so a broken target is never reported twice.** A link
 that resolves but is gitignored is `unreachable-reference`'s finding,

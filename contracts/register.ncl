@@ -32,19 +32,44 @@ let claim = import "claim.ncl" in
 # directly. That boundary, not a choice made here, is why the same small
 # grammar has two implementations in two languages rather than one.
 #
-# PROVISIONAL, pending a head decision: `anchor_matches`'s prefix rule
-# and the bare-id prose-link form (`normalize_prose_link`'s
-# no-anchor/no-slash branch, `prose_link_declares`'s bare-token match)
-# are both invented syntax, conflict with the standard GitHub-slug
-# anchors every other tool in this project resolves, and are a likely
-# collapse to a single ordinary-markdown-link form. Kept isolated in
-# this section on purpose — `anchor_matches` is the one function to
-# replace with real slug computation; `normalize_prose_link`/
-# `prose_link_declares` would each lose one branch — so that decision,
-# if made, touches a bounded, named surface rather than something
-# threaded through every check. Not collapsed here: the decision isn't
-# made, and `model::anchor_matches` (Rust) would need the same change in
-# lockstep for `docket blast` to keep resolving anchors consistently.
+# RESOLVED, partially: the head ruled that an ordinary markdown link to
+# an ordinary (real GitHub-slug) anchor is the form to support — see
+# `heading_for`/`heading_slug_resolves` below, and `InputHeading.slug`
+# (checks.rs), computed by `model::heading_slug`.
+#
+# What did NOT change, deliberately: `depends`/`because`'s own citation
+# grammar (MVP.md §1.3's `<doc-path>#<anchor>`) still resolves its
+# `doc_anchor` entries through `anchor_matches`'s numeric-prefix rule
+# alone (`resolves`, below) — a real corpus's `depends`/`because` fields
+# still cite a document by section *number*, e.g. `composition-model#6`,
+# and MVP.md §1.3 still gives the reason (numbering churns less than
+# wording). That citation is a **stale handle** (renumber the document
+# and every citation silently points elsewhere, with no diagnostic,
+# because the number still resolves) — a real defect, but fixing it
+# needs a decision nobody has made (do models grow claim ids of their
+# own, or does the citation move to some other stable handle), so it
+# stays exactly as it was; only reported, not touched, here.
+#
+# Real slug computation is used for two things ONLY, both about
+# *ordinary prose links* rather than `depends`/`because` entries
+# themselves: (1) `dangling-reference` now resolves a prose link that
+# names a heading by its real slug (`heading_slug_resolves`, folded into
+# `link_resolves`), where before only a numeric anchor ever resolved —
+# this closed 39 false positives on the corpus this migration was
+# measured against, every one a correctly-written link to a real
+# heading; (2) C5 (`same_heading`, folded into `prose_link_declares`)
+# now accepts a prose link written in real-slug form as satisfying a
+# `depends`/`because` entry that names the *same heading* by its numeric
+# form — an author can write a link a renderer and a link-checker both
+# accept, without the citation itself needing to match it
+# character-for-character. The bare-id prose-link form
+# (`normalize_prose_link`'s no-anchor/no-slash branch,
+# `prose_link_declares`'s bare-token match) is untouched: it is a
+# citation of a *claim id*, an orthogonal question from heading
+# addressing, and MVP.md §1.3's own rationale for keeping it (a
+# documentation corpus must stay readable by ordinary tooling, and
+# retiring it would be a breaking migration for no correctness gain)
+# still holds.
 # ---------------------------------------------------------------------
 
 # Split `s` on the FIRST occurrence of `sep` only (matches Rust's
@@ -99,7 +124,9 @@ let anchor_matches = fun heading_text anchor =>
     !std.string.is_match "^[a-zA-Z0-9]$" (std.string.substring alen (alen + 1) heading_text)
 in
 
-# Whether a (well-formed, per C1) ref resolves in the corpus.
+# Whether a (well-formed, per C1) ref resolves in the corpus. Unchanged
+# by this migration — `depends`/`because`'s own resolution rule, numeric
+# only (see this section's header comment for why).
 let resolves = fun claim_ids documents cite =>
   if cite.tag == 'claim then
     std.array.elem cite.id claim_ids
@@ -107,6 +134,60 @@ let resolves = fun claim_ids documents cite =>
     let matching = std.array.filter (fun d => d.doc_path == cite.path) documents in
     std.array.length matching > 0
     && std.array.any (fun h => anchor_matches h.text cite.anchor) (std.array.first matching).headings
+in
+
+# The document a doc-anchor cite names, or `null` if its path matches no
+# scanned document — the shared lookup `heading_slug_resolves` and
+# `same_heading` both build on, so "which document" isn't re-derived
+# twice.
+let lookup_doc = fun documents cite =>
+  let matching = std.array.filter (fun d => d.doc_path == cite.path) documents in
+  if std.array.length matching == 0 then null else std.array.first matching
+in
+
+# Whether a doc-anchor cite's anchor is a real, GitHub-style slug of some
+# heading in its target document (`InputHeading.slug`, computed by
+# `model::heading_slug` — checks.rs). A SEPARATE rule from `resolves`'s
+# `anchor_matches`, not a generalization of it: this is the ordinary
+# markdown-link form an author and a renderer both expect, used only by
+# `dangling-reference` (`link_resolves`, below) and by C5's
+# `same_heading` — never by `resolves` itself, so `depends`/`because`'s
+# own numeric grammar is untouched.
+let heading_slug_resolves = fun documents cite =>
+  cite.tag == 'doc_anchor
+  && (
+    let target_doc = lookup_doc documents cite in
+    target_doc != null && std.array.any (fun h => h.slug == cite.anchor) target_doc.headings
+  )
+in
+
+# Whether prose link `p` names the SAME heading that declared doc-anchor
+# `cite` names — `cite`'s heading found by the numeric §1.3 rule
+# (`anchor_matches`, `depends`/`because`'s own grammar, untouched), `p`'s
+# heading found by real GitHub-slug computation (the ordinary link form a
+# renderer and a link-checker both accept). Two different addressing
+# schemes naming the same document structure, cross-checked by heading
+# `line` (unique within one document) rather than by requiring either
+# side to match the other's vocabulary — this is what lets C5 accept an
+# ordinary, renderer-resolvable link as proof of a numeric-anchor
+# declaration instead of requiring the author to write `#6` verbatim,
+# which no renderer would ever resolve to that heading in the first
+# place.
+let same_heading = fun documents cite p =>
+  cite.tag == 'doc_anchor
+  && p.tag == 'doc_anchor
+  && cite.path == p.path
+  && (
+    let target_doc = lookup_doc documents cite in
+    if target_doc == null then
+      false
+    else
+      let by_number = std.array.filter (fun h => anchor_matches h.text cite.anchor) target_doc.headings in
+      let by_slug = std.array.filter (fun h => h.slug == p.anchor) target_doc.headings in
+      std.array.length by_number > 0
+      && std.array.length by_slug > 0
+      && (std.array.first by_number).line == (std.array.first by_slug).line
+  )
 in
 
 # ---------------------------------------------------------------------
@@ -402,16 +483,21 @@ in
 # normalized prose-link set (C5's `D ⊆ L`). A claim-id declaration is
 # additionally satisfied by an anchor-form prose link whose anchor
 # equals the id — see `checks::prose_link_declares`'s doc comment for
-# why the bare form stays accepted too.
-let prose_link_declares = fun cite prose =>
+# why the bare form stays accepted too. A doc-anchor declaration is
+# additionally satisfied by a prose link naming the SAME heading in real
+# GitHub-slug form (`same_heading`) — the fix for the 23 real-corpus
+# claims whose declared numeric anchor could never be linked with an
+# ordinary, renderer-resolvable href.
+let prose_link_declares = fun documents cite prose =>
   std.array.any (fun p => ref_eq cite p) prose
   || (
     cite.tag == 'claim
     && std.array.any (fun p => p.tag == 'doc_anchor && p.anchor == cite.id) prose
   )
+  || std.array.any (fun p => same_heading documents cite p) prose
 in
 
-let c5_diagnostics = fun claims =>
+let c5_diagnostics = fun documents claims =>
   std.array.flat_map
     (fun c =>
       let normalized =
@@ -424,7 +510,9 @@ let c5_diagnostics = fun claims =>
         (std.array.map (fun raw => { kind = "depends", cite = parse_ref raw }) c.depends)
         @ (std.array.map (fun raw => { kind = "because", cite = parse_ref raw }) c.because)
       in
-      let undeclared = std.array.filter (fun r => !prose_link_declares r.cite prose_set) all_refs in
+      let undeclared =
+        std.array.filter (fun r => !prose_link_declares documents r.cite prose_set) all_refs
+      in
       if std.array.length undeclared == 0 then
         []
       else
@@ -613,9 +701,18 @@ in
 # claim id, regardless of which document it names) applies here too, so
 # `link_resolves` mirrors it rather than reinventing it — this is prior
 # art already ratified in this file, not new design.
+#
+# Also resolves a doc-anchor link naming a heading by its real GitHub
+# slug (`heading_slug_resolves`) — the direct fix for the false
+# `dangling-reference` positives this migration measured: a link like
+# `composition-model.md#3-composition-merge-is-a-partial-commutative-monoid`
+# is an entirely correct, renderer-resolvable link to a real heading;
+# before this it dangled because only `anchor_matches`'s numeric-prefix
+# rule was ever consulted.
 let link_resolves = fun claim_ids documents cite =>
   resolves claim_ids documents cite
   || (cite.tag == 'doc_anchor && std.array.elem cite.anchor claim_ids)
+  || heading_slug_resolves documents cite
 in
 
 let dangling_reference_diagnostics = fun claim_ids documents declared unreachable links =>
@@ -712,7 +809,7 @@ let evaluate_impl = fun input =>
       @ (c3_diagnostics input.claims input.documents input.genres)
       @ (c4_diagnostics claim_ids input.documents input.claims)
       @ (orphaned_because_diagnostics claim_ids input.documents input.claims)
-      @ (c5_diagnostics input.claims)
+      @ (c5_diagnostics input.documents input.claims)
       @ (normative_prose_diagnostics input.documents input.genres input.normative_occurrences)
       @ (unregistered_definition_diagnostics input.unregistered_definitions)
       @ (malformed_id_diagnostics input.malformed_ids)

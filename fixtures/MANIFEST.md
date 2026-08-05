@@ -37,6 +37,8 @@ called out below.
 | `normative-prose-quoted/` | — (all pass) | Not a check fixture — see below. The identical keyword, present only inside a block quote and inside an inline code span, in the same `kinds = []` genre. |
 | `blast-doc-anchor/` | — (all pass) | Not a check fixture — see below. Isolates a `blast` behaviour rather than a check. |
 | `anchor-link-satisfies-claim-id/` | — (all pass) | Not a check fixture — see below. Isolates C5's anchor-form acceptance for a claim-id declaration. |
+| `heading-slug-resolves-dangling/` | — (all pass) | Not a check fixture — see below. Isolates real GitHub-slug heading resolution for `dangling-reference`. |
+| `heading-slug-satisfies-c5/` | — (all pass) | Not a check fixture — see below. Isolates C5 accepting a real-slug prose link as satisfying a numeric-anchor `depends`/`because` entry naming the same heading. |
 | `golden/` | — (all pass) | See below. |
 | `run-pass/` | — (all pass; `docket run always-true` exits 0) | Not a `C`-check fixture — see below. `src/lib.rs` carries `// @docket: always-true :: true`; the marker's command exits 0. |
 | `run-fail/` | — (all pass; `docket run always-false` exits 1) | Not a `C`-check fixture — see below. `src/lib.rs` carries `// @docket: always-false :: false`; the marker's command exits 1. |
@@ -219,6 +221,43 @@ failed C5: the anchor form normalized to a doc-anchor
 `checks::tests::c5_still_fails_a_claim_id_depends_entry_with_no_prose_link_at_all`,
 which covers that same-shape negative case directly rather than as a
 second fixture.
+
+## `heading-slug-resolves-dangling/` and `heading-slug-satisfies-c5/`
+
+Real, GitHub-style heading-slug computation (`model::heading_slug`,
+`InputHeading.slug`, `register.ncl`'s `heading_slug_resolves`/
+`same_heading`): the register now indexes every heading's real anchor —
+what a renderer and an ordinary relative markdown link both use — not
+only the section-number prefix `depends`/`because` entries cite. Two
+false-positive floors for the same fix are pinned directly in
+`checks::tests` (`dangling_reference_still_fires_for_a_near_miss_slug`,
+`c5_still_fails_when_the_slug_form_link_names_a_different_heading`)
+rather than as third and fourth fixtures.
+
+- **`heading-slug-resolves-dangling/`** — `docs/guides/a.md` (a how-to
+  genre, no claim block anywhere, the same shape `dangling-reference/`
+  isolates) links `../models/composition-model.md#6-the-fact-set-the-substrates-only-state`,
+  the real slug of `docs/models/composition-model.md`'s own `## 6. The
+  fact-set: the substrate's only state`. Before this fix, only a bare
+  numeric anchor (`#6`) ever resolved against a heading — an entirely
+  correct, renderer-resolvable link in real-slug form dangled.
+  `docket check --corpus fixtures/heading-slug-resolves-dangling` exits
+  **0** with zero diagnostics. Replacing the slug with a wrong-but-
+  plausible one (verified by hand, not committed) restores the
+  `dangling-reference` warning, confirming the fixture actually
+  exercises slug resolution rather than some other path.
+- **`heading-slug-satisfies-c5/`** — `docs/specs/a.md`'s claim
+  `[depends-on-heading]` declares `depends: [docs/models/composition-model#6]`
+  — the numeric doc-anchor form MVP.md §1.3 still requires for
+  `depends`/`because` itself (untouched by this fix; see
+  `register.ncl`'s header comment on that section) — with a prose link
+  to the SAME heading written in real GitHub-slug form, the way an
+  author and a link-checker both expect. Before this fix, no href could
+  satisfy both C5 (which required matching the entry's literal `#6`
+  character-for-character) and an ordinary link-checking gate (which
+  requires a real, renderer-resolvable anchor) at once — this is the
+  shape 23 real-corpus claims were stuck in. `docket check --corpus
+  fixtures/heading-slug-satisfies-c5` exits **0** with zero diagnostics.
 
 ## `run-pass/`, `run-fail/`, `run-absent/`, `run-none/`, `run-vacuous-missing/`, `run-vacuous-ignored/`, `run-vacuous-exempt/`, `run-absence-pass/`, `run-absence-fail/`
 

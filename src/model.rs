@@ -234,19 +234,81 @@ impl Claim {
 /// A heading found anywhere in a scanned document, kept for anchor
 /// resolution (`<doc-path>#<anchor>`, §1.3). `text` is already stripped of
 /// `#` markers and leading whitespace — that's how pulldown-cmark hands us
-/// heading content — so it's ready for [`anchor_matches`] as-is.
+/// heading content — so it's ready for [`anchor_matches`] as-is. `slug` is
+/// the real, GitHub-style anchor a renderer and an ordinary prose link
+/// both use — see [`heading_slug`] — computed and deduplicated per
+/// document at extraction time ([`crate::extract::extract_document`]),
+/// since GitHub's own dedup counter resets per document too.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Heading {
     pub level: u8,
     pub text: String,
     pub line: Line,
+    pub slug: String,
+}
+
+/// A real, GitHub-style heading anchor ("slug"): lowercase, drop every
+/// character that is neither a Unicode letter/digit nor a space, hyphen,
+/// or underscore (dropped outright, never replaced — `"a/b"` collapses to
+/// `"ab"`, not `"a-b"`; `"1.5 Foo"` collapses to `"15-foo"`, not
+/// `"1-5-foo"`), then turn each surviving space into a hyphen (one hyphen
+/// per space — consecutive spaces are never collapsed). This is what an
+/// ordinary relative markdown link's `#fragment` names on GitHub, and
+/// verified directly against this project's own real corpus: every
+/// existing `composition-model.md#3-composition-merge-is-a-partial-commutative-monoid`-shaped
+/// link a document already carries is reproduced by this function
+/// character-for-character. See MVP.md's residual note for exactly how
+/// this approximates upstream's real algorithm (`github-slugger`, a
+/// several-thousand-codepoint Unicode blacklist) rather than porting it
+/// verbatim, and where the two can diverge.
+///
+/// Does **not** deduplicate — see [`assign_heading_slugs`] for the
+/// per-document dedup pass GitHub itself performs.
+pub fn heading_slug(text: &str) -> String {
+    let lower = text.to_lowercase();
+    let kept: String = lower
+        .chars()
+        .filter(|&c| c == ' ' || c == '-' || c == '_' || c.is_alphanumeric())
+        .collect();
+    kept.replace(' ', "-")
+}
+
+/// Assign a unique slug to each heading text, in document order —
+/// `github-slugger`'s own dedup rule, ported faithfully (verified against
+/// its published source rather than recalled): the first heading with a
+/// given base slug keeps it bare; every later heading whose *already*
+/// hyphen-suffixed candidate collides with a slug some earlier heading
+/// was assigned gets the next `-N` for that same base, so three headings
+/// all slugging to `"foo"` become `foo`, `foo-1`, `foo-2` — counted
+/// per-base, not by a single corpus-wide counter, and checked against
+/// every slug assigned so far (not only same-base ones), the same two
+/// properties the upstream implementation has.
+pub fn assign_heading_slugs<'a>(texts: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut counters: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    texts
+        .map(|text| {
+            let base = heading_slug(text);
+            let mut slug = base.clone();
+            while used.contains(&slug) {
+                let counter = counters.entry(base.clone()).or_insert(0);
+                *counter += 1;
+                slug = format!("{base}-{counter}");
+            }
+            used.insert(slug.clone());
+            slug
+        })
+        .collect()
 }
 
 /// MVP.md §1.3, "Anchor derivation": an anchor `A` matches a heading iff
 /// the heading's text — after stripping `#` markers and leading
 /// whitespace — begins with `A` followed by either end-of-string or a
 /// non-alphanumeric character. So `6` matches `"6. The fact-set: ..."`
-/// but not `"60. ..."`.
+/// but not `"60. ..."`. This is `depends`/`because`'s own resolution rule
+/// (deliberately number-based, not slug-based — see MVP.md §1.3) and is
+/// untouched by [`heading_slug`]: the two are separate addressing schemes
+/// for the same headings, not one generalized into the other.
 pub fn anchor_matches(heading_text: &str, anchor: &str) -> bool {
     match heading_text.strip_prefix(anchor) {
         None => false,
@@ -348,5 +410,120 @@ mod tests {
     #[test]
     fn anchor_matches_rejects_non_prefix() {
         assert!(!anchor_matches("The fact-set", "6"));
+    }
+
+    // --- heading_slug: pinned against this project's own real corpus, not
+    // recalled — most cases below are exact heading/link pairs that
+    // already exist in `/var/home/nrd/git/github.com/axiosoph/axios`; the
+    // two that aren't (non-ASCII punctuation, underscore preservation) are
+    // general property checks against `github-slugger`'s published
+    // source, since the corpus has no live link to a heading of that
+    // exact shape to pin against instead. ---------------------------
+
+    #[test]
+    fn heading_slug_matches_a_real_numbered_heading() {
+        // composition-model.md:211's `## 3. Composition merge is a partial
+        // commutative monoid`, cited from execution-model.md exactly this
+        // way.
+        assert_eq!(
+            heading_slug("3. Composition merge is a partial commutative monoid"),
+            "3-composition-merge-is-a-partial-commutative-monoid"
+        );
+    }
+
+    #[test]
+    fn heading_slug_drops_a_period_without_a_separator() {
+        // execution-model.md:204's `### 1.5 The two strata of intent` —
+        // the internal `.` is dropped outright, not turned into a hyphen,
+        // so `1.5` collapses to `15`.
+        assert_eq!(
+            heading_slug("1.5 The two strata of intent"),
+            "15-the-two-strata-of-intent"
+        );
+    }
+
+    #[test]
+    fn heading_slug_drops_a_slash_without_a_separator() {
+        // lock-file-schema.md:217's
+        // `## `[sets]` under the spine/cloud split (ADR-0009)` — the `/`
+        // is dropped, not replaced, so "spine" and "cloud" concatenate
+        // into "spinecloud" rather than "spine-cloud".
+        assert_eq!(
+            heading_slug("[sets] under the spine/cloud split (ADR-0009)"),
+            "sets-under-the-spinecloud-split-adr-0009"
+        );
+    }
+
+    #[test]
+    fn heading_slug_keeps_an_existing_hyphen_and_drops_a_colon() {
+        // composition-model.md:557's
+        // `### The cloud: a snapshot name for the fact-set`.
+        assert_eq!(
+            heading_slug("The cloud: a snapshot name for the fact-set"),
+            "the-cloud-a-snapshot-name-for-the-fact-set"
+        );
+    }
+
+    #[test]
+    fn heading_slug_folds_inline_code_and_brackets() {
+        // adr/0009-atom-composition-plane.md:217's
+        // `### 6. The store is a flat, content-addressed keyspace, with
+        // every index derived [acp-store]` — pulldown-cmark hands the
+        // trailing bracket id to `Heading.text` like any other word (no
+        // backticks survive an inline code span either), and the comma is
+        // dropped, not replaced.
+        assert_eq!(
+            heading_slug(
+                "6. The store is a flat, content-addressed keyspace, with every index derived [acp-store]"
+            ),
+            "6-the-store-is-a-flat-content-addressed-keyspace-with-every-index-derived-acp-store"
+        );
+    }
+
+    #[test]
+    fn heading_slug_strips_em_dashes_and_section_signs_without_a_separator() {
+        // Real corpus headings carry these (e.g. `## §1 — Layer
+        // Architecture`, `ion-eos-contract.md`): non-ASCII punctuation the
+        // upstream algorithm's blacklist also strips, confirmed against
+        // its published regex rather than assumed. Two adjacent spaces
+        // (one on each side of the deleted dash) become two literal
+        // hyphens — consecutive hyphens are never collapsed.
+        assert_eq!(
+            heading_slug("§1 — Layer Architecture"),
+            "1--layer-architecture"
+        );
+    }
+
+    #[test]
+    fn heading_slug_lowercases_and_keeps_underscore() {
+        assert_eq!(
+            heading_slug("`!Send` Threading_Model"),
+            "send-threading_model"
+        );
+    }
+
+    #[test]
+    fn assign_heading_slugs_dedupes_in_document_order() {
+        // github-slugger's own dedup: first occurrence bare, then -1, -2,
+        // … — verified against its published `BananaSlug.slug()` source.
+        let texts = ["Foo", "Foo", "Foo", "Bar"];
+        assert_eq!(
+            assign_heading_slugs(texts.iter().copied()),
+            vec!["foo", "foo-1", "foo-2", "bar"]
+        );
+    }
+
+    #[test]
+    fn assign_heading_slugs_does_not_let_a_real_collision_race_a_generated_one() {
+        // "Foo" (dup 1 of "foo") then a heading whose OWN literal text
+        // slugs to "foo-1" must not collide silently with the generated
+        // suffix — the generated one is checked against every slug
+        // assigned so far, so it skips past the literal one.
+        let texts = ["Foo", "Foo 1", "Foo"];
+        let slugs = assign_heading_slugs(texts.iter().copied());
+        assert_eq!(slugs[0], "foo");
+        assert_eq!(slugs[1], "foo-1");
+        assert_ne!(slugs[2], slugs[1]);
+        assert_eq!(slugs[2], "foo-2");
     }
 }

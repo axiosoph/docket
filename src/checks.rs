@@ -126,6 +126,15 @@ struct InputHeading {
     level: u8,
     text: String,
     line: usize,
+    /// Real, GitHub-style anchor (`model::heading_slug`, deduplicated per
+    /// document at extraction time) — what an ordinary markdown link to
+    /// this heading actually names. Separate from `text`/`anchor_matches`'s
+    /// numeric-prefix rule, which stays `depends`/`because`'s own
+    /// resolution mechanism (MVP.md §1.3): register.ncl uses `slug` only
+    /// to resolve ordinary prose links (`dangling-reference`) and to
+    /// recognize when such a link targets the same heading a numeric
+    /// `depends`/`because` entry already names (C5).
+    slug: String,
 }
 
 #[derive(Serialize)]
@@ -263,6 +272,7 @@ fn build_input(loaded: &LoadedCorpus, config: &Config, markers: &[Marker]) -> In
                     level: h.level,
                     text: h.text.clone(),
                     line: h.line.0,
+                    slug: h.slug.clone(),
                 })
                 .collect(),
         })
@@ -889,6 +899,37 @@ mod tests {
     }
 
     #[test]
+    fn a_depends_entry_written_as_a_real_heading_slug_still_fails_c4() {
+        // Guards the boundary this migration deliberately did not cross:
+        // `depends`/`because` resolution stays numeric-only
+        // (`anchor_matches`), even though the same heading is now also
+        // addressable by its real GitHub slug for ordinary prose links
+        // (`c5_accepts_a_real_slug_prose_link_for_a_numeric_doc_anchor_declaration`,
+        // below). A `depends` entry written in slug form is not the
+        // numeric form C1/C4 expect, so it must still dangle.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
+              ],
+            }"#,
+        );
+        dir.write(
+            "docs/models/composition-model.md",
+            "## 6. The fact-set: the substrate's only state\n\nprose\n",
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/composition-model#6-the-fact-set-the-substrates-only-state]\n```\n",
+        );
+        let report = run(&dir);
+        assert_eq!(only(&report, "C4").len(), 1, "{:#?}", report.diagnostics);
+    }
+
+    #[test]
     fn c5_passes_when_prose_link_covers_a_depends_entry() {
         let dir = tempdir();
         dir.write(
@@ -1070,6 +1111,71 @@ mod tests {
         );
         let report = run(&dir);
         assert!(only(&report, "C5").is_empty(), "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn c5_accepts_a_real_slug_prose_link_for_a_numeric_doc_anchor_declaration() {
+        // The real-corpus fix this migration exists for: `depends`
+        // still names its target by section number
+        // (`docs/models/composition-model#6`, MVP.md §1.3, unchanged),
+        // but the prose link satisfying that declaration is written the
+        // way an author and a renderer both expect — a real GitHub slug,
+        // not the bare number. Before this fix that link never satisfied
+        // C5 at all (no renderer resolves `#6` to that heading), so a
+        // corpus in this exact shape had no way to pass both its own
+        // link-checking gate and C5 with one href.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
+              ],
+            }"#,
+        );
+        dir.write(
+            "docs/models/composition-model.md",
+            "## 6. The fact-set: the substrate's only state\n\nprose\n",
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nSee [the fact-set](../models/composition-model.md#6-the-fact-set-the-substrates-only-state).\n\n\
+             ```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/composition-model#6]\n```\n",
+        );
+        let report = run(&dir);
+        assert!(only(&report, "C4").is_empty(), "{:#?}", report.diagnostics);
+        assert!(only(&report, "C5").is_empty(), "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn c5_still_fails_when_the_slug_form_link_names_a_different_heading() {
+        // The false-positive floor for the fix above: a slug-form link
+        // that resolves to a REAL heading, just not the one the
+        // declaration names, must not satisfy C5 — `same_heading` cross-
+        // checks by the target heading's own `line`, not merely "some
+        // heading slug was present in this document."
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
+              ],
+            }"#,
+        );
+        dir.write(
+            "docs/models/composition-model.md",
+            "## 6. The fact-set: the substrate's only state\n\nprose\n\n## 7. A different section\n\nmore prose\n",
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nSee [a different section](../models/composition-model.md#7-a-different-section).\n\n\
+             ```claim\nkind: constraint\nevaluator: test\ndepends: [docs/models/composition-model#6]\n```\n",
+        );
+        let report = run(&dir);
+        assert_eq!(only(&report, "C5").len(), 1, "{:#?}", report.diagnostics);
     }
 
     #[test]
@@ -1636,6 +1742,68 @@ mod tests {
             "{:#?}",
             report.diagnostics
         );
+    }
+
+    #[test]
+    fn dangling_reference_resolves_a_link_written_as_a_real_heading_slug() {
+        // Symptom A of the false-danglings defect this migration fixes:
+        // an ordinary, correctly-written markdown link to a heading —
+        // real GitHub slug, the form a renderer and a link-checker both
+        // accept — used to dangle because only the numeric-prefix
+        // `anchor_matches` rule was ever consulted for resolution.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/guides/**", kinds = [], quadrant = "how-to" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
+              ],
+            }"#,
+        );
+        dir.write(
+            "docs/models/composition-model.md",
+            "## 6. The fact-set: the substrate's only state\n\nprose\n",
+        );
+        dir.write(
+            "docs/guides/setup.md",
+            "# Setup\n\nSee [the fact-set](../models/composition-model.md#6-the-fact-set-the-substrates-only-state) for background.\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, "dangling-reference").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn dangling_reference_still_fires_for_a_near_miss_slug() {
+        // The false-positive floor for the fix above: a slug that is
+        // close to, but not exactly, a real heading's slug must still
+        // dangle — the fix resolves real slugs, not "something
+        // slug-shaped."
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{
+              genres = [
+                { path = "docs/guides/**", kinds = [], quadrant = "how-to" },
+                { path = "docs/models/**", kinds = ["invariant"], quadrant = "reference" },
+              ],
+            }"#,
+        );
+        dir.write(
+            "docs/models/composition-model.md",
+            "## 6. The fact-set: the substrate's only state\n\nprose\n",
+        );
+        dir.write(
+            "docs/guides/setup.md",
+            "# Setup\n\nSee [the fact-set](../models/composition-model.md#6-the-fact-set-is-wrong) for background.\n",
+        );
+        let report = run(&dir);
+        let findings = only(&report, "dangling-reference");
+        assert_eq!(findings.len(), 1, "{:#?}", report.diagnostics);
     }
 
     #[test]

@@ -10,7 +10,7 @@
 //! already-isolated string a tree walk has produced, not on document
 //! structure, which is the distinction MVP.md §7 draws.
 
-use crate::model::{CiteRef, Claim, ClaimId, Heading, Line, RawClaimBlock};
+use crate::model::{CiteRef, Claim, ClaimId, Heading, Line, RawClaimBlock, assign_heading_slugs};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// A `claim` fence with no preceding bracket-kebab heading in the same
@@ -702,12 +702,19 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
         }
     }
 
+    // Real GitHub-style slugs, deduplicated in document order
+    // (`model::assign_heading_slugs`) — GitHub's own dedup counter resets
+    // per document too, so this must run once per `extract_document` call
+    // over that document's own headings in reading order, not corpus-wide.
+    let slugs = assign_heading_slugs(raw_headings.iter().map(|h| h.text.as_str()));
     let headings: Vec<Heading> = raw_headings
         .iter()
-        .map(|h| Heading {
+        .zip(slugs)
+        .map(|(h, slug)| Heading {
             level: h.level,
             text: h.text.clone(),
             line: line_index.line_of(h.start),
+            slug,
         })
         .collect();
 
@@ -1080,6 +1087,32 @@ mod tests {
         );
         assert!(crate::model::anchor_matches(&res.headings[0].text, "6"));
         assert!(!crate::model::anchor_matches(&res.headings[0].text, "60"));
+    }
+
+    #[test]
+    fn extracted_headings_carry_a_real_github_slug() {
+        // The exact heading composition-model.md:506 carries, and the
+        // exact slug the real corpus's own links already resolve against
+        // (adr/0009-atom-composition-plane.md's
+        // `composition-model.md#6-the-fact-set-the-substrates-only-state`)
+        // — the apostrophe in "substrate's" drops out entirely rather
+        // than becoming a separator, same as the slash/period cases
+        // `model::tests` pins on the pure function directly.
+        let src = "## 6. The fact-set: the substrate's only state\n";
+        let res = extract_document("docs/models/composition-model.md", src);
+        assert_eq!(
+            res.headings[0].slug,
+            "6-the-fact-set-the-substrates-only-state"
+        );
+    }
+
+    #[test]
+    fn repeated_headings_in_one_document_get_deduplicated_slugs() {
+        let src = "## Overview\n\ntext\n\n## Overview\n\nmore text\n";
+        let res = extract_document("docs/guides/a.md", src);
+        assert_eq!(res.headings.len(), 2);
+        assert_eq!(res.headings[0].slug, "overview");
+        assert_eq!(res.headings[1].slug, "overview-1");
     }
 
     #[test]
