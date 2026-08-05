@@ -103,14 +103,53 @@ fn blank_into(out: &mut String, s: &str) {
     }
 }
 
+/// If `rest` opens with a double-quoted string literal (`"`), the byte
+/// length of that whole literal — opening quote through the first
+/// unescaped closing quote, or through the end of `rest` if it is never
+/// closed. `None` if `rest` does not open with `"` at all. Shared by
+/// [`strip_comments`] and [`brace_span`]/[`strip_rust_test_items`] (one
+/// state machine, not two): a comment leader, a comment opener, and a
+/// brace sitting inside a string literal must never be mistaken for a
+/// real one — the merge gate reproduced all three as false `Pass`.
+///
+/// Escape-aware (`\"` does not close the string) but **not** aware of
+/// every quoting convention every language `comment_syntax` lists uses:
+/// it recognizes only `"..."`, never a single-quoted string (SQL, Lua)
+/// or char literal (Rust, C, Haskell), because `'` is ALSO Rust's
+/// lifetime sigil (`'a`) and there is no per-extension dispatch here to
+/// tell a lifetime from an unterminated char literal safely; and it is
+/// not raw-string-aware (Rust's `r"..."`/`r#"..."#` do not treat `\` as
+/// an escape, so a raw string ending in a literal backslash right
+/// before its closing quote can be misjudged). Both residuals are
+/// documented in MVP.md rather than silently accepted.
+fn skip_string_literal(rest: &str) -> Option<usize> {
+    if !rest.starts_with('"') {
+        return None;
+    }
+    let mut idx = 1; // the opening `"` itself
+    while idx < rest.len() {
+        let ch = rest[idx..].chars().next().expect("idx < rest.len()");
+        match ch {
+            '\\' => {
+                idx += ch.len_utf8();
+                if let Some(escaped) = rest[idx..].chars().next() {
+                    idx += escaped.len_utf8();
+                }
+            }
+            '"' => return Some(idx + ch.len_utf8()),
+            _ => idx += ch.len_utf8(),
+        }
+    }
+    Some(idx) // unterminated: the "string" runs to the end of `rest`
+}
+
 /// Blank every comment in `contents` to spaces, line count and every
 /// newline preserved exactly — so a hit's line number, computed
 /// afterward by simple line indexing, still points at the original
 /// file. Heuristic, not a real lexer for any of the languages `syntax`
-/// covers: a leader or block-opener inside a string or char literal is
-/// not distinguished from a real comment (design residue, O5: the same
-/// trade-off this project already accepts for `run.rs`'s vacuity
-/// signals — a substring test, not a parser).
+/// covers — a comment leader or opener is recognized only *outside* a
+/// double-quoted string literal ([`skip_string_literal`]'s scope note
+/// states exactly which quoting shapes that does and does not cover).
 fn strip_comments(contents: &str, syntax: &CommentSyntax) -> String {
     let mut out = String::with_capacity(contents.len());
     let mut rest = contents;
@@ -129,6 +168,15 @@ fn strip_comments(contents: &str, syntax: &CommentSyntax) -> String {
             }
             blank_into(&mut out, rest);
             break;
+        }
+
+        if let Some(len) = skip_string_literal(rest) {
+            // Copied through verbatim, never blanked: the string's
+            // content may genuinely hold the searched-for literal, and
+            // nothing inside it can open a real comment.
+            out.push_str(&rest[..len]);
+            rest = &rest[len..];
+            continue;
         }
 
         if let Some((open, _)) = syntax.block
@@ -160,24 +208,32 @@ fn strip_comments(contents: &str, syntax: &CommentSyntax) -> String {
 
 /// From the byte offset of an attribute marker (`#[cfg(test)]` or
 /// `#[test]`) to one past the `}` that closes the first `{...}` group
-/// after it — ASCII brace-counted, not a real parser (same heuristic
-/// class as [`strip_comments`]: a brace inside a string or char literal
-/// is not distinguished from a real one). `None` if no `{` appears, or
-/// braces never balance, before end of input.
+/// after it — ASCII brace-counted, not a real parser, but a brace
+/// inside a double-quoted string literal is skipped via
+/// [`skip_string_literal`] (the same primitive [`strip_comments`] uses)
+/// rather than counted. `None` if no `{` appears, or braces never
+/// balance, before end of input.
 fn brace_span(s: &str) -> Option<usize> {
     let open = s.find('{')?;
     let mut depth = 0i32;
-    for (i, ch) in s[open..].char_indices() {
+    let mut idx = open;
+    while idx < s.len() {
+        if let Some(len) = skip_string_literal(&s[idx..]) {
+            idx += len;
+            continue;
+        }
+        let ch = s[idx..].chars().next().expect("idx < s.len()");
         match ch {
             '{' => depth += 1,
             '}' => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some(open + i + 1);
+                    return Some(idx + ch.len_utf8());
                 }
             }
             _ => {}
         }
+        idx += ch.len_utf8();
     }
     None
 }
@@ -239,10 +295,40 @@ fn strip_rust_test_items(contents: &str) -> String {
 /// produces the same false-`Pass` risk `strip_comments` is built to
 /// avoid. Narrower is the safer direction to start from; broadening it
 /// is a small, targeted change if a real corpus needs it.
+///
+/// **The residual this narrowing does not close**: an exact `test`/
+/// `tests` segment excludes a path even when it names real, always-
+/// compiled code rather than a test tree — a `src/tests/scheduler.rs`
+/// module in a tool whose own domain is testing, say. There is no
+/// reliable, cheap way from the path alone to distinguish "a directory
+/// that holds tests" from "a directory that happens to be named tests
+/// but holds production code" — semantic content, not spelling, is
+/// what actually decides it. Narrowing further (e.g. top-level `tests/`
+/// only) is not free either: it would stop excluding
+/// `src/other/test/fixture.rs`, the nested shape this module's own test
+/// suite already pins as intentionally excluded
+/// (`a_test_directory_is_excluded_from_the_search`). Kept as-is,
+/// residual accepted and named here rather than silently carried.
 fn is_test_path(relative: &str) -> bool {
     relative
         .split('/')
         .any(|seg| seg.eq_ignore_ascii_case("test") || seg.eq_ignore_ascii_case("tests"))
+}
+
+/// [`find_literal`]'s result: every matching line, plus every candidate
+/// file it could not read as UTF-8 and therefore did not search at all.
+/// `corpus.rs` and `marker.rs` tolerate the same non-UTF-8 case silently
+/// — there, an unreadable file means one document not indexed or one
+/// marker scan skipped, a bounded, locally-visible gap. Here it is
+/// different in kind: this search's entire job is proving a *negative*
+/// across the whole tree, so a file it could not examine is a hole in
+/// the very claim being certified, and a `pass` that rests on an
+/// incomplete scan is indistinguishable from a genuine one unless the
+/// gap is surfaced. `skipped` is that surfacing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LiteralSearch {
+    pub hits: Vec<SourceHit>,
+    pub skipped: Vec<String>,
 }
 
 /// Search the corpus for `literal` as a plain substring, everywhere
@@ -259,15 +345,18 @@ fn is_test_path(relative: &str) -> bool {
 /// ([`strip_rust_test_items`]). An unrecognized extension is searched
 /// unstripped (`comment_syntax`'s doc comment states why that is the
 /// safe default, not an oversight). A file that doesn't decode as UTF-8
-/// is skipped, the same tolerance `marker.rs` gives a binary artifact
-/// sitting inside the walked tree.
+/// is not searched, and its path is collected into
+/// [`LiteralSearch::skipped`] rather than silently dropped
+/// ([`LiteralSearch`]'s own doc states why that distinction matters
+/// specifically for this search).
 ///
 /// Returns every matching line, not only the first — `run.rs` reports
 /// them all, and a claim backed by several fragment markers (O5's
 /// "tile it, name each fragment's location" pattern) benefits from a
 /// complete picture per fragment rather than a first-match cutoff.
-pub fn find_literal(corpus_root: &Path, literal: &str) -> Result<Vec<SourceHit>, CorpusError> {
+pub fn find_literal(corpus_root: &Path, literal: &str) -> Result<LiteralSearch, CorpusError> {
     let mut hits = Vec::new();
+    let mut skipped = Vec::new();
 
     // `corpus::walk_files` skips only dot-prefixed entries — it has no
     // notion of `.gitignore` at all, so build output (`target/`) and
@@ -308,8 +397,12 @@ pub fn find_literal(corpus_root: &Path, literal: &str) -> Result<Vec<SourceHit>,
             continue;
         }
 
-        let Ok(contents) = std::fs::read_to_string(&path) else {
-            continue;
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(_) => {
+                skipped.push(relative);
+                continue;
+            }
         };
 
         let syntax = comment_syntax(&extension);
@@ -348,7 +441,8 @@ pub fn find_literal(corpus_root: &Path, literal: &str) -> Result<Vec<SourceHit>,
     }
 
     hits.sort_by(|a, b| (&a.file, a.line.0).cmp(&(&b.file, b.line.0)));
-    Ok(hits)
+    skipped.sort();
+    Ok(LiteralSearch { hits, skipped })
 }
 
 /// A marker naming an `evaluator: absent` claim whose literal is not
@@ -465,7 +559,7 @@ mod tests {
     fn a_literal_present_in_real_source_is_found() {
         let dir = tempdir();
         dir.write("src/lib.rs", "let header = \"Retry-After\";\n");
-        let hits = find_literal(dir.path(), "Retry-After").unwrap();
+        let hits = find_literal(dir.path(), "Retry-After").unwrap().hits;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].file, "src/lib.rs");
         assert_eq!(hits[0].line, Line(1));
@@ -475,7 +569,12 @@ mod tests {
     fn a_literal_absent_from_the_whole_tree_reports_no_hits() {
         let dir = tempdir();
         dir.write("src/lib.rs", "let header = \"Content-Length\";\n");
-        assert!(find_literal(dir.path(), "Retry-After").unwrap().is_empty());
+        assert!(
+            find_literal(dir.path(), "Retry-After")
+                .unwrap()
+                .hits
+                .is_empty()
+        );
     }
 
     #[test]
@@ -488,7 +587,12 @@ mod tests {
             "docs/specs/x.md",
             "There is no `Retry-After` header on any response.\n",
         );
-        assert!(find_literal(dir.path(), "Retry-After").unwrap().is_empty());
+        assert!(
+            find_literal(dir.path(), "Retry-After")
+                .unwrap()
+                .hits
+                .is_empty()
+        );
     }
 
     #[test]
@@ -496,14 +600,42 @@ mod tests {
         let dir = tempdir();
         dir.write("tests/integration.rs", "\"Retry-After\"\n");
         dir.write("src/other/test/fixture.rs", "\"Retry-After\"\n");
-        assert!(find_literal(dir.path(), "Retry-After").unwrap().is_empty());
+        assert!(
+            find_literal(dir.path(), "Retry-After")
+                .unwrap()
+                .hits
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_real_module_merely_named_tests_is_also_excluded_a_named_residual() {
+        // is_test_path's own documented residual, pinned rather than
+        // left implicit: a path segment spelled `tests` is excluded
+        // even when it names real, always-compiled code (a plausible
+        // shape for a tool whose own domain is testing) rather than a
+        // test tree. Accepted here — see the doc comment for why
+        // narrowing further is not free either.
+        let dir = tempdir();
+        dir.write("src/tests/scheduler.rs", "\"Retry-After\"\n");
+        assert!(
+            find_literal(dir.path(), "Retry-After")
+                .unwrap()
+                .hits
+                .is_empty()
+        );
     }
 
     #[test]
     fn a_line_comment_hit_does_not_count() {
         let dir = tempdir();
         dir.write("src/lib.rs", "// TODO: no Retry-After header yet\n");
-        assert!(find_literal(dir.path(), "Retry-After").unwrap().is_empty());
+        assert!(
+            find_literal(dir.path(), "Retry-After")
+                .unwrap()
+                .hits
+                .is_empty()
+        );
     }
 
     #[test]
@@ -513,14 +645,19 @@ mod tests {
             "src/lib.rs",
             "/* removed:\nlet h = \"Retry-After\";\n*/\nfn ok() {}\n",
         );
-        assert!(find_literal(dir.path(), "Retry-After").unwrap().is_empty());
+        assert!(
+            find_literal(dir.path(), "Retry-After")
+                .unwrap()
+                .hits
+                .is_empty()
+        );
     }
 
     #[test]
     fn real_code_after_a_block_comment_closes_is_still_searched() {
         let dir = tempdir();
         dir.write("src/lib.rs", "/* old note */ let h = \"Retry-After\";\n");
-        let hits = find_literal(dir.path(), "Retry-After").unwrap();
+        let hits = find_literal(dir.path(), "Retry-After").unwrap().hits;
         assert_eq!(hits.len(), 1, "{hits:?}");
     }
 
@@ -535,13 +672,19 @@ mod tests {
         assert_eq!(
             find_literal(dir.path(), "Retry-After missing")
                 .unwrap()
+                .hits
                 .len(),
             1
         );
 
         let dir2 = tempdir();
         dir2.write("scripts/note.py", "# Retry-After was removed\n");
-        assert!(find_literal(dir2.path(), "Retry-After").unwrap().is_empty());
+        assert!(
+            find_literal(dir2.path(), "Retry-After")
+                .unwrap()
+                .hits
+                .is_empty()
+        );
     }
 
     #[test]
@@ -550,28 +693,115 @@ mod tests {
         // over-reporting, not silent drift.
         let dir = tempdir();
         dir.write("notes.xyz", "# Retry-After, mentioned in passing\n");
-        assert_eq!(find_literal(dir.path(), "Retry-After").unwrap().len(), 1);
+        assert_eq!(
+            find_literal(dir.path(), "Retry-After").unwrap().hits.len(),
+            1
+        );
+    }
+
+    // --- string-literal-blind comment/brace scanning (the merge gate's
+    // three false-`Pass` reproductions, one root cause) ----------------
+
+    #[test]
+    fn skip_string_literal_treats_an_escaped_quote_as_not_closing() {
+        assert_eq!(
+            skip_string_literal(r#""a\"b" tail"#),
+            Some(r#""a\"b""#.len())
+        );
+    }
+
+    #[test]
+    fn skip_string_literal_runs_to_the_end_when_unterminated() {
+        let rest = "\"never closes";
+        assert_eq!(skip_string_literal(rest), Some(rest.len()));
+    }
+
+    #[test]
+    fn skip_string_literal_is_none_when_rest_does_not_open_a_string() {
+        assert_eq!(skip_string_literal("not a string"), None);
+    }
+
+    #[test]
+    fn a_comment_leader_inside_a_string_literal_is_still_searched() {
+        // Reproduced against the built binary: `let s = "// Retry-After";`
+        // used to `pass` — the `//` inside the string was read as a real
+        // line-comment leader, blanking the literal along with it.
+        let dir = tempdir();
+        dir.write("src/lib.rs", "let s = \"// Retry-After\";\n");
+        let hits = find_literal(dir.path(), "Retry-After").unwrap().hits;
+        assert_eq!(hits.len(), 1, "{hits:?}");
+    }
+
+    #[test]
+    fn a_block_comment_opener_inside_a_string_does_not_open_a_phantom_block() {
+        // Reproduced: `"/*";` on one line with no real closing `*/`
+        // anywhere in the file used to open a block comment that
+        // consumed every line after it, including a genuine
+        // `"Retry-After"` on the next line — a phantom comment with no
+        // real end, blanking the rest of the file.
+        let dir = tempdir();
+        dir.write(
+            "src/lib.rs",
+            "let comment_marker = \"/*\";\nlet real = \"Retry-After\";\n",
+        );
+        let hits = find_literal(dir.path(), "Retry-After").unwrap().hits;
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].line, Line(2));
+    }
+
+    #[test]
+    fn a_brace_inside_a_test_items_string_does_not_swallow_following_real_code() {
+        // Reproduced: a `#[test]` body containing a string with one
+        // unmatched `{` (`let s = "{";`) undercounts by one; blind brace
+        // counting then over-consumed past the test item's true end,
+        // synced back up by a coincidental `}` inside a *different*
+        // real function's string literal, and blanked that whole
+        // function — including its real "Retry-After" — as if it were
+        // still part of the test.
+        let dir = tempdir();
+        dir.write(
+            "src/lib.rs",
+            "#[test]\nfn t() {\n    let s = \"{\";\n    assert!(true);\n}\n\npub fn error_message() -> &'static str {\n    \"unexpected } here - Retry-After\"\n}\n",
+        );
+        let hits = find_literal(dir.path(), "Retry-After").unwrap().hits;
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].line, Line(8));
     }
 
     #[test]
     fn a_nix_block_comment_hit_does_not_count() {
         let dir = tempdir();
         dir.write("pkg.nix", "/* removed:\n\"Retry-After\"\n*/\n{ }\n");
-        assert!(find_literal(dir.path(), "Retry-After").unwrap().is_empty());
+        assert!(
+            find_literal(dir.path(), "Retry-After")
+                .unwrap()
+                .hits
+                .is_empty()
+        );
     }
 
     #[test]
     fn a_sql_block_comment_hit_does_not_count() {
         let dir = tempdir();
         dir.write("q.sql", "/* removed:\n'Retry-After'\n*/\nSELECT 1;\n");
-        assert!(find_literal(dir.path(), "Retry-After").unwrap().is_empty());
+        assert!(
+            find_literal(dir.path(), "Retry-After")
+                .unwrap()
+                .hits
+                .is_empty()
+        );
     }
 
     #[test]
     fn a_haskell_block_comment_hit_does_not_count() {
         let dir = tempdir();
         dir.write("M.hs", "{- removed:\n\"Retry-After\"\n-}\nmain = pure ()\n");
-        assert!(find_literal(dir.path(), "Retry-After").unwrap().is_empty());
+        assert!(
+            find_literal(dir.path(), "Retry-After")
+                .unwrap()
+                .hits
+                .is_empty()
+        );
     }
 
     #[test]
@@ -581,7 +811,12 @@ mod tests {
             "script.lua",
             "--[[ removed:\n\"Retry-After\"\n]]\nprint(1)\n",
         );
-        assert!(find_literal(dir.path(), "Retry-After").unwrap().is_empty());
+        assert!(
+            find_literal(dir.path(), "Retry-After")
+                .unwrap()
+                .hits
+                .is_empty()
+        );
     }
 
     #[test]
@@ -591,7 +826,12 @@ mod tests {
             "src/lib.rs",
             "fn real() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn old() {\n        assert_eq!(\"Retry-After\", header());\n    }\n}\n",
         );
-        assert!(find_literal(dir.path(), "Retry-After").unwrap().is_empty());
+        assert!(
+            find_literal(dir.path(), "Retry-After")
+                .unwrap()
+                .hits
+                .is_empty()
+        );
     }
 
     #[test]
@@ -601,7 +841,12 @@ mod tests {
             "src/lib.rs",
             "fn real() {}\n\n#[test]\nfn old() {\n    let x = \"Retry-After\";\n}\n",
         );
-        assert!(find_literal(dir.path(), "Retry-After").unwrap().is_empty());
+        assert!(
+            find_literal(dir.path(), "Retry-After")
+                .unwrap()
+                .hits
+                .is_empty()
+        );
     }
 
     #[test]
@@ -611,7 +856,7 @@ mod tests {
             "src/lib.rs",
             "#[cfg(test)]\nmod tests {\n    fn old() {}\n}\n\nlet h = \"Retry-After\";\n",
         );
-        let hits = find_literal(dir.path(), "Retry-After").unwrap();
+        let hits = find_literal(dir.path(), "Retry-After").unwrap().hits;
         assert_eq!(hits.len(), 1, "{hits:?}");
     }
 
@@ -628,7 +873,12 @@ mod tests {
         dir.write("target/debug/generated.rs", "\"Retry-After\"\n");
         dir.write("node_modules/dep/index.js", "\"Retry-After\"\n");
         dir.write("src/lib.rs", "let h = \"Content-Length\";\n");
-        assert!(find_literal(dir.path(), "Retry-After").unwrap().is_empty());
+        assert!(
+            find_literal(dir.path(), "Retry-After")
+                .unwrap()
+                .hits
+                .is_empty()
+        );
     }
 
     #[test]
@@ -655,6 +905,7 @@ mod tests {
         assert!(
             find_literal(dir.path(), "Retry-After header")
                 .unwrap()
+                .hits
                 .is_empty()
         );
     }
@@ -673,7 +924,7 @@ mod tests {
             "src/lib.rs",
             "// 日本語のコメント\nfn ok() {}\nlet h = \"Retry-After\";\n",
         );
-        let hits = find_literal(dir.path(), "Retry-After").unwrap();
+        let hits = find_literal(dir.path(), "Retry-After").unwrap().hits;
         assert_eq!(hits.len(), 1, "{hits:?}");
         assert_eq!(hits[0].line, Line(3));
     }
@@ -683,18 +934,33 @@ mod tests {
         let dir = tempdir();
         dir.write("src/a.rs", "\"Retry-After\"\n");
         dir.write("src/b.rs", "\"Retry-After\"\n");
-        let hits = find_literal(dir.path(), "Retry-After").unwrap();
+        let hits = find_literal(dir.path(), "Retry-After").unwrap().hits;
         assert_eq!(hits.len(), 2, "{hits:?}");
     }
 
     #[test]
-    fn a_non_utf8_file_is_skipped_without_erroring() {
+    fn a_non_utf8_file_is_not_searched_but_is_named_in_skipped() {
+        // This search proves a negative across the whole tree
+        // (`LiteralSearch`'s own doc): an unreadable file is a gap in
+        // the very claim being certified, so it is reported, not
+        // silently dropped the way corpus.rs/marker.rs tolerate the
+        // same case elsewhere.
         let dir = tempdir();
         dir.write("src/ok.rs", "\"Retry-After\"\n");
         dir.write_bytes("src/binary.rs", &[0xff, 0xfe, 0x00, 0x01]);
-        let hits = find_literal(dir.path(), "Retry-After").unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].file, "src/ok.rs");
+        let search = find_literal(dir.path(), "Retry-After").unwrap();
+        assert_eq!(search.hits.len(), 1);
+        assert_eq!(search.hits[0].file, "src/ok.rs");
+        assert_eq!(search.skipped, vec!["src/binary.rs".to_string()]);
+    }
+
+    #[test]
+    fn a_clean_search_with_nothing_unreadable_reports_no_skipped_paths() {
+        let dir = tempdir();
+        dir.write("src/ok.rs", "\"Content-Length\"\n");
+        let search = find_literal(dir.path(), "Retry-After").unwrap();
+        assert!(search.hits.is_empty());
+        assert!(search.skipped.is_empty());
     }
 
     // --- find_stale_markers -------------------------------------------

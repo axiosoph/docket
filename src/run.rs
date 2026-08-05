@@ -472,8 +472,8 @@ pub fn run_claim(
         };
 
         let (success, exit_code, stdout, stderr, vacuous) = if is_absence_evaluator {
-            let hits = absence::find_literal(corpus_root, command).map_err(RunError::Absence)?;
-            if hits.is_empty() {
+            let search = absence::find_literal(corpus_root, command).map_err(RunError::Absence)?;
+            let (success, exit_code, mut report) = if search.hits.is_empty() {
                 (
                     true,
                     Some(0),
@@ -481,16 +481,29 @@ pub fn run_claim(
                         "confirmed absent: {:?} was not found in searched source\n",
                         command
                     ),
-                    String::new(),
-                    None,
                 )
             } else {
                 let mut report = format!("found {:?} at:\n", command);
-                for hit in &hits {
+                for hit in &search.hits {
                     report.push_str(&format!("  {}:{}\n", hit.file, hit.line));
                 }
-                (false, Some(1), report, String::new(), None)
+                (false, Some(1), report)
+            };
+            // A `pass` here proves a negative across the whole tree; a
+            // file this search could not read as UTF-8 is a gap in that
+            // very claim, not a bounded, locally-visible miss the way it
+            // is for corpus.rs/marker.rs — surfaced rather than
+            // swallowed (absence::LiteralSearch's own doc states why).
+            if !search.skipped.is_empty() {
+                report.push_str(&format!(
+                    "  skipped {} file(s) not valid UTF-8, not searched:\n",
+                    search.skipped.len()
+                ));
+                for path in &search.skipped {
+                    report.push_str(&format!("    {path}\n"));
+                }
             }
+            (success, exit_code, report, String::new(), None)
         } else {
             // A shell, not a direct exec: a marker's command is free-form
             // (pipes, `--` flags, shell-quoted arguments an author wrote by
@@ -872,6 +885,28 @@ mod tests {
         assert_eq!(result.outcome, Outcome::Pass);
         assert!(result.markers[0].success);
         assert_eq!(result.markers[0].exit_code, Some(0));
+    }
+
+    #[test]
+    fn an_absence_marker_pass_still_names_a_file_it_could_not_search() {
+        // A `pass` resting on an incomplete scan is indistinguishable
+        // from a genuine one unless the gap is surfaced
+        // (absence::LiteralSearch's own doc) — the report must name the
+        // skipped file even though the claim still reports `Pass`.
+        let dir = absence_tempdir();
+        std::fs::write(dir.path().join("binary.bin"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
+
+        let corpus = corpus_with(
+            "### [no-retry-header]\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
+        );
+        let markers = vec![marker("no-retry-header", "Retry-After")];
+        let result = run_claim(&corpus, "no-retry-header", dir.path(), &markers).unwrap();
+        assert_eq!(result.outcome, Outcome::Pass);
+        assert!(
+            result.markers[0].stdout.contains("binary.bin"),
+            "{}",
+            result.markers[0].stdout
+        );
     }
 
     #[test]
