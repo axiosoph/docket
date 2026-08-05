@@ -61,9 +61,9 @@ called out below.
 | `c2-duplicate-across-forms/` | `C2` | `docs/specs/a.md` declares `[dup-across-forms]` in heading form, `docs/specs/b.md` declares the same id in bold form. Proves a duplicate arising from two *different* recognizers is still one C2 finding pair, each naming the other's site. |
 | `unregistered-definition/` | `unregistered-definition` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition with no `claim` block, plus one registered heading-form definition for contrast. Exits **0** — `Warn` severity, the coverage count. |
 | `malformed-id/` | `malformed-id` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition whose id fails the kebab-case grammar (both the real-corpus shape: an otherwise-kebab id with one stray uppercase segment), a bracketed-but-multi-word false positive that must not fire, and one registered heading-form definition for contrast. Exits **0** — `Warn` severity, never blocking. |
-| `unreachable-reference/` | `unreachable-reference` (`Fail`) | See below. `docs/specs/a.md`'s claim `[unreachable-target]` links `../../.scratch/notes.md` in prose; the fixture's own `.gitignore` marks `.scratch/` ignored. Exits **1**. |
-| `unreachable-reference-code-span/` | `unreachable-reference` (`Fail`) | See below. Isolates the widened reference notion: a bare `` `.scratch/notes.md` `` mention in an inline code span, not markdown link syntax. Exits **1**. |
-| `unreachable-reference-non-markdown-genre/` | `unreachable-reference` (`Fail`) | See below. Isolates the widened file surface: a corpus-declared non-`.md` genre (`contracts/*.ncl`) gets a backtick-only scan. Exits **1**. |
+| `unreachable-reference/` | `unreachable-reference` (`Fail`) | See below. `docs/specs/a.md`'s claim `[unreachable-target]` links `../../.scratch/notes.md` in prose; the fixture's own `.gitignore` marks `.scratch/` ignored. A bare `docket check --corpus fixtures/unreachable-reference` exits **0** — the check requires the target to exist, and a gitignored target is committable by no checkout. Create it first (`mkdir -p fixtures/unreachable-reference/.scratch && echo '# notes' > fixtures/unreachable-reference/.scratch/notes.md`), then it exits **1**. |
+| `unreachable-reference-code-span/` | `unreachable-reference` (`Fail`) | See below. Isolates the widened reference notion: a bare `` `.scratch/notes.md` `` mention in an inline code span, not markdown link syntax. Same existence gap as above: a bare `docket check --corpus fixtures/unreachable-reference-code-span` exits **0**; create the target first (`mkdir -p fixtures/unreachable-reference-code-span/.scratch && echo '# notes' > fixtures/unreachable-reference-code-span/.scratch/notes.md`), then it exits **1**. |
+| `unreachable-reference-non-markdown-genre/` | `unreachable-reference` (`Fail`) | See below. Isolates the widened file surface: a corpus-declared non-`.md` genre (`contracts/*.ncl`) gets a backtick-only scan. Same existence gap: a bare `docket check --corpus fixtures/unreachable-reference-non-markdown-genre` exits **0**; create the target first (`mkdir -p fixtures/unreachable-reference-non-markdown-genre/.ledger && echo '# notes' > fixtures/unreachable-reference-non-markdown-genre/.ledger/2026-01-01-notes.md`), then it exits **1**. |
 | `dangling-reference/` | `dangling-reference` (`Warn`) | See below. `docs/guides/a.md` carries **no claim block at all** — a how-to genre permits none — and links `does-not-exist`, which resolves to nothing. Isolates the capability `bare-reference-no-failure/` cannot: a document with zero claims still has its links resolved. Exits **0**. |
 | `heading-slug-genuinely-missing-still-dangles/` | `dangling-reference` (`Warn`) | See below. The false-positive floor for heading-slug resolution: a link into a real, existing document, naming a heading number that document never had. Proves slug resolution didn't get *loose* alongside the fix that made real slugs resolve. |
 | `heading-slug-near-miss-still-dangles/` | `dangling-reference` (`Warn`) | See below. A link whose anchor differs from a real heading's real slug by exactly one character. Same floor as the fixture above, at the tightest possible margin. |
@@ -688,7 +688,24 @@ own ruling calls the underlying rule "not legal," the same weight C4's
 file's own directory) to `.scratch/notes.md`; the fixture's own
 `.gitignore` marks `.scratch/` ignored, so `git check-ignore` reports it.
 The claim declares neither `depends` nor `because`, so nothing else in
-the corpus is capable of firing — `docket check --corpus
+the corpus is capable of firing.
+
+**The check also requires the target to exist on disk** (MVP.md's
+"candidate must exist on disk" fix, below), and an ignored file is, by
+definition, not something any checkout can commit — the fixture
+directory itself contains only `.gitignore`, `docket.ncl`, and `docs/`.
+So a bare `docket check --corpus fixtures/unreachable-reference` exits
+**0**: there is nothing on disk yet for the check to find. Demonstrating
+the finding means creating the ignored target first, outside of any
+commit:
+
+```sh
+mkdir -p fixtures/unreachable-reference/.scratch
+echo '# notes' > fixtures/unreachable-reference/.scratch/notes.md
+docket check --corpus fixtures/unreachable-reference
+```
+
+With the target present, `docket check --corpus
 fixtures/unreachable-reference` exits **1** with exactly one
 `unreachable-reference` failure naming the file, the line, the link as
 written, and the corpus-relative path it resolved to.
@@ -749,12 +766,17 @@ the before/after).
   `[unreachable-target]` mentions `` `.scratch/notes.md` `` in an
   **inline code span**, never as a markdown link. Before this fix, only
   `[text](href)` syntax was ever resolved, so this exact citation was
-  invisible. `docket check --corpus fixtures/unreachable-reference-code-span`
-  exits **1** with one `unreachable-reference` failure. Removing the
-  backticks (leaving the bare words in ordinary prose, verified by hand,
-  not committed) restores a clean exit — proving the fixture isolates
-  code-span detection specifically, not some other path to the same
-  diagnostic.
+  invisible. Same existence gap as the base fixture above: the target
+  must be created before the check can find it —
+  `mkdir -p fixtures/unreachable-reference-code-span/.scratch && echo
+  '# notes' > fixtures/unreachable-reference-code-span/.scratch/notes.md`
+  — after which `docket check --corpus
+  fixtures/unreachable-reference-code-span` exits **1** with one
+  `unreachable-reference` failure (a bare invocation exits **0**).
+  Removing the backticks (leaving the bare words in ordinary prose,
+  verified by hand, not committed) restores a clean exit even with the
+  target present — proving the fixture isolates code-span detection
+  specifically, not some other path to the same diagnostic.
 - **`unreachable-reference-non-markdown-genre/`** — `docket.ncl` declares
   `contracts/*.ncl` as its own genre (`kinds = []`, mirroring docket's own
   configuration for its bundled Nickel contracts); `contracts/x.ncl`
@@ -762,9 +784,14 @@ the before/after).
   block could ever live in a `.ncl` file, so this fixture isolates the
   narrower pass a non-markdown genre-matched file gets: a lexical
   backtick scan (`gitignore::find_backtick_references`), never full
-  claim/heading extraction. `docket check --corpus
+  claim/heading extraction. Same existence gap: create the target first
+  — `mkdir -p fixtures/unreachable-reference-non-markdown-genre/.ledger
+  && echo '# notes' >
+  fixtures/unreachable-reference-non-markdown-genre/.ledger/2026-01-01-notes.md`
+  — after which `docket check --corpus
   fixtures/unreachable-reference-non-markdown-genre` exits **1** with one
-  `unreachable-reference` failure naming `contracts/x.ncl`.
+  `unreachable-reference` failure naming `contracts/x.ncl` (a bare
+  invocation exits **0**).
 
 **The false-positive floor for both** is pinned in `checks::tests`
 (`an_ordinary_inline_code_span_never_fires_unreachable_reference`) rather
