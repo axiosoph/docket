@@ -522,6 +522,32 @@ let malformed_id_diagnostics = fun ids =>
     ids
 in
 
+# --- unreachable-reference: a tracked document links a gitignored path. -
+# (`.ledger/2026-08-05-references-that-leave-the-register.md`, O4). Rust
+# (`gitignore.rs`, wired through `corpus.rs`) already did the impure part
+# — resolving each link to a corpus-relative path and asking
+# `git check-ignore` — so, like `unregistered-definition`/`malformed-id`,
+# all that's pure here is formatting the already-decided fact. `Fail`
+# severity, not `Warn`: unlike those two coverage-style counts (a real
+# corpus is expected to carry many on the day the check ships), an
+# unreachable reference has no such grace period — it was wrong the
+# moment it was written, with the same cheap, unambiguous remedy C4's
+# dangling `depends` has (rewire or remove), and the head's own ruling
+# calls the underlying rule "not legal," not merely undesirable.
+
+let unreachable_reference_diagnostics = fun refs =>
+  std.array.map
+    (fun r => {
+      check = "unreachable-reference",
+      severity = "fail",
+      file = r.file,
+      line = r.line,
+      message =
+        "link \"%{r.dest}\" resolves to \"%{r.resolved}\", which is gitignored — unreachable for any reader who is not the author",
+    })
+    refs
+in
+
 # --- the index (MVP.md §4.1): a pure projection. ------------------------
 
 let index_claims = fun claims =>
@@ -580,7 +606,8 @@ let evaluate_impl = fun input =>
       @ (c5_diagnostics input.claims)
       @ (normative_prose_diagnostics input.documents input.genres input.normative_occurrences)
       @ (unregistered_definition_diagnostics input.unregistered_definitions)
-      @ (malformed_id_diagnostics input.malformed_ids),
+      @ (malformed_id_diagnostics input.malformed_ids)
+      @ (unreachable_reference_diagnostics input.unreachable_references),
   }
 in
 { evaluate = evaluate_impl }

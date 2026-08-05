@@ -4,6 +4,7 @@ pub mod config;
 pub mod contracts;
 pub mod corpus;
 pub mod extract;
+pub mod gitignore;
 pub mod marker;
 pub mod model;
 pub mod nickel;

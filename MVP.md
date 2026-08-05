@@ -485,6 +485,36 @@ accept what this check flags — accepting it silently would make
 uniqueness (C2) case-insensitive in effect, which is exactly the
 collision class C2 exists to catch.
 
+**`unreachable-reference`, derived from `git`, not a sixth numbered
+check.** A reference whose target *exists* is not automatically a
+reference a reader can *reach*: a link into a gitignored working
+directory (`.ledger`, `.scratch`, or any project-specific ignore rule)
+resolves for its author, for a reviewer in the same worktree, and for
+every check that runs where the author sits — and resolves to nothing
+for every other reader of the repository, which is everyone the document
+was written for
+(`.ledger/2026-08-05-references-that-leave-the-register.md`, O4's
+"unreachable" condition, distinct from C4's "dangles": the target is
+present, only unreachable). `Fail` severity, not `Warn`: unlike
+`unregistered-definition`/`malformed-id`, a real corpus is not expected
+to carry any of these on the day this check ships — an unreachable
+reference is wrong the moment it is written, with the same cheap,
+unambiguous remedy C4's dangling `depends` has (rewire or remove).
+
+**Directional.** Only a tracked document's link to an ignored path is
+checked; the reverse — an ignored file linking into the repository — is
+not, since only the repository's own reader-visible content is this
+tool's concern at all. Scope is **path-shaped** references only, the
+same distinction §1.3's prose-link normalization already draws between a
+path and a bare claim-id citation: a link carrying a `/`, a `.`, or a
+`#anchor` is checked; a bare kebab-case word with none of those reads as
+a claim-id reference and is left alone (a claim id can never contain a
+`.`, so the split is exact). Ignored-ness is asked of `git`
+(`check-ignore`, batched once per corpus); a corpus that is not a git
+repository, or an environment with no `git` on `PATH`, degrades to
+silence rather than a false verdict or a crash — there is no
+reader-reachability question to answer without a repository to ask.
+
 **`normative-prose`, derived from `kinds = []`, not a sixth numbered
 check.** §2's `kinds = []` already means a genre may hold no claim
 blocks — which already means nothing normatively binding lives in it.

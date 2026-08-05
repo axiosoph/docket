@@ -168,6 +168,14 @@ struct InputMalformedId {
 }
 
 #[derive(Serialize)]
+struct InputUnreachableReference {
+    file: String,
+    line: usize,
+    dest: String,
+    resolved: String,
+}
+
+#[derive(Serialize)]
 struct Input {
     claims: Vec<InputClaim>,
     documents: Vec<InputDocument>,
@@ -176,6 +184,7 @@ struct Input {
     normative_occurrences: Vec<InputNormativeOccurrence>,
     unregistered_definitions: Vec<InputUnregisteredDefinition>,
     malformed_ids: Vec<InputMalformedId>,
+    unreachable_references: Vec<InputUnreachableReference>,
 }
 
 /// A YAML claim block re-parsed into JSON, for C1 — mirrors what the
@@ -281,6 +290,17 @@ fn build_input(loaded: &LoadedCorpus, config: &Config) -> Input {
         })
         .collect();
 
+    let unreachable_references = loaded
+        .unreachable_references
+        .iter()
+        .map(|u| InputUnreachableReference {
+            file: u.file.clone(),
+            line: u.line.0,
+            dest: u.dest.clone(),
+            resolved: u.resolved.clone(),
+        })
+        .collect();
+
     Input {
         claims,
         documents,
@@ -289,6 +309,7 @@ fn build_input(loaded: &LoadedCorpus, config: &Config) -> Input {
         normative_occurrences,
         unregistered_definitions,
         malformed_ids,
+        unreachable_references,
     }
 }
 
@@ -419,6 +440,21 @@ mod tests {
     impl Drop for TempDir {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    impl TempDir {
+        /// `git init`, for the one test below that needs a real
+        /// repository to check `unreachable-reference` against — every
+        /// other fixture in this module deliberately isn't a git
+        /// repository, exercising the degrade-to-silence path by default.
+        fn git_init(&self) {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&self.0)
+                .args(["init", "--quiet"])
+                .status()
+                .expect("git must be on PATH to run this test");
+            assert!(status.success());
         }
     }
     fn tempdir() -> TempDir {
@@ -1302,6 +1338,129 @@ mod tests {
             "docs/specs/x.md",
             "**[Note to reader]**: this is prose, not an id.\n",
         );
+        let report = run(&dir);
+        assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+    }
+
+    // --- unreachable-reference --------------------------------------------
+
+    #[test]
+    fn a_link_to_a_gitignored_path_fails_at_fail_severity() {
+        // `.ledger/2026-08-05-references-that-leave-the-register.md`, O4:
+        // the "unreachable" condition, exercised end-to-end through the
+        // real register.ncl — gitignore.rs's own tests already cover the
+        // git-query logic in isolation; this proves the fact it produces
+        // actually reaches a Diagnostic in the shape MVP.md §3 promises.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", ".scratch/\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nSee [notes](../../.scratch/notes.md).\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        let report = run(&dir);
+        let failures = only(&report, "unreachable-reference");
+        assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(failures[0].severity, Severity::Fail);
+        assert_eq!(failures[0].file, "docs/specs/x.md");
+        assert!(failures[0].message.contains(".scratch/notes.md"));
+        assert!(!report.passed(), "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn a_link_to_an_ordinary_tracked_path_does_not_fire_unreachable_reference() {
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", ".scratch/\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write("docs/specs/y.md", "### [y]\n");
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nSee [y](y.md).\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, "unreachable-reference").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_corpus_that_is_not_a_git_repository_never_fires_unreachable_reference() {
+        // The degrade-to-silence case (dispatch): no git history to ask
+        // means no reader-reachability question this check can answer —
+        // never a crash, never a false verdict.
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nSee [notes](../../.scratch/notes.md).\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, "unreachable-reference").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_bare_claim_id_shaped_link_is_never_checked_against_git_even_if_the_name_collides() {
+        // Scope boundary: "target" with no slash/dot/anchor reads as a
+        // claim-id candidate, not a path — out of scope even though a
+        // directory named exactly that is really gitignored here.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", "target/\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [target]\n\nSee [target](target).\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, "unreachable-reference").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_reference_into_the_repository_from_outside_it_is_never_this_checks_concern() {
+        // The directional half of the rule (dispatch): an ignored file
+        // linking INTO the repository is fine — "only the author has
+        // that." Structural, not a filter: `load_corpus` never walks a
+        // dotdir at all, so an ignored document's own links can never
+        // reach this check's input to begin with. Proven here by scanning
+        // a corpus whose gitignored directory holds a markdown file
+        // linking back into `docs/specs/` — it produces no diagnostic of
+        // any kind, because the walk never visits it.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", ".scratch/\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        dir.write(".scratch/notes.md", "See [x](../docs/specs/x.md#x).\n");
         let report = run(&dir);
         assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
     }

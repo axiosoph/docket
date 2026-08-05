@@ -6,14 +6,14 @@ named evaluator — so that *"is this project stable?"* becomes a computed
 number with an enumerated residue, instead of a feeling.
 
 > Status: **implemented.** `check` runs the five structural checks below
-> plus four further diagnostics (`orphan-claim`, `normative-prose`,
-> `unregistered-definition`, `malformed-id`); `blast` computes the
-> citation graph and its transitive closure; `run` executes a claim's
-> evaluator and reports one of six outcomes (see "Tying claims to the
-> evaluators that discharge them," below). The coverage index, the
-> verdict register, and the stability metric described later in this
-> document are not built — "Out of MVP scope" marks what's still
-> missing. Name is provisional.
+> plus five further diagnostics (`orphan-claim`, `normative-prose`,
+> `unregistered-definition`, `malformed-id`, `unreachable-reference`);
+> `blast` computes the citation graph and its transitive closure; `run`
+> executes a claim's evaluator and reports one of six outcomes (see
+> "Tying claims to the evaluators that discharge them," below). The
+> coverage index, the verdict register, and the stability metric
+> described later in this document are not built — "Out of MVP scope"
+> marks what's still missing. Name is provisional.
 
 ---
 
