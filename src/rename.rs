@@ -278,6 +278,10 @@ fn substitute_snapshot(snap: &Snapshot, old_id: &str, new_id: &str) -> Snapshot 
             severity: d.severity,
             file: d.file.clone(),
             line: d.line,
+            claim_id: d
+                .claim_id
+                .as_deref()
+                .map(|id| substitute_id(id, old_id, new_id)),
             message: d.message.replace(old_id, new_id),
         })
         .collect();
@@ -756,6 +760,39 @@ mod tests {
         assert!(b.contains("depends: [new-id]"));
         assert!(b.contains("because: [new-id]"));
         assert!(!b.contains("old-id"));
+    }
+
+    #[test]
+    fn a_diagnostics_own_claim_id_is_substituted_too() {
+        // `Diagnostic` grew a `claim_id` field after this module's
+        // `Snapshot`/`substitute_snapshot` pair was written (checks.rs);
+        // an unresolved `because` entry produces an `orphaned-because`
+        // warning whose `claim_id` is the *citing* claim's own id
+        // (register.ncl's `refs_check`) — here, `old-id` itself. If
+        // `substitute_snapshot` left that field unrewritten, the
+        // substituted BEFORE snapshot would keep `claim_id: "old-id"`
+        // while the real AFTER snapshot reports `"new-id"`, and a rename
+        // that is otherwise perfectly safe would be refused as a false
+        // InvariantDiverged.
+        let dir = tempdir();
+        dir.write("docket.ncl", basic_docket_ncl());
+        dir.write(
+            "docs/a.md",
+            "### [old-id]\n\n```claim\nkind: constraint\nevaluator: test\nbecause: [does-not-exist]\n```\n",
+        );
+        let h = harness(&dir);
+        let plan = plan_rename(
+            dir.path(),
+            &h.loaded,
+            &h.config,
+            &h.register_path,
+            &h.markers,
+            "old-id",
+            "new-id",
+        )
+        .expect("rename plan succeeds; the orphaned-because warning must not look like a divergence");
+        write_changes(dir.path(), &plan).unwrap();
+        assert!(dir.read("docs/a.md").contains("### [new-id]"));
     }
 
     // --- refusals ----------------------------------------------------------
