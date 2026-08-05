@@ -70,6 +70,10 @@ impl Quadrant {
 /// `Review` is not a lower variant than `None`: see `claim.ncl`'s
 /// `EvaluatorPred` doc comment for why review is a different evidence
 /// species (a vouch) rather than a seventh rung on the mechanical scale.
+/// `Absent` is likewise outside the strength order — it corroborates the
+/// opposite predicate (a literal's non-occurrence, not a behavior's
+/// occurrence) rather than ranking below `example` — see `claim.ncl` and
+/// `run.rs`'s module docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Evaluator {
@@ -79,6 +83,7 @@ pub enum Evaluator {
     PropertyTest,
     Test,
     Example,
+    Absent,
     Review,
     None,
 }
@@ -198,6 +203,16 @@ pub struct Claim {
     /// relative path, possibly with a `#fragment`) that checks.rs
     /// resolves against the corpus's documents and claim ids.
     pub prose_links: Vec<String>,
+    /// Inline code span (`` `…` ``) text found in the claim's prose body,
+    /// same scope as `prose_links`. Exists for the `absent-marker-stale`
+    /// check (`src/absence.rs`): an absence claim's marker names a
+    /// literal explicitly (never a region of prose,
+    /// `.ledger/2026-08-05-references-that-leave-the-register.md` O3), so
+    /// confirming the marker still corresponds to something the prose
+    /// actually discusses means confirming that literal is still one of
+    /// the code spans the claim's own prose carries — the same adjacency
+    /// check a human proofreader would make by eye.
+    pub prose_code: Vec<String>,
 }
 
 impl Claim {

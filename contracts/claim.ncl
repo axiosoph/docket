@@ -57,6 +57,21 @@
   # register's other evidence species, not a corroboration one grade
   # short of `example`. `none` asserts the opposite: nothing has been
   # done. The two are not comparable on the mechanical scale at all.
+  #
+  # `absent` also sits OUTSIDE the order, for a different reason than
+  # `review`'s: it IS a corroboration (a re-runnable, decorrelated
+  # check, like every mechanical grade above it), but the hierarchy
+  # ranks strength of evidence for a claim that something holds —
+  # proof, type, property test, example test each demonstrate a
+  # positive. An `absent` claim demonstrates the opposite predicate: a
+  # named literal does NOT occur in the corpus's non-documentation
+  # source (`.ledger/2026-08-05-references-that-leave-the-register.md`,
+  # O3 — "absence is a claim, and it is the one that inverts"). Ranking
+  # it against `test` or `example` would compare unlike axes; see
+  # `run.rs`'s module docs for the mechanism (it reuses the SAME
+  # `@docket:` marker grammar every other mechanical evaluator uses —
+  # for `absent`, the marker's command field is the literal to search
+  # for, not a command to execute).
   EvaluatorPred = fun v =>
     v == 'proof          || v == "proof"
     || v == 'model-check   || v == "model-check"
@@ -64,6 +79,7 @@
     || v == 'property-test || v == "property-test"
     || v == 'test          || v == "test"
     || v == 'example       || v == "example"
+    || v == 'absent        || v == "absent"
     || v == 'review        || v == "review"
     || v == 'none          || v == "none",
   Evaluator = std.contract.from_predicate EvaluatorPred,

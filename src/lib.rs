@@ -1,3 +1,4 @@
+pub mod absence;
 pub mod blast;
 pub mod checks;
 pub mod config;

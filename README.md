@@ -501,6 +501,30 @@ does and vigilance cannot. Locate the residue, name it, and stop
 pretending it isn't there: that is the justification for computing a
 register over documents in the first place, not a footnote to it.
 
+### Absence claims: a reference that breaks the other way
+
+Documentation states, deliberately and usefully, that certain things do
+**not** exist — no retry header, no metrics endpoint, no handling of some
+case. These are among the most valuable sentences a document carries:
+they save a reader hunting for something that isn't there. They are also
+a reference, and they fail in the opposite direction from an ordinary
+one. A normal reference breaks when its target disappears; an absence
+claim breaks when its target *appears* — someone adds the metrics
+endpoint and the documentation keeps saying there is none, with nothing
+noticing.
+
+`evaluator: absent` is that claim, discharged the same way every other
+mechanical evaluator is discharged: a marker, found and re-run, not
+testimony. The one thing that differs is which way the check points —
+the marker names a literal, and its command exiting "found" is `fail`,
+not `pass`. Every other piece of the register is unchanged: the same
+grammar, the same corroboration/vouch split (this is a corroboration,
+just of a negative), the same severity model for the check that catches
+a marker drifting out of step with the prose that named it
+(`absent-marker-stale`, `Warn`, reported not failed on — a stale marker
+asserts nothing false, it just may no longer be watching anything the
+document currently says).
+
 ### Why a deterministic index rather than careful reading
 
 *"Which API surfaces enforce which invariants"* is an exhaustive

@@ -24,8 +24,10 @@
 //! cost of R6's boundary meeting blast.rs's no-touch scope, not a defect
 //! introduced here.
 
+use crate::absence;
 use crate::config::Config;
 use crate::corpus::LoadedCorpus;
+use crate::marker::Marker;
 use crate::model::{Index, IndexClaim, IndexDocument};
 use crate::nickel::{self, NickelError};
 use serde::Serialize;
@@ -176,6 +178,14 @@ struct InputUnreachableReference {
 }
 
 #[derive(Serialize)]
+struct InputStaleAbsenceMarker {
+    file: String,
+    line: usize,
+    id: String,
+    literal: String,
+}
+
+#[derive(Serialize)]
 struct Input {
     claims: Vec<InputClaim>,
     documents: Vec<InputDocument>,
@@ -185,6 +195,7 @@ struct Input {
     unregistered_definitions: Vec<InputUnregisteredDefinition>,
     malformed_ids: Vec<InputMalformedId>,
     unreachable_references: Vec<InputUnreachableReference>,
+    stale_absence_markers: Vec<InputStaleAbsenceMarker>,
 }
 
 /// A YAML claim block re-parsed into JSON, for C1 — mirrors what the
@@ -201,7 +212,7 @@ fn parse_raw_yaml(yaml: &str) -> (Option<serde_json::Value>, Option<String>) {
     }
 }
 
-fn build_input(loaded: &LoadedCorpus, config: &Config) -> Input {
+fn build_input(loaded: &LoadedCorpus, config: &Config, markers: &[Marker]) -> Input {
     let corpus = &loaded.corpus;
 
     let claims = corpus
@@ -301,6 +312,21 @@ fn build_input(loaded: &LoadedCorpus, config: &Config) -> Input {
         })
         .collect();
 
+    // `absent-marker-stale` (absence.rs): impure the same way
+    // `unreachable_references` is — it needs the marker scan, a second
+    // corpus-tree walk `load_corpus` never performs on its own — so it
+    // is computed here, beside the rest of this module's I/O, rather
+    // than downstream in register.ncl.
+    let stale_absence_markers = absence::find_stale_markers(corpus, markers)
+        .into_iter()
+        .map(|s| InputStaleAbsenceMarker {
+            file: s.file,
+            line: s.line.0,
+            id: s.id,
+            literal: s.literal,
+        })
+        .collect();
+
     Input {
         claims,
         documents,
@@ -310,6 +336,7 @@ fn build_input(loaded: &LoadedCorpus, config: &Config) -> Input {
         unregistered_definitions,
         malformed_ids,
         unreachable_references,
+        stale_absence_markers,
     }
 }
 
@@ -358,13 +385,17 @@ struct Output {
 /// `register_path` is an already-resolved `register.ncl` — the CLI
 /// resolves it (docket's own embedded copy by default, `--register` to
 /// override) before calling in; this function has no opinion on where it
-/// came from.
+/// came from. `markers` is the corpus's `@docket:` marker scan
+/// (`marker::scan_markers`) — needed for `absent-marker-stale`
+/// (absence.rs), the one diagnostic here that isn't derivable from the
+/// document/config input alone.
 pub fn run_checks(
     loaded: &LoadedCorpus,
     config: &Config,
     register_path: &Path,
+    markers: &[Marker],
 ) -> Result<RegisterResult, RegisterError> {
-    let input = build_input(loaded, config);
+    let input = build_input(loaded, config, markers);
     let input_json = serde_json::to_string(&input).expect("Input serializes");
     let value = nickel::evaluate_register(register_path, &input_json)?;
     let output: Output = serde_json::from_value(value)
@@ -484,7 +515,8 @@ mod tests {
     fn run(dir: &TempDir) -> CheckReport {
         let config = load_config(dir.path()).unwrap();
         let loaded = load_corpus(dir.path(), &config).unwrap();
-        run_checks(&loaded, &config, &register_path())
+        let markers = crate::marker::scan_markers(dir.path()).unwrap();
+        run_checks(&loaded, &config, &register_path(), &markers)
             .unwrap()
             .report
     }
@@ -1491,6 +1523,93 @@ mod tests {
         );
     }
 
+    // --- evaluator: absent / absent-marker-stale --------------------------
+
+    #[test]
+    fn evaluator_absent_is_accepted_by_c1() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [no-retry-header]\n\nThere is no `Retry-After` header.\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
+        );
+        let report = run(&dir);
+        assert!(only(&report, "C1").is_empty(), "{:#?}", report.diagnostics);
+    }
+
+    #[test]
+    fn a_fresh_absence_marker_passes_every_check_cleanly() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [no-retry-header]\n\nThere is no `Retry-After` header.\n\n\
+             <!--\n@docket: no-retry-header :: Retry-After\n-->\n\n\
+             ```claim\nkind: constraint\nevaluator: absent\n```\n",
+        );
+        let report = run(&dir);
+        assert!(report.passed(), "{:#?}", report.diagnostics);
+        assert!(
+            only(&report, "absent-marker-stale").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn absent_marker_stale_fires_when_the_prose_no_longer_names_the_literal() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [no-retry-header]\n\nThe old note about this is gone now.\n\n\
+             <!--\n@docket: no-retry-header :: Retry-After\n-->\n\n\
+             ```claim\nkind: constraint\nevaluator: absent\n```\n",
+        );
+        let report = run(&dir);
+        let warnings = only(&report, "absent-marker-stale");
+        assert_eq!(warnings.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(warnings[0].severity, Severity::Warn);
+        assert!(warnings[0].message.contains("Retry-After"));
+        assert!(
+            report.passed(),
+            "absent-marker-stale must never flip the exit code: {:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn absent_marker_stale_is_silent_for_a_marker_in_a_different_file_from_its_claim() {
+        let dir = tempdir();
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [no-retry-header]\n\nThere is no `Retry-After` header.\n\n```claim\nkind: constraint\nevaluator: absent\n```\n",
+        );
+        // The marker lives in src/, a different file than the claim's
+        // own document — no prose scope to compare it against, so this
+        // must never fire (src/absence.rs, `find_stale_markers`).
+        dir.write("src/lib.rs", "// @docket: no-retry-header :: Retry-After\n");
+        let report = run(&dir);
+        assert!(
+            only(&report, "absent-marker-stale").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
     // --- the index -------------------------------------------------------
 
     #[test]
@@ -1521,7 +1640,8 @@ mod tests {
 
         let config = load_config(dir.path()).unwrap();
         let loaded = load_corpus(dir.path(), &config).unwrap();
-        let result = run_checks(&loaded, &config, &register_path()).unwrap();
+        let markers = crate::marker::scan_markers(dir.path()).unwrap();
+        let result = run_checks(&loaded, &config, &register_path(), &markers).unwrap();
         assert!(result.report.passed(), "{:#?}", result.report.diagnostics);
 
         let claim = result
