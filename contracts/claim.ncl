@@ -49,10 +49,9 @@
   # enforces what the claim says, so faithfulness is review-established.
   #
   # `review` sits OUTSIDE that order — never insert it as a weaker rung
-  # below `none` or anywhere else in the chain
-  # (`.ledger/log/2026-07-29-review-is-the-vouch.md`, "Why review is
-  # irreducible"). It means a human or agent read the claim against its
-  # target and it holds: an assertion that the claim is TRUE, backed by
+  # below `none` or anywhere else in the chain. It means a human or agent
+  # read the claim against its target and it holds: an assertion that
+  # the claim is TRUE, backed by
   # testimony rather than a re-runnable check — a **vouch**, the
   # register's other evidence species, not a corroboration one grade
   # short of `example`. `none` asserts the opposite: nothing has been
@@ -65,8 +64,7 @@
   # proof, type, property test, example test each demonstrate a
   # positive. An `absent` claim demonstrates the opposite predicate: a
   # named literal does NOT occur in the corpus's non-documentation
-  # source (`.ledger/2026-08-05-references-that-leave-the-register.md`,
-  # O3 — "absence is a claim, and it is the one that inverts"). Ranking
+  # source — absence is a claim, and it is the one that inverts. Ranking
   # it against `test` or `example` would compare unlike axes; see
   # `run.rs`'s module docs for the mechanism (it reuses the SAME
   # `@docket:` marker grammar every other mechanical evaluator uses —
@@ -117,9 +115,9 @@
   # C1) — achieved for free by Nickel's closed-by-default record
   # contracts; no `, ..` appears anywhere in this file.
   #
-  # Reference kinds (`.ledger/2026-07-30-reference-kinds-and-document-resolution.md`,
-  # R1): the single `cites` field is retired in favour of two, because the
-  # two kinds carry different consequences when their target is deleted —
+  # Reference kinds (R1): the single `cites` field is retired in favour
+  # of two, because the two kinds carry different consequences when
+  # their target is deleted —
   # `depends` means the claim breaks; `because` means only its stated
   # reason is orphaned. There is deliberately no third field for a bare
   # reference: R3 defines bare as "a prose link that is not declared", so

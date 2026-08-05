@@ -1,5 +1,5 @@
-# The register evaluator (.ledger/2026-07-30-reference-kinds-and-document-resolution.md,
-# R6): given an already-extracted corpus as data, compute the index
+# The register evaluator (R6): given an already-extracted corpus as
+# data, compute the index
 # (MVP.md §4.1) and every check's diagnostics — C1-C5, orphan-claim,
 # orphaned-because, normative-prose, unregistered-definition,
 # malformed-id — in one pure evaluation.
@@ -591,11 +591,10 @@ let unregistered_definition_diagnostics = fun defs =>
 in
 
 # --- malformed-id: a bracketed token in definition position that fails --
-# the id grammar (`.ledger/2026-08-04-malformed-ids-are-silently-invisible.md`).
-# `Warn` severity, like `unregistered-definition`: real corpora are
-# expected to carry some of these on the day this check ships, and the
-# remedy is a rename an author makes, not a gate that should block a
-# commit already in flight.
+# the id grammar. `Warn` severity, like `unregistered-definition`: real
+# corpora are expected to carry some of these on the day this check
+# ships, and the remedy is a rename an author makes, not a gate that
+# should block a commit already in flight.
 
 let malformed_id_diagnostics = fun ids =>
   std.array.map
@@ -611,9 +610,8 @@ let malformed_id_diagnostics = fun ids =>
 in
 
 # --- unreachable-reference: a tracked document links a gitignored path. -
-# (`.ledger/2026-08-05-references-that-leave-the-register.md`, O4). Rust
-# (`gitignore.rs`, wired through `corpus.rs`) already did the impure part
-# — resolving each link to a corpus-relative path and asking
+# Rust (`gitignore.rs`, wired through `corpus.rs`) already did the
+# impure part — resolving each link to a corpus-relative path and asking
 # `git check-ignore` — so, like `unregistered-definition`/`malformed-id`,
 # all that's pure here is formatting the already-decided fact. `Fail`
 # severity, not `Warn`: unlike those two coverage-style counts (a real
@@ -638,10 +636,9 @@ in
 
 # --- absent-marker-stale: an absence marker whose literal the claim's --
 # own prose no longer names (`src/absence.rs`, `run.rs`'s "Absence
-# claims" module docs;
-# `.ledger/2026-08-05-references-that-leave-the-register.md`, O3). Rust
-# already decided the fact (it needs both the corpus and the marker
-# scan, the same reason `unreachable-reference` is decided in Rust) —
+# claims" module docs). Rust already decided the fact (it needs both the
+# corpus and the marker scan, the same reason `unreachable-reference` is
+# decided in Rust) —
 # this only formats it. `Warn` severity, like `unregistered-definition`:
 # this asserts nothing about whether the absence itself still holds
 # (that is `run`'s job, over source, at a load-bearing severity) — only
@@ -663,9 +660,7 @@ let stale_absence_marker_diagnostics = fun markers =>
 in
 
 # --- dangling-reference: a document-wide link with no target. ----------
-# (`.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`,
-# `.ledger/2026-08-05-references-that-leave-the-register.md` O4's
-# "dangles" condition.) `input.links` is the whole corpus's link
+# O4's "dangles" condition. `input.links` is the whole corpus's link
 # surface — every markdown href in every scanned document, independent
 # of any claim's C5 prose-link scope (a document with zero claims still
 # has links; C5 itself is untouched and stays claim-scoped, since a

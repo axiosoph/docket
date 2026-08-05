@@ -105,6 +105,49 @@ fn resolve(citing_file: &str, path: &str) -> Option<String> {
     Some(segments.join("/"))
 }
 
+/// One `check-ignore --stdin` invocation over `candidates`, returning the
+/// exit code and whatever `stdout` held — `None` only if the process
+/// itself never ran (spawn failure or the stdin handle wasn't there to
+/// take). Split out of [`ignored_paths`] so the fallback path below can
+/// reuse the exact same spawn/write/wait mechanics one candidate at a
+/// time.
+fn check_ignore_once(
+    git_bin: &str,
+    corpus_root: &Path,
+    candidates: &[String],
+) -> Option<(i32, HashSet<String>)> {
+    let mut child = Command::new(git_bin)
+        .arg("-C")
+        .arg(corpus_root)
+        .arg("check-ignore")
+        .arg("--stdin")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+
+    // Written from a separate thread rather than before `wait_with_output`:
+    // `check-ignore --stdin` streams matches back as it reads, so a large
+    // candidate list can fill its stdout pipe before this process has
+    // finished writing stdin, deadlocking a strictly sequential
+    // write-then-wait.
+    let mut stdin = child.stdin.take()?;
+    let input = candidates.join("\n");
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(input.as_bytes());
+    });
+
+    let output = child.wait_with_output().ok()?;
+    let _ = writer.join();
+
+    let found = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    Some((output.status.code().unwrap_or(-1), found))
+}
+
 /// Ask `git` which of `candidates` (corpus-root-relative paths) it would
 /// ignore, batched into one `check-ignore --stdin` call rather than one
 /// process per link. Degrades to "none ignored" — never a crash, never a
@@ -117,11 +160,26 @@ fn resolve(citing_file: &str, path: &str) -> Option<String> {
 /// not found" branch is directly testable (a nonexistent name below)
 /// without depending on the test environment actually lacking `git`.
 ///
+/// **Exit code 128 falls back to one candidate at a time**, rather than
+/// degrading straight to empty the way the "not a repository"/"binary
+/// missing" cases do. `git check-ignore --stdin` doesn't skip a
+/// candidate it treats as an invalid pathspec (`/`, `..`, a leading
+/// `//`, and surely others this scan hasn't hit yet) the way it skips an
+/// ordinary non-ignored path — it FATALS the whole stream at 128 and
+/// stops reading further candidates entirely, discarding every real
+/// match queued after the bad one along with it. Confirmed directly
+/// against a real corpus, not a hypothetical: this project's own prose
+/// citing `/docs/...` and `// not a comment` in inline code spans each
+/// independently zeroed out an otherwise-correct batch before this
+/// fallback existed. 128 is ALSO the genuine "not a repository" signal,
+/// which the fallback handles for free — every per-candidate retry hits
+/// the identical 128 in that case, so the result still degrades to
+/// empty, just through N+1 invocations instead of one.
+///
 /// `pub(crate)` rather than private: `absence::find_literal` reuses this
 /// unchanged to keep build output and vendored dependencies (`target/`,
 /// `node_modules/`, …) out of the search corpus, for the same reason
-/// [`find_unreachable_references`] needs it here — one batched query,
-/// same safe degradation.
+/// [`find_unreachable_references`] needs it here.
 pub(crate) fn ignored_paths(
     git_bin: &str,
     corpus_root: &Path,
@@ -131,71 +189,95 @@ pub(crate) fn ignored_paths(
         return HashSet::new();
     }
 
-    let mut child = match Command::new(git_bin)
-        .arg("-C")
-        .arg(corpus_root)
-        .arg("check-ignore")
-        .arg("--stdin")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return HashSet::new(),
-    };
-
-    // Written from a separate thread rather than before `wait_with_output`:
-    // `check-ignore --stdin` streams matches back as it reads, so a large
-    // candidate list can fill its stdout pipe before this process has
-    // finished writing stdin, deadlocking a strictly sequential
-    // write-then-wait.
-    let mut stdin = match child.stdin.take() {
-        Some(stdin) => stdin,
-        None => return HashSet::new(),
-    };
-    let input = candidates.join("\n");
-    let writer = std::thread::spawn(move || {
-        let _ = stdin.write_all(input.as_bytes());
-    });
-
-    let output = match child.wait_with_output() {
-        Ok(output) => output,
-        Err(_) => return HashSet::new(),
-    };
-    let _ = writer.join();
-
-    // Exit status: 0 = at least one candidate matched, 1 = none did (both
-    // a legitimate result of a completed run), 128 = a real error — not a
-    // git repository, an unreadable `corpus_root`, and so on. Only the
-    // error case degrades to silence; "ran fine, nothing ignored" is
-    // already an empty `stdout`.
-    if output.status.code() == Some(128) {
+    let Some((code, found)) = check_ignore_once(git_bin, corpus_root, candidates) else {
         return HashSet::new();
+    };
+
+    if code != 128 {
+        return found;
     }
 
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::to_string)
+    candidates
+        .iter()
+        .filter(|c| {
+            matches!(
+                check_ignore_once(git_bin, corpus_root, std::slice::from_ref(c)),
+                Some((0, _))
+            )
+        })
+        .cloned()
         .collect()
 }
 
-/// Every `unreachable-reference` finding across a corpus's whole link
-/// surface: a path-shaped link in a tracked document that resolves to a
-/// path `git` would not track. One batched `git` invocation for the
-/// entire corpus, regardless of how many links it holds.
+/// Every `unreachable-reference` finding across a corpus's whole
+/// reference surface: `links` (markdown hrefs, resolved relative to the
+/// citing file's directory, exactly as before) **and** `code_references`
+/// (backtick-delimited path-shaped spans — inline code spans in markdown,
+/// or a lexical backtick scan over a non-markdown source file, see
+/// [`find_backtick_references`] — resolved as **corpus-root-relative
+/// directly**, not against the citing file's directory).
+///
+/// The two resolution rules differ deliberately, not by oversight: a
+/// markdown href is written the way a relative link genuinely works
+/// (`../models/x.md`), but a code-span citation like `` `.ledger/foo.md` ``
+/// carries no such prefix regardless of which file cites it — real
+/// instances in this project's own corpus write it identically whether
+/// the citing file sits at the corpus root or three directories deep
+/// (`contracts/register.ncl`), which only makes sense if the author
+/// already means "the corpus's `.ledger/`," not "relative to me."
+/// Resolving it the same way a markdown href resolves would silently
+/// point every non-root citer at the wrong (nonexistent, and therefore
+/// falsely *not* unreachable) path.
+///
+/// One batched `git` invocation for the entire corpus, regardless of how
+/// many links or code references it holds.
+/// Whether `p` is too degenerate to ever hand `git check-ignore` — `/`,
+/// `..`, or empty. `git check-ignore --stdin` doesn't just decline these
+/// (as it does for an ordinary non-ignored path); it exits **128**,
+/// "fatal: outside repository" — the SAME exit code this module already
+/// treats as "not a real git repository, degrade to silence." One
+/// degenerate candidate in a batched call therefore poisons the *entire*
+/// batch: every real finding alongside it silently vanishes too, which
+/// is a strictly worse failure than "this one candidate was skipped."
+/// Confirmed directly against real `git` output (`/`, `..`, and `""` all
+/// fatal at 128; `.` alone does not) rather than assumed. `"a/b"`-shaped
+/// bare slashes never arise this way — `resolve` already rejects a `..`
+/// that escapes the corpus root — so this exists specifically for
+/// `code_references`, which (deliberately, see this function's own doc
+/// comment) skip `resolve` entirely: a real corpus's own prose
+/// discussing the leading-`/` convention in an inline code span
+/// (`` `/` ``) is exactly the shape that surfaced this.
+fn too_degenerate_for_git(p: &str) -> bool {
+    p.is_empty() || p == "/" || p == ".."
+}
+
 pub fn find_unreachable_references(
     corpus_root: &Path,
     links: &[DocumentLink],
+    code_references: &[DocumentLink],
 ) -> Vec<IgnoredReference> {
-    let candidates: Vec<(&DocumentLink, String)> = links
+    let mut candidates: Vec<(&DocumentLink, String)> = links
         .iter()
         .filter_map(|link| {
             let path = path_shaped(&link.dest)?;
             let resolved = resolve(&link.file, path)?;
-            Some((link, resolved))
+            (!too_degenerate_for_git(&resolved)).then_some((link, resolved))
         })
         .collect();
+    candidates.extend(code_references.iter().filter_map(|r| {
+        let path = path_shaped(&r.dest)?;
+        // A leading `/` means the same thing here it does for a markdown
+        // href (§1.3: corpus-root-relative) — but unlike a markdown href,
+        // this candidate is handed to `git` almost verbatim, and `git
+        // check-ignore` reads a leading `/` as an OS-absolute path
+        // attempt, not a repo-relative one (`fatal: Invalid path
+        // '/docs': No such file or directory`, confirmed directly — a
+        // real corpus's own prose discussing that exact convention,
+        // `` `/docs/...` ``, is what surfaced this). Strip it before
+        // resolving, same meaning either way.
+        let resolved = path.strip_prefix('/').unwrap_or(path).to_string();
+        (!too_degenerate_for_git(&resolved)).then_some((r, resolved))
+    }));
 
     let paths: Vec<String> = candidates.iter().map(|(_, r)| r.clone()).collect();
     let ignored = ignored_paths("git", corpus_root, &paths);
@@ -210,6 +292,45 @@ pub fn find_unreachable_references(
             resolved,
         })
         .collect()
+}
+
+/// Backtick-delimited spans in a non-markdown source file's raw text,
+/// treated as `unreachable-reference` candidates the same way a markdown
+/// inline code span is (`extract::extract_document`'s `code_references`)
+/// — this project's own Nickel comments already write path citations in
+/// that convention (`` `.ledger/…md` ``) even though `.ncl` has no
+/// comparable parser here to lean on.
+///
+/// **A lexical, line-by-line scan, deliberately not comment-aware** — the
+/// residual this carries, stated rather than hidden: it does not
+/// distinguish a backtick pair inside a `#` comment from one inside a
+/// string literal, and it does not follow a span across a newline (every
+/// real citation in this project's `.ncl` files is single-line). Nickel
+/// has no backtick syntax of its own — strings are `"…"` or `m%"…"%m` —
+/// so in practice every backtick pair this scan finds in a well-formed
+/// `.ncl` file sits inside a comment; a file that put a literal backtick
+/// inside a string would be invisible to (or misread by) this scan, the
+/// same class of stated limitation `absence.rs` already carries for
+/// single-quoted strings and raw strings.
+pub fn find_backtick_references(file: &str, text: &str) -> Vec<DocumentLink> {
+    let mut out = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        let mut rest = line;
+        while let Some(open) = rest.find('`') {
+            let after_open = &rest[open + 1..];
+            let Some(close) = after_open.find('`') else {
+                break;
+            };
+            let inner = &after_open[..close];
+            out.push(DocumentLink {
+                file: file.to_string(),
+                line: Line(idx + 1),
+                dest: inner.to_string(),
+            });
+            rest = &after_open[close + 1..];
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -338,7 +459,7 @@ mod tests {
         let repo = git_repo(".scratch/\n");
         repo.write("docs/specs/a.md", "");
         let links = vec![link("docs/specs/a.md", "../../.scratch/notes.md")];
-        let found = find_unreachable_references(&repo.0, &links);
+        let found = find_unreachable_references(&repo.0, &links, &[]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].file, "docs/specs/a.md");
         assert_eq!(found[0].resolved, ".scratch/notes.md");
@@ -351,7 +472,7 @@ mod tests {
         repo.write("docs/specs/a.md", "");
         repo.write("docs/specs/b.md", "");
         let links = vec![link("docs/specs/a.md", "b.md")];
-        assert!(find_unreachable_references(&repo.0, &links).is_empty());
+        assert!(find_unreachable_references(&repo.0, &links, &[]).is_empty());
     }
 
     #[test]
@@ -364,7 +485,7 @@ mod tests {
         let repo = git_repo("target/\n");
         repo.write("docs/specs/a.md", "");
         let links = vec![link("docs/specs/a.md", "target")];
-        assert!(find_unreachable_references(&repo.0, &links).is_empty());
+        assert!(find_unreachable_references(&repo.0, &links, &[]).is_empty());
     }
 
     #[test]
@@ -372,7 +493,7 @@ mod tests {
         let repo = git_repo(".scratch/\n");
         repo.write("docs/specs/a.md", "");
         let links = vec![link("docs/specs/a.md", "../../../outside.md")];
-        assert!(find_unreachable_references(&repo.0, &links).is_empty());
+        assert!(find_unreachable_references(&repo.0, &links, &[]).is_empty());
     }
 
     #[test]
@@ -387,7 +508,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let links = vec![link("docs/specs/a.md", "../../.scratch/notes.md")];
-        let found = find_unreachable_references(&dir, &links);
+        let found = find_unreachable_references(&dir, &links, &[]);
         let _ = std::fs::remove_dir_all(&dir);
         assert!(
             found.is_empty(),
@@ -404,5 +525,191 @@ mod tests {
             &["anything".to_string()],
         );
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn a_fatal_candidate_falls_back_to_recovering_every_other_one() {
+        // The batch-poisoning defect this fallback exists for, isolated
+        // at the `ignored_paths` layer directly rather than only
+        // end-to-end: `git check-ignore --stdin` fatals (128) on a
+        // candidate it treats as an invalid pathspec — proven here with
+        // a real repo and a real fatal candidate (`/`), not a mock — and
+        // stops reading the stream at that point. Real matches queued on
+        // BOTH sides of the bad one must still come back.
+        let repo = git_repo(".ledger/\n");
+        let candidates = vec![
+            ".ledger/before.md".to_string(),
+            "/".to_string(),
+            ".ledger/after.md".to_string(),
+            "not-ignored.md".to_string(),
+        ];
+        let found = ignored_paths("git", &repo.0, &candidates);
+        assert_eq!(
+            found,
+            HashSet::from([
+                ".ledger/before.md".to_string(),
+                ".ledger/after.md".to_string(),
+            ]),
+            "a fatal candidate must not erase the real matches around it"
+        );
+    }
+
+    #[test]
+    fn a_fatal_candidate_alone_still_degrades_to_empty() {
+        let repo = git_repo(".ledger/\n");
+        let found = ignored_paths("git", &repo.0, &["/".to_string()]);
+        assert!(found.is_empty());
+    }
+
+    // --- find_backtick_references ---------------------------------------
+
+    #[test]
+    fn a_single_backtick_span_is_extracted_with_its_line_number() {
+        let text = "line one\nsee `.ledger/notes.md` for background\n";
+        let found = find_backtick_references("contracts/x.ncl", text);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].file, "contracts/x.ncl");
+        assert_eq!(found[0].line, Line(2));
+        assert_eq!(found[0].dest, ".ledger/notes.md");
+    }
+
+    #[test]
+    fn multiple_backtick_spans_on_one_line_are_all_extracted() {
+        let text = "# see `a.ncl` and `b.ncl` both\n";
+        let found = find_backtick_references("x.ncl", text);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].dest, "a.ncl");
+        assert_eq!(found[1].dest, "b.ncl");
+    }
+
+    #[test]
+    fn an_unclosed_backtick_on_a_line_yields_nothing_for_that_line() {
+        let text = "this has one stray ` backtick only\n";
+        assert!(find_backtick_references("x.ncl", text).is_empty());
+    }
+
+    #[test]
+    fn a_span_never_crosses_a_newline() {
+        // Every real citation in this project's own .ncl files is
+        // single-line; two backticks on separate lines are two unclosed
+        // spans, not one that happens to span a line break.
+        let text = "opens here `\ncloses here `\n";
+        assert!(find_backtick_references("x.ncl", text).is_empty());
+    }
+
+    #[test]
+    fn a_backtick_span_with_no_path_shaped_content_is_still_captured() {
+        // Filtering by `path_shaped` is `find_unreachable_references`'s
+        // job, not this scanner's — an ordinary `` `cargo test` `` span
+        // is captured here and filtered downstream.
+        let text = "run `cargo test` first\n";
+        let found = find_backtick_references("x.ncl", text);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].dest, "cargo test");
+    }
+
+    // --- find_unreachable_references, the code_references parameter -----
+
+    #[test]
+    fn a_code_reference_to_a_gitignored_path_is_reported() {
+        let repo = git_repo(".ledger/\n");
+        repo.write("contracts/x.ncl", "");
+        let code_refs = vec![link("contracts/x.ncl", ".ledger/2026-01-01-notes.md")];
+        let found = find_unreachable_references(&repo.0, &[], &code_refs);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].file, "contracts/x.ncl");
+        assert_eq!(found[0].resolved, ".ledger/2026-01-01-notes.md");
+    }
+
+    #[test]
+    fn a_code_reference_resolves_corpus_root_relative_not_citing_file_relative() {
+        // The deliberate divergence from markdown-link resolution: a
+        // code reference written inside `contracts/x.ncl` still means
+        // "the corpus's own .ledger/", not "contracts/.ledger/" (which
+        // resolving against the citing file's directory, the way a
+        // markdown href does, would incorrectly produce).
+        // Anchored (`/.ledger/`) so only the root-level directory is
+        // ignored — `contracts/.ledger/` deliberately is NOT, so the test
+        // can tell "resolved to the right (ignored) path" apart from
+        // "resolved to the wrong (not ignored) one" instead of both
+        // happening to match the same unanchored pattern.
+        let repo = git_repo("/.ledger/\n");
+        repo.write("contracts/x.ncl", "");
+        repo.write("contracts/.ledger/notes.md", "");
+        let code_refs = vec![link("contracts/x.ncl", ".ledger/notes.md")];
+        let found = find_unreachable_references(&repo.0, &[], &code_refs);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].resolved, ".ledger/notes.md",
+            "must resolve to the corpus root's .ledger/, not contracts/.ledger/"
+        );
+    }
+
+    #[test]
+    fn a_non_path_shaped_code_reference_never_fires() {
+        let repo = git_repo(".ledger/\n");
+        repo.write("contracts/x.ncl", "");
+        let code_refs = vec![link("contracts/x.ncl", "cargo test")];
+        assert!(find_unreachable_references(&repo.0, &[], &code_refs).is_empty());
+    }
+
+    #[test]
+    fn a_code_reference_to_an_ordinary_tracked_path_is_silent() {
+        let repo = git_repo(".ledger/\n");
+        repo.write("contracts/x.ncl", "");
+        repo.write("contracts/y.ncl", "");
+        let code_refs = vec![link("contracts/x.ncl", "contracts/y.ncl")];
+        assert!(find_unreachable_references(&repo.0, &[], &code_refs).is_empty());
+    }
+
+    // --- too_degenerate_for_git ------------------------------------------
+    //
+    // The real defect this migration surfaced: `git check-ignore --stdin`
+    // doesn't skip `/`, `..`, or an empty candidate the way it does an
+    // ordinary non-ignored path — it FATALS (exit 128), which this
+    // module already treats as "not a real repository, degrade silently."
+    // Confirmed directly against real `git`, not assumed. Left
+    // unfiltered, ONE such candidate in a batch would zero out every
+    // real finding alongside it — a real corpus's own prose (MVP.md
+    // §1.3, discussing the leading-`/` convention in an inline code
+    // span) hit exactly this.
+
+    #[test]
+    fn a_bare_slash_code_reference_never_poisons_the_whole_batch() {
+        let repo = git_repo(".ledger/\n");
+        repo.write("MVP.md", "");
+        let code_refs = vec![link("MVP.md", "/"), link("MVP.md", ".ledger/notes.md")];
+        let found = find_unreachable_references(&repo.0, &[], &code_refs);
+        assert_eq!(
+            found.len(),
+            1,
+            "the degenerate `/` candidate must not silence the real finding beside it: {found:#?}"
+        );
+        assert_eq!(found[0].resolved, ".ledger/notes.md");
+    }
+
+    #[test]
+    fn a_dotdot_code_reference_never_poisons_the_whole_batch() {
+        let repo = git_repo(".ledger/\n");
+        repo.write("MVP.md", "");
+        let code_refs = vec![link("MVP.md", ".."), link("MVP.md", ".ledger/notes.md")];
+        let found = find_unreachable_references(&repo.0, &[], &code_refs);
+        assert_eq!(found.len(), 1, "{found:#?}");
+        assert_eq!(found[0].resolved, ".ledger/notes.md");
+    }
+
+    #[test]
+    fn a_bare_slash_link_never_poisons_the_whole_batch() {
+        // The same guard also protects the `links` path, even though a
+        // markdown href's own resolution rarely produces "/" — cheap
+        // insurance against the identical git behaviour on that side too.
+        let repo = git_repo(".ledger/\n");
+        repo.write("docs/a.md", "");
+        let links = vec![
+            link("docs/a.md", "/"),
+            link("docs/a.md", "../.ledger/notes.md"),
+        ];
+        let found = find_unreachable_references(&repo.0, &links, &[]);
+        assert_eq!(found.len(), 1, "{found:#?}");
     }
 }

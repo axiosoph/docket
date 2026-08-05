@@ -20,5 +20,26 @@
     # derived rule (MVP.md §2), it is *why* `kinds = []` is required
     # rather than merely conventional.
     { path = "README.md", kinds = [], quadrant = "explanation" },
+
+    # `contracts/*.ncl` are Nickel, not markdown — no claim block can
+    # live here, so `kinds = []` the same way README.md's does — but
+    # they are this project's normative SPECIFICATION layer (MVP.md §7:
+    # "Nickel is required for the contract"), continuous with MVP.md
+    # rather than mere implementation. Declaring them as a genre is what
+    # brings them into `unreachable-reference`'s widened surface
+    # (MVP.md's "Which files this check covers"): a backtick-delimited
+    # path citation here — `` `.ledger/…md` `` — is exactly as
+    # unreachable to a stranger as one in ordinary prose.
+    { path = "contracts/*.ncl", kinds = [], quadrant = "reference" },
+
+    # fixtures/MANIFEST.md is explanation about the fixtures, not a spec
+    # of its own — `kinds = []`, same reasoning as README.md's. Brings
+    # its own `.ledger/…` citations (a documentation file like any
+    # other) into `unreachable-reference`'s surface; its many inline
+    # code spans illustrating link syntax (`` `[…](target-claim)` `` and
+    # the like) are safe here — none resolves to a real gitignored path,
+    # so they stay silent the same way an ordinary non-path code span
+    # already does.
+    { path = "fixtures/MANIFEST.md", kinds = [], quadrant = "explanation" },
   ],
 }

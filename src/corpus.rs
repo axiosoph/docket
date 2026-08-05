@@ -66,6 +66,19 @@ pub struct LoadedCorpus {
     /// only ever sees the ones inside a claim's own C5 window, so a
     /// claimless guide's links would otherwise go nowhere.
     pub links: Vec<DocumentLink>,
+    /// Every backtick-delimited, potentially path-shaped span found
+    /// anywhere docket looks for one — a scanned markdown document's
+    /// inline code spans (`extract::extract_document`), **plus** a raw
+    /// lexical backtick scan (`gitignore::find_backtick_references`) over
+    /// docket's own bundled Nickel contracts (`contracts/*.ncl`), which
+    /// `unreachable-reference`'s file surface has widened to cover
+    /// (`.ledger/2026-08-05-references-that-leave-the-register.md`-class
+    /// finding: MVP.md documents the exact boundary and what stays out).
+    /// Feeds only `unreachable_references` above, never
+    /// `dangling-reference`/C5 — an inline code span or a Nickel comment
+    /// is not a link, and resolving one as if it were would fire on
+    /// every incidental mention that was never meant as a citation.
+    pub code_references: Vec<DocumentLink>,
 }
 
 /// Load every genre-matched file under `corpus_root`.
@@ -76,6 +89,7 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
     let mut unregistered_definitions = Vec::new();
     let mut malformed_ids = Vec::new();
     let mut links = Vec::new();
+    let mut code_references = Vec::new();
 
     for path in walk_files(corpus_root)? {
         let relative = path
@@ -88,15 +102,32 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
             continue;
         };
 
-        // Only .md files are scanned (MVP.md §2): a claim block can only
-        // live in markdown, so reading anything else is wasted work at
-        // best. It's a real failure mode, not a hypothetical — a TLC
-        // model-checker state dump (binary, no extension) sitting in a
-        // generated subtree under a matched genre aborted the first run
-        // against a real corpus. Extension-based, not content-sniffed:
-        // sniffing would still have to open every file, the cost this
-        // check exists to avoid.
+        // Only .md files get full claim/heading extraction (MVP.md §2): a
+        // claim block can only live in markdown, so reading anything else
+        // that way is wasted work at best (a TLC model-checker state
+        // dump — binary, no extension — sitting in a generated subtree
+        // under a matched genre aborted the first real-corpus run).
+        //
+        // A genre-matched file that is NOT markdown still gets ONE
+        // narrower pass: a lexical backtick scan
+        // (`gitignore::find_backtick_references`) for
+        // `unreachable-reference` candidates — MVP.md's widened boundary
+        // for that check. This is why a corpus declares e.g.
+        // `contracts/*.ncl` as its own genre (`kinds = []`, since no
+        // claim block can live there either) rather than this loader
+        // hardcoding any particular project's directory layout: the
+        // genre system already says which files this corpus considers
+        // part of its documentation surface, extension aside.
         if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            // Best-effort, not `?`-propagated: a non-UTF8 file under a
+            // matched genre must still not abort the walk (the same
+            // guarantee `.md` files get via the binary-state-dump case
+            // below) — a file this scan cannot even read as text has
+            // nothing for it to find, which is a fine outcome, not an
+            // error to surface.
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                code_references.extend(gitignore::find_backtick_references(&relative, &contents));
+            }
             continue;
         }
 
@@ -129,13 +160,17 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
         unregistered_definitions.extend(result.unregistered_definitions);
         malformed_ids.extend(result.malformed_ids);
         links.extend(result.links);
+        code_references.extend(result.code_references);
     }
 
-    // One batched `git check-ignore` for the whole corpus's link surface
-    // — `gitignore::find_unreachable_references` is the only I/O this
+    // One batched `git check-ignore` for the whole corpus's reference
+    // surface (links and code references both) —
+    // `gitignore::find_unreachable_references` is the only I/O this
     // function performs beyond reading files and `git`'s own filesystem
-    // walk, and it needs every document's links gathered first.
-    let unreachable_references = gitignore::find_unreachable_references(corpus_root, &links);
+    // walk, and it needs every document's links/code references gathered
+    // first.
+    let unreachable_references =
+        gitignore::find_unreachable_references(corpus_root, &links, &code_references);
 
     Ok(LoadedCorpus {
         corpus,
@@ -145,6 +180,7 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
         malformed_ids,
         unreachable_references,
         links,
+        code_references,
     })
 }
 
@@ -418,6 +454,41 @@ mod tests {
         assert_eq!(
             loaded.unreachable_references[0].resolved,
             ".scratch/notes.md"
+        );
+    }
+
+    #[test]
+    fn a_genre_matched_non_markdown_file_is_backtick_scanned_not_extracted() {
+        // The widened `unreachable-reference` surface: a corpus declares
+        // a non-.md path pattern (here standing in for `contracts/*.ncl`)
+        // as its own genre, and that file gets a lexical backtick scan
+        // for code references instead of full claim/heading extraction
+        // (which would be meaningless for a non-markdown file). Same
+        // wiring-layer shape as `collects_unreachable_references_across_the_corpus`.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", ".ledger/\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "contracts/*.ncl", kinds = [], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "contracts/x.ncl",
+            "# see `.ledger/2026-01-01-notes.md` for the decision\n",
+        );
+
+        let config = load_config(dir.path()).unwrap();
+        let loaded = load_corpus(dir.path(), &config).unwrap();
+
+        // No claim/heading extraction happened — the file was never
+        // treated as a document at all.
+        assert!(loaded.corpus.documents.is_empty());
+        assert!(loaded.corpus.claims.is_empty());
+        assert_eq!(loaded.unreachable_references.len(), 1);
+        assert_eq!(loaded.unreachable_references[0].file, "contracts/x.ncl");
+        assert_eq!(
+            loaded.unreachable_references[0].resolved,
+            ".ledger/2026-01-01-notes.md"
         );
     }
 

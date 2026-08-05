@@ -94,6 +94,14 @@ pub struct ExtractResult {
     pub unregistered_definitions: Vec<UnregisteredDefinition>,
     pub malformed_ids: Vec<MalformedId>,
     pub links: Vec<DocumentLink>,
+    /// Every inline code span in the document whose content might name a
+    /// path — the widened `unreachable-reference` surface
+    /// (`gitignore::find_unreachable_references`): a bare mention like
+    /// `` `.ledger/2026-08-05-foo.md` `` is a pointer a reader cannot
+    /// follow just as much as a markdown link is, even though it carries
+    /// none of a link's syntax. Never consulted by `dangling-reference`
+    /// or C5 — see this field's construction site for why.
+    pub code_references: Vec<DocumentLink>,
 }
 
 /// Byte-offset -> 1-indexed line number, built once per document.
@@ -491,6 +499,7 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
     let mut raw_headings: Vec<RawHeading> = Vec::new();
     let mut raw_links: Vec<RawLink> = Vec::new();
     let mut raw_codes: Vec<RawCode> = Vec::new();
+    let mut all_code_spans: Vec<RawCode> = Vec::new();
     let mut raw_blocks: Vec<RawBlock> = Vec::new();
     let mut raw_bold_defs: Vec<RawBoldDef> = Vec::new();
     let mut raw_malformed_bold: Vec<RawMalformedBold> = Vec::new();
@@ -677,6 +686,22 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
                 }
             }
             Event::Code(t) => {
+                // Every inline code span, corpus-wide and regardless of
+                // which other role the same span plays below, is a
+                // candidate `unreachable-reference` target
+                // (`gitignore::path_shaped` decides downstream whether its
+                // content actually looks like a path) — a `.ledger/…`
+                // citation written as `` `.ledger/foo.md` `` is just as
+                // unreachable for a reader inside a heading as it is in
+                // ordinary prose, and this collection is unscoped by
+                // design: unlike `raw_codes`/`prose_code` below, there is
+                // no claim-window or own-voice question here, only "does
+                // a reader of this file see a pointer they cannot follow."
+                all_code_spans.push(RawCode {
+                    start: range.start,
+                    text: t.to_string(),
+                });
+
                 // Inline code spans occur only in inline (heading/prose)
                 // context; a fenced block's content is Text, never Code.
                 // A heading's own code span feeds only the heading's own
@@ -899,6 +924,26 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
         })
         .collect();
 
+    // Every inline code span, corpus-wide, as an `unreachable-reference`
+    // candidate — `all_code_spans` above, not `raw_codes` (which is
+    // scoped to claim windows for `absent-marker-stale`). Feeds a
+    // SEPARATE field from `links`, never `dangling-reference`/C5: an
+    // inline code span is not a link, and treating one as a resolvable
+    // reference for those checks would fire on every incidental
+    // `` `docs/x.md` `` mention that was never meant as a citation.
+    // `gitignore::path_shaped`/`find_unreachable_references` still decide
+    // whether any given span's content actually looks like a path and
+    // whether it resolves to something gitignored.
+    let code_references: Vec<DocumentLink> = all_code_spans
+        .iter()
+        .filter(|c| !is_external(&c.text))
+        .map(|c| DocumentLink {
+            file: file.to_string(),
+            line: line_index.line_of(c.start),
+            dest: c.text.clone(),
+        })
+        .collect();
+
     ExtractResult {
         headings,
         claims,
@@ -907,6 +952,7 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
         unregistered_definitions,
         malformed_ids,
         links,
+        code_references,
     }
 }
 
@@ -1113,6 +1159,46 @@ mod tests {
         assert_eq!(res.headings.len(), 2);
         assert_eq!(res.headings[0].slug, "overview");
         assert_eq!(res.headings[1].slug, "overview-1");
+    }
+
+    #[test]
+    fn an_inline_code_span_in_prose_becomes_a_code_reference_candidate() {
+        // `gitignore::path_shaped`/`find_unreachable_references` decide
+        // downstream whether the content actually looks like a path;
+        // extraction's only job is capturing every span.
+        let src = "See `.ledger/2026-01-01-notes.md` for background.\n";
+        let res = extract_document("docs/guides/a.md", src);
+        assert_eq!(res.code_references.len(), 1);
+        assert_eq!(res.code_references[0].dest, ".ledger/2026-01-01-notes.md");
+        assert_eq!(res.code_references[0].line, Line(1));
+    }
+
+    #[test]
+    fn a_code_span_inside_a_heading_still_becomes_a_code_reference() {
+        // Deliberately UNSCOPED, unlike `prose_code`/`raw_codes`: a
+        // reader sees a heading's own text too, so a citation written
+        // there is just as unreachable as one in ordinary prose.
+        let src = "## See `.ledger/2026-01-01-notes.md`\n";
+        let res = extract_document("docs/guides/a.md", src);
+        assert_eq!(res.code_references.len(), 1);
+        assert_eq!(res.code_references[0].dest, ".ledger/2026-01-01-notes.md");
+    }
+
+    #[test]
+    fn an_external_url_inline_code_span_is_not_a_code_reference() {
+        let src = "See `https://example.com/notes` for background.\n";
+        let res = extract_document("docs/guides/a.md", src);
+        assert!(res.code_references.is_empty());
+    }
+
+    #[test]
+    fn an_ordinary_non_path_inline_code_span_is_still_captured_here() {
+        // Filtering by shape is `gitignore::path_shaped`'s job; this
+        // extraction layer captures every span unconditionally.
+        let src = "Run `cargo test` first.\n";
+        let res = extract_document("docs/guides/a.md", src);
+        assert_eq!(res.code_references.len(), 1);
+        assert_eq!(res.code_references[0].dest, "cargo test");
     }
 
     #[test]

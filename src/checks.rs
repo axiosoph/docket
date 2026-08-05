@@ -1563,6 +1563,77 @@ mod tests {
     }
 
     #[test]
+    fn an_inline_code_span_citing_a_gitignored_path_fires_unreachable_reference() {
+        // Symptom 1 of the defect this widening fixes: a bare mention
+        // like `` `.scratch/notes.md` `` is not markdown link syntax, so
+        // it never reached this check before — a reader still can't
+        // follow it.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", ".scratch/\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nSee `.scratch/notes.md` for background.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        let report = run(&dir);
+        let failures = only(&report, "unreachable-reference");
+        assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(failures[0].severity, Severity::Fail);
+    }
+
+    #[test]
+    fn an_ordinary_inline_code_span_never_fires_unreachable_reference() {
+        // The false-positive floor: `` `cargo test` `` is not path-shaped
+        // (no slash, dot, or anchor) — must stay silent.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", ".scratch/\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\nRun `cargo test` first.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        let report = run(&dir);
+        assert!(
+            only(&report, "unreachable-reference").is_empty(),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_genre_matched_nickel_contract_file_fires_unreachable_reference() {
+        // Symptom 2: `contracts/*.ncl` was outside the corpus entirely
+        // (genres match `.md` only, and claim/heading extraction cannot
+        // apply to Nickel). A corpus that declares it as its own genre
+        // (this project's stated resolution — see MVP.md) gets a
+        // backtick-only scan, wired all the way through to a real
+        // diagnostic.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", ".ledger/\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "contracts/*.ncl", kinds = [], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "contracts/x.ncl",
+            "# see `.ledger/2026-01-01-notes.md` for the decision\n",
+        );
+        let report = run(&dir);
+        let failures = only(&report, "unreachable-reference");
+        assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(failures[0].file, "contracts/x.ncl");
+    }
+
+    #[test]
     fn a_link_to_an_ordinary_tracked_path_does_not_fire_unreachable_reference() {
         let dir = tempdir();
         dir.git_init();

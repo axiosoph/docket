@@ -544,10 +544,8 @@ directory (`.ledger`, `.scratch`, or any project-specific ignore rule)
 resolves for its author, for a reviewer in the same worktree, and for
 every check that runs where the author sits — and resolves to nothing
 for every other reader of the repository, which is everyone the document
-was written for
-(`.ledger/2026-08-05-references-that-leave-the-register.md`, O4's
-"unreachable" condition, distinct from C4's "dangles": the target is
-present, only unreachable). `Fail` severity, not `Warn`: unlike
+was written for — distinct from C4's "dangles": the target is present,
+only unreachable. `Fail` severity, not `Warn`: unlike
 `unregistered-definition`/`malformed-id`, a real corpus is not expected
 to carry any of these on the day this check ships — an unreachable
 reference is wrong the moment it is written, with the same cheap,
@@ -567,14 +565,88 @@ repository, or an environment with no `git` on `PATH`, degrades to
 silence rather than a false verdict or a crash — there is no
 reader-reachability question to answer without a repository to ask.
 
+**What counts as a reference — widened past markdown link syntax.** A
+reference is a pointer a reader cannot follow whether or not it happens
+to use `[text](href)` syntax: a bare, backtick-quoted path inside a
+sentence is exactly as unreachable as the same path written as a link,
+and this project's own corpus carried real instances of the former that
+the check could not see for its own first day of existence. The line
+drawn, exactly: **a backtick-delimited span whose content is path-shaped
+is in scope; arbitrary prose merely mentioning a directory name is
+not** — a bare, backtick-quoted path is checked, "see the recorder
+directory" in plain prose is not, because the backtick marks the
+author's own intent to write something literal (a path, a filename),
+the same signal an inline code span already carries for every other
+purpose in this tool. A code-span reference resolves **corpus-root-relative
+directly**, never against the citing file's own directory the way a
+markdown href does (§1.3): real citations are written identically
+regardless of which file cites them — a nested-directory file cites the
+recorder without any relative-path prefix, the same way a corpus-root
+file does — which only makes sense under root-relative reading —
+resolving it the way a markdown href
+resolves would silently check the wrong, always-nonexistent path for
+every citer outside the corpus root. A leading `/` in a code-span
+reference means the same thing it means for a markdown href (root
+already), and is stripped before resolving rather than handed to `git`
+literally, which reads a leading `/` as an OS-absolute path attempt.
+Never consulted by `dangling-reference`/C5: an inline code span is not a
+link, and treating one as a resolvable target for those checks would
+fire on every incidental `` `docs/x.md` `` mention that was never meant
+as a citation.
+
+**Which files this check covers.** Every genre-matched markdown document,
+as always — plus, now, any OTHER genre-matched file too, scanned only for
+backtick-delimited code-span references (never for claims or headings,
+which cannot live outside markdown). A corpus opts a non-markdown path
+pattern in exactly the way it opts any markdown path pattern: by
+declaring it a genre in `docket.ncl` (`kinds = []`, since no claim block
+can live there). This project's own `docket.ncl` declares
+`contracts/*.ncl` this way: docket's bundled Nickel contracts are its
+normative SPECIFICATION layer (§7: "Nickel is required for the
+contract"), continuous with MVP.md as documentation a reader consults to
+understand the tool, not mere implementation. The non-markdown scan is a
+**lexical, line-by-line backtick scan** (`gitignore::find_backtick_references`),
+not a language-aware comment parser — Nickel has no backtick syntax of
+its own (strings are `"…"` or `m%"…"%m`), so in a well-formed `.ncl` file
+every backtick pair this scan finds sits inside a `#` comment in
+practice; a file that put a literal backtick inside a string would be
+invisible to (or misread by) this scan, the same class of stated
+limitation §4.3's absence search already carries for string and raw
+literals it does not track.
+
+**Deliberately out of scope: other project source (`src/*.rs` and
+similar).** Rust module and inline doc comments in this very codebase
+also cite the recorder's decision records — more of them, in fact, than
+markdown and Nickel combined. Extending the same backtick scan there is
+architecturally possible (the mechanism is generic) but is NOT done here:
+it was flagged as an open decision rather than made unilaterally, because
+whether an implementation comment citing its own design rationale is the
+same kind of "documentation a stranger must be able to read whole" as a
+spec file is a real, debatable question, and answering it commits a
+whole codebase's comment convention, not one check's file list. A
+corpus MAY choose to bring its own source under this scan the same way
+`contracts/*.ncl` was — declare it a genre — once that question has an
+owner.
+
+**A robustness finding surfaced by this widening, worth stating plainly:**
+`git check-ignore --stdin` does not skip a candidate path it treats as an
+invalid pathspec (a bare `/`, `..`, or a leading `//`) the way it skips
+an ordinary non-ignored one — it fatals the whole batch and stops reading
+further candidates, discarding every real match queued alongside the bad
+one. A real corpus's own prose discussing its own leading-`/` convention
+in an inline code span hit exactly this, silently zeroing an otherwise-
+correct result. The fix (`gitignore::ignored_paths`) falls back to
+querying one candidate at a time whenever the batch fatals, recovering
+every real match around the bad one rather than requiring every possible
+pathological string to be enumerated and pre-filtered by hand.
+
 **`dangling-reference`, links are a document's facts, not only a
 claim's.** §1.1's link surface (a claim's prose scope, C5's `L`) is
 collected and satisfies a declaration at that scope on purpose — a
 declared reference is a promise that a reader following the *claim's own
 prose* meets the citation, and a link elsewhere in the document must
-never discharge that promise
-(`.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`).
-But a document's links are a wider set than any claim's scope: a genre
+never discharge that promise. But a document's links are a wider set
+than any claim's scope: a genre
 that permits no claim blocks at all (a how-to guide, `kinds = []`) still
 points at things, and before this check, those links were extracted and
 then went nowhere — not resolved, not reported, invisible to every check
@@ -616,9 +688,8 @@ already performs, extended in scope rather than in kind.
 **`absent-marker-stale`, derived from the marker scan, not a sixth
 numbered check.** §4.3 adds `evaluator: absent` — a claim discharged by
 confirming a named literal is absent from the corpus's non-documentation
-source, not by evidence that something holds
-(`.ledger/2026-08-05-references-that-leave-the-register.md`, O3). Its
-marker pairs the claim to the exact literal, wherever in the document
+source, not by evidence that something holds. Its marker pairs the claim
+to the exact literal, wherever in the document
 the author marked it; this check catches the marker and the prose it
 sits beside falling out of step — a marker naming a literal no code span
 in that claim's own prose currently mentions. `Warn` severity, like
@@ -876,11 +947,10 @@ recognized success; a command whose output matches no known shape is
 **`evaluator: absent` — the marker's text is a literal, not a
 command.** For every other evaluator, a marker's text after `::` is
 `sh -c`'d. For `absent` it is instead searched for, verbatim, across the
-corpus's non-documentation source
-(`.ledger/2026-08-05-references-that-leave-the-register.md`, O3: a
-document stating something does NOT exist is a reference too, and it
-breaks in the opposite direction — when its target *appears*). Found ⇒
-`fail`; not found ⇒ `pass`. No new marker syntax: the claim's own
+corpus's non-documentation source — a document stating something does
+NOT exist is a reference too, and it breaks in the opposite direction
+(when its target *appears*). Found ⇒ `fail`; not found ⇒ `pass`. No new
+marker syntax: the claim's own
 `evaluator: absent` field is what tells the runner to interpret the
 marker's text this way, so the grammar in "Evaluator markers," above, is
 unchanged.
@@ -900,8 +970,9 @@ The search excludes documentation (`.md` — the claim's own document
 necessarily names the literal to describe its absence, so including it
 would make every absence claim fail immediately), a recognized test
 path (a `test`/`tests` path component), and any path `git` would not
-track (`target/`, `node_modules/`, and the like) — build output and
-vendored dependencies are not corpus source, and a hit inside one is
+track (a build directory, a vendored dependency tree, and the like) —
+build output and vendored dependencies are not corpus source, and a hit
+inside one is
 neither fixable at the marker nor reproducible machine to machine, since
 the verdict would then depend on whether a build had happened to run.
 A recognized language's comments are stripped before matching (`//`- and

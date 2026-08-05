@@ -56,6 +56,8 @@ called out below.
 | `unregistered-definition/` | `unregistered-definition` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition with no `claim` block, plus one registered heading-form definition for contrast. Exits **0** — `Warn` severity, the coverage count. |
 | `malformed-id/` | `malformed-id` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition whose id fails the kebab-case grammar (both the real-corpus shape: an otherwise-kebab id with one stray uppercase segment), a bracketed-but-multi-word false positive that must not fire, and one registered heading-form definition for contrast. Exits **0** — `Warn` severity, never blocking. |
 | `unreachable-reference/` | `unreachable-reference` (`Fail`) | See below. `docs/specs/a.md`'s claim `[unreachable-target]` links `../../.scratch/notes.md` in prose; the fixture's own `.gitignore` marks `.scratch/` ignored. Exits **1**. |
+| `unreachable-reference-code-span/` | `unreachable-reference` (`Fail`) | See below. Isolates the widened reference notion: a bare `` `.scratch/notes.md` `` mention in an inline code span, not markdown link syntax. Exits **1**. |
+| `unreachable-reference-non-markdown-genre/` | `unreachable-reference` (`Fail`) | See below. Isolates the widened file surface: a corpus-declared non-`.md` genre (`contracts/*.ncl`) gets a backtick-only scan. Exits **1**. |
 | `dangling-reference/` | `dangling-reference` (`Warn`) | See below. `docs/guides/a.md` carries **no claim block at all** — a how-to genre permits none — and links `does-not-exist`, which resolves to nothing. Isolates the capability `bare-reference-no-failure/` cannot: a document with zero claims still has its links resolved. Exits **0**. |
 | `heading-slug-genuinely-missing-still-dangles/` | `dangling-reference` (`Warn`) | See below. The false-positive floor for heading-slug resolution: a link into a real, existing document, naming a heading number that document never had. Proves slug resolution didn't get *loose* alongside the fix that made real slugs resolve. |
 | `heading-slug-near-miss-still-dangles/` | `dangling-reference` (`Warn`) | See below. A link whose anchor differs from a real heading's real slug by exactly one character. Same floor as the fixture above, at the tightest possible margin. |
@@ -162,8 +164,7 @@ a `dangling-reference` finding, the weakest of the three.
   prose links to `nonexistent-target`, which resolves to nothing in the
   corpus. `docket check --corpus fixtures/bare-reference-no-failure` exits
   **0** with exactly one `dangling-reference` warning — not a `C4`/`C5`
-  finding, not a failure. This is the noise-suppression property, refined
-  by `.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`:
+  finding, not a failure. This is the noise-suppression property:
   an undeclared prose link is a bare reference by construction (nothing
   marks it as one; the absence of a `depends`/`because` entry *is* the
   marking), so its target missing never breaks a claim — but it is no
@@ -377,8 +378,7 @@ the other seven above — the `run` outcomes are a distinct code path
 Isolates `absent-marker-stale` (`src/absence.rs`'s `find_stale_markers`,
 `register.ncl`): `[no-retry-header]`'s marker still names `Retry-After`,
 but the surrounding prose was rewritten to no longer carry it as a code
-span — the drift the check exists to catch
-(`.ledger/2026-08-05-references-that-leave-the-register.md`, O3).
+span — the drift the check exists to catch.
 `docket check --corpus fixtures/absent-marker-stale` reports one `warn`
 diagnostic naming the claim id and the stale literal, and exits **0** —
 `Warn` severity, like `unregistered-definition`/`malformed-id`: this
@@ -524,11 +524,11 @@ files were scanned.
 
 ## `malformed-id/`
 
-`.ledger/2026-08-04-malformed-ids-are-silently-invisible.md`: a bracketed
-token that satisfies every *structural* property of a definition — line
-start, the wrapper, immediately-following punctuation for bold form; the
-whole heading text for heading form — but whose inner content fails the
-lowercase-kebab grammar was previously invisible to every check at once:
+A bracketed token that satisfies every *structural* property of a
+definition — line start, the wrapper, immediately-following punctuation
+for bold form; the whole heading text for heading form — but whose
+inner content fails the lowercase-kebab grammar was previously
+invisible to every check at once:
 not a claim, not `unregistered-definition`, not anything. Reported now as
 `malformed-id` (`Warn` severity, same treatment as
 `unregistered-definition`), under its own diagnostic because the remedy
@@ -560,10 +560,9 @@ definition to begin with.
 
 ## `unreachable-reference/`
 
-`.ledger/2026-08-05-references-that-leave-the-register.md`, O4: a
-reference whose target *exists* but sits somewhere the reader cannot go
-— a gitignored working directory, distinct from a dangling reference
-(`C4`, target absent entirely). `Fail` severity, unlike
+O4: a reference whose target *exists* but sits somewhere the reader
+cannot go — a gitignored working directory, distinct from a dangling
+reference (`C4`, target absent entirely). `Fail` severity, unlike
 `unregistered-definition`/`malformed-id`: an unreachable reference has no
 grace period the way an unregistered definition does (a real corpus is
 not expected to carry any on the day this check ships), and the head's
@@ -620,10 +619,61 @@ question this check can answer at all
 `gitignore::tests::a_missing_git_binary_degrades_to_silence_rather_than_a_crash`,
 `checks::tests::a_corpus_that_is_not_a_git_repository_never_fires_unreachable_reference`).
 
+## `unreachable-reference-code-span/` and `unreachable-reference-non-markdown-genre/`
+
+The widened boundary MVP.md's `unreachable-reference` section now states:
+a reference is a pointer a reader cannot follow whether or not it uses
+markdown link syntax, and it can live in a genre-matched file that isn't
+markdown at all. Discovered on docket's own corpus, not hypothetically —
+`docket check --corpus .` reported **zero** `unreachable-reference`
+findings before this fix despite 13 real recorder citations sitting
+in `MVP.md`, `contracts/register.ncl`, and `contracts/claim.ncl` (since
+fixed by cutting the dead citations; see the campaign's own history for
+the before/after).
+
+- **`unreachable-reference-code-span/`** — `docs/specs/a.md`'s claim
+  `[unreachable-target]` mentions `` `.scratch/notes.md` `` in an
+  **inline code span**, never as a markdown link. Before this fix, only
+  `[text](href)` syntax was ever resolved, so this exact citation was
+  invisible. `docket check --corpus fixtures/unreachable-reference-code-span`
+  exits **1** with one `unreachable-reference` failure. Removing the
+  backticks (leaving the bare words in ordinary prose, verified by hand,
+  not committed) restores a clean exit — proving the fixture isolates
+  code-span detection specifically, not some other path to the same
+  diagnostic.
+- **`unreachable-reference-non-markdown-genre/`** — `docket.ncl` declares
+  `contracts/*.ncl` as its own genre (`kinds = []`, mirroring docket's own
+  configuration for its bundled Nickel contracts); `contracts/x.ncl`
+  cites a bare, backtick-quoted recorder path in a `#` comment. No claim
+  block could ever live in a `.ncl` file, so this fixture isolates the
+  narrower pass a non-markdown genre-matched file gets: a lexical
+  backtick scan (`gitignore::find_backtick_references`), never full
+  claim/heading extraction. `docket check --corpus
+  fixtures/unreachable-reference-non-markdown-genre` exits **1** with one
+  `unreachable-reference` failure naming `contracts/x.ncl`.
+
+**The false-positive floor for both** is pinned in `checks::tests`
+(`an_ordinary_inline_code_span_never_fires_unreachable_reference`) rather
+than as a third fixture: an ordinary `` `cargo test` `` span is not
+path-shaped (no slash, dot, or anchor) and stays silent, the same
+boundary `unreachable-reference/`'s own claim-id exclusion already draws
+for markdown links.
+
+**A batching robustness defect this widening surfaced**, pinned directly
+in `gitignore::tests`
+(`a_fatal_candidate_falls_back_to_recovering_every_other_one`): `git
+check-ignore --stdin` fatals its entire batch on a candidate it treats as
+an invalid pathspec (`/`, `..`, a leading `//`) rather than skipping it —
+this project's OWN prose discussing its leading-`/` convention in an
+inline code span hit this directly, silently zeroing every real finding
+in the same batch. `gitignore::ignored_paths` now falls back to querying
+one candidate at a time whenever a batch fatals, recovering every real
+match instead of requiring every pathological string shape to be
+enumerated by hand.
+
 ## `dangling-reference/`
 
-`.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`:
-links are collected and resolved per **document**, not only within a
+Links are collected and resolved per **document**, not only within a
 claim's C5 prose-link scope. Before this, a document with no claims had
 no scope to collect a link into at all — its links were extracted and
 then went nowhere, not even reported. `Warn` severity, like
