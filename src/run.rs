@@ -60,6 +60,22 @@
 //!   for an evaluator kind the table has no recognizer for, never a
 //!   silent default.
 //!
+//! **A bare marker (`marker.rs`'s "The bare form") is evidence only for a
+//! `type`-graded claim.** `type` is discharged by a marked item's
+//! existence, not by running anything — the marker's own presence is the
+//! full check this runner can make (README.md, "Where type-discharge's
+//! honesty limit sits": the machine confirms the marked item exists,
+//! never that it enforces what the claim says — that half stays
+//! review-established). So a bare marker on a `type`-graded claim is
+//! `Pass` on sight, no command spawned. Every other mechanical grade
+//! promises evidence a command produces, and a bare marker has no command
+//! to offer it — so for those grades a bare marker is filtered out before
+//! it is even considered a match, and a claim backed only by bare
+//! markers reports `Absent` exactly as if nothing had been written. No
+//! sixth outcome for this: the fix is "add a command," which is what
+//! `Absent` already tells a reader to do (see [`run_claim`]'s doc
+//! comment, and the sigil-migration precedent it follows).
+//!
 //! Absent and fail are kept structurally distinct rather than folded
 //! into one "not discharged" result, per the dispatch: "a wrong grade
 //! costs a code re-read to fix" and the two diagnoses send a reader in
@@ -225,13 +241,20 @@ fn detect_vacuity(stdout: &str) -> Option<&'static str> {
     })
 }
 
-/// One marker's command, executed and captured.
+/// One marker, resolved: a commanded marker's command executed and
+/// captured, or a bare marker taken as located (see [`run_claim`]'s "bare
+/// marker" handling — reachable only when this outcome's `marker.command`
+/// is `None`, which by construction means the claim's evaluator is
+/// `type`).
 #[derive(Debug, Clone)]
 pub struct MarkerOutcome {
     pub marker: Marker,
     pub success: bool,
     /// `None` when the process was killed by a signal rather than
-    /// exiting — `std::process::ExitStatus::code()`'s own contract.
+    /// exiting (`std::process::ExitStatus::code()`'s own contract), or
+    /// when `marker.command` is `None` — a bare marker has no process to
+    /// report a code for. `success` disambiguates the two: a bare marker
+    /// is always `success: true`.
     pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
@@ -307,7 +330,23 @@ pub fn run_claim(
         });
     }
 
-    let matching: Vec<&Marker> = markers.iter().filter(|m| m.id == claim.id).collect();
+    // A bare marker (no `:: <command>`, marker.rs) is evidence only for a
+    // `type`-graded claim — `type` is discharged by the marked item's
+    // existence, and locating that marker *is* the check (module docs).
+    // For every other grade the claim promises evidence a command
+    // produces, which a bare marker cannot offer, so it is filtered out
+    // here rather than reaching the loop below: a claim backed only by
+    // bare markers then falls straight through to `Absent`, the same
+    // outcome a claim with no marker at all gets — deliberately no
+    // separate diagnostic (module docs, and the sigil-migration
+    // precedent it follows: `Absent` already means "write the marker,"
+    // and adding a command to an existing bare one is that fix).
+    let type_grade = evaluator == "type";
+    let matching: Vec<&Marker> = markers
+        .iter()
+        .filter(|m| m.id == claim.id)
+        .filter(|m| type_grade || m.command.is_some())
+        .collect();
     if matching.is_empty() {
         return Ok(RunResult {
             claim_id: claim.id.clone(),
@@ -319,6 +358,24 @@ pub fn run_claim(
 
     let mut outcomes = Vec::with_capacity(matching.len());
     for m in matching {
+        let Some(command) = &m.command else {
+            // Bare marker on a `type`-graded claim (the only way it
+            // reached this loop, by the filter above): nothing to run,
+            // nothing to diagnose. The marker's presence in the scan is
+            // the entire check — nothing here can also confirm the type
+            // enforces what the claim says, which stays review-established
+            // (README.md, "Where type-discharge's honesty limit sits").
+            outcomes.push(MarkerOutcome {
+                marker: m.clone(),
+                success: true,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                vacuous: None,
+            });
+            continue;
+        };
+
         // A shell, not a direct exec: a marker's command is free-form
         // (pipes, `--` flags, shell-quoted arguments an author wrote by
         // hand) exactly because it is meant to be whatever its author
@@ -326,7 +383,7 @@ pub fn run_claim(
         // pre-tokenized argv this crate would have to parse.
         let output = Command::new("sh")
             .arg("-c")
-            .arg(&m.command)
+            .arg(command)
             .current_dir(corpus_root)
             .output()
             .map_err(RunError::Spawn)?;
@@ -393,7 +450,7 @@ mod tests {
     fn marker(id: &str, command: &str) -> Marker {
         Marker {
             id: id.to_string(),
-            command: command.to_string(),
+            command: Some(command.to_string()),
             file: "src/lib.rs".to_string(),
             line: Line(1),
             exempt: false,
@@ -404,6 +461,16 @@ mod tests {
         Marker {
             exempt: true,
             ..marker(id, command)
+        }
+    }
+
+    fn bare_marker(id: &str) -> Marker {
+        Marker {
+            id: id.to_string(),
+            command: None,
+            file: "src/lib.rs".to_string(),
+            line: Line(1),
+            exempt: false,
         }
     }
 
@@ -636,5 +703,63 @@ mod tests {
         let markers = vec![marker("x", "echo 'some other tool, all clear'")];
         let result = run_claim(&corpus, "x", Path::new("."), &markers).unwrap();
         assert_eq!(result.outcome, Outcome::Pass);
+    }
+
+    // --- bare markers (marker.rs's "The bare form") -----------------------
+
+    #[test]
+    fn a_bare_marker_passes_a_type_graded_claim_without_spawning_anything() {
+        let corpus = corpus_with("### [x]\n\n```claim\nkind: constraint\nevaluator: type\n```\n");
+        let markers = vec![bare_marker("x")];
+        let result = run_claim(&corpus, "x", Path::new("."), &markers).unwrap();
+        assert_eq!(result.outcome, Outcome::Pass);
+        assert_eq!(result.markers.len(), 1);
+        assert!(result.markers[0].success);
+        assert_eq!(result.markers[0].exit_code, None);
+        assert_eq!(result.markers[0].vacuous, None);
+    }
+
+    #[test]
+    fn a_bare_marker_on_a_non_type_grade_is_ignored_and_reports_absent() {
+        // The claim promises evidence a command produces (`test`); a bare
+        // marker cannot offer that, so it does not count as a match at
+        // all — the claim reports exactly what it would with no marker
+        // written for it.
+        let corpus = corpus_with("### [x]\n\n```claim\nkind: constraint\nevaluator: test\n```\n");
+        let markers = vec![bare_marker("x")];
+        let result = run_claim(&corpus, "x", Path::new("."), &markers).unwrap();
+        assert_eq!(result.outcome, Outcome::Absent);
+        assert!(result.markers.is_empty());
+    }
+
+    #[test]
+    fn a_type_graded_claim_can_mix_a_bare_marker_with_a_commanded_one() {
+        // An author can still attach a runnable check (e.g. a build
+        // sanity command) alongside the bare existence marker — both
+        // must hold for the claim to pass, same all-of-them reading as
+        // any other multi-marker claim.
+        let corpus = corpus_with("### [x]\n\n```claim\nkind: constraint\nevaluator: type\n```\n");
+        let markers = vec![bare_marker("x"), marker("x", "true")];
+        let result = run_claim(&corpus, "x", Path::new("."), &markers).unwrap();
+        assert_eq!(result.outcome, Outcome::Pass);
+        assert_eq!(result.markers.len(), 2);
+    }
+
+    #[test]
+    fn a_type_graded_claim_still_fails_if_its_commanded_marker_fails() {
+        // The bare marker's automatic success must not rescue a
+        // companion commanded marker that genuinely fails.
+        let corpus = corpus_with("### [x]\n\n```claim\nkind: constraint\nevaluator: type\n```\n");
+        let markers = vec![bare_marker("x"), marker("x", "false")];
+        let result = run_claim(&corpus, "x", Path::new("."), &markers).unwrap();
+        assert_eq!(result.outcome, Outcome::Fail);
+    }
+
+    #[test]
+    fn a_bare_marker_for_a_different_claim_id_does_not_match() {
+        let corpus = corpus_with("### [x]\n\n```claim\nkind: constraint\nevaluator: type\n```\n");
+        let markers = vec![bare_marker("y")];
+        let result = run_claim(&corpus, "x", Path::new("."), &markers).unwrap();
+        assert_eq!(result.outcome, Outcome::Absent);
     }
 }
