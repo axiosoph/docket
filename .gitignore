@@ -1,1 +1,5 @@
 /target
+
+# The recorder is its own repository — never part of this one, and never
+# referenced from committed documentation.
+.ledger/

@@ -11,7 +11,7 @@
 // two-block output rather than invoking a real `cargo test` — see
 // `run-vacuous-missing/` for why (this fixture carries no `Cargo.toml`
 // of its own, fixtures/MANIFEST.md).
-// docket: multi-block-target :: printf 'running 3 tests\ntest tests::a ... ok\ntest tests::b ... ok\ntest tests::c ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n'
+// @docket: multi-block-target :: printf 'running 3 tests\ntest tests::a ... ok\ntest tests::b ... ok\ntest tests::c ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n'
 
 #[test]
 fn a() {}
