@@ -679,13 +679,19 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
             Event::Code(t) => {
                 // Inline code spans occur only in inline (heading/prose)
                 // context; a fenced block's content is Text, never Code.
+                // A heading's own code span feeds only the heading's own
+                // text, never `raw_codes` (`RawCode`'s doc comment): a
+                // literal that appears solely inside a sub-heading within
+                // a claim's scope is not prose mentioning it, so it must
+                // not silence `absent-marker-stale` for that literal.
                 if let Some((_, _, _, ref mut text)) = cur_heading {
                     text.push_str(&t);
+                } else {
+                    raw_codes.push(RawCode {
+                        start: range.start,
+                        text: t.to_string(),
+                    });
                 }
-                raw_codes.push(RawCode {
-                    start: range.start,
-                    text: t.to_string(),
-                });
             }
             Event::SoftBreak | Event::HardBreak => {
                 if let Some((_, _, _, ref mut text)) = cur_heading {
@@ -1028,6 +1034,22 @@ mod tests {
         let res = extract_document("docs/specs/x.md", src);
         let claim_b = res.claims.iter().find(|c| c.id == "b").unwrap();
         assert_eq!(claim_b.prose_code, vec!["code-b"]);
+    }
+
+    #[test]
+    fn prose_code_excludes_a_code_span_living_inside_a_sub_heading() {
+        // A sub-heading sits within its parent claim's scope (only a
+        // same-or-higher-level heading ends it), but a code span inside
+        // the sub-heading's own text is not prose *about* the claim —
+        // it must not silence `absent-marker-stale` for a literal that
+        // never actually appears in the claim's prose body.
+        let src = "### [x]\n\nThe old note about it is gone now.\n\n#### `Retry-After` (historical)\n\nSome detail.\n\n```claim\nkind: constraint\nevaluator: absent\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(
+            res.claims[0].prose_code.is_empty(),
+            "{:?}",
+            res.claims[0].prose_code
+        );
     }
 
     #[test]
