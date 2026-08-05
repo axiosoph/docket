@@ -32,6 +32,15 @@
 //!    handles is either the caller's own `old_id`/`new_id` argument or a
 //!    byte-for-byte substring the extractor located — nothing here ever
 //!    invents or reshapes one.
+//! 8. **Refuse rather than orphan an evaluator marker.** An `@docket:`
+//!    marker (marker.rs) is not one of the reference kinds §1.2/§1.3
+//!    define — it lives outside the corpus and is resolved by a wholly
+//!    separate scan — so it is out of reach of every primitive above.
+//!    [`marker_sites_naming`] finds every marker naming `old_id`, and
+//!    `old_id` resolving to a claim with at least one is refused before
+//!    any edit is computed, per the head's ruling that a corpus-side
+//!    rename must never leave `docket run <new_id>` reporting `absent`
+//!    while `docket check` stays green.
 
 use crate::checks::{self, Diagnostic, RegisterError, RegisterResult};
 use crate::config::Config;
@@ -46,6 +55,15 @@ use std::path::Path;
 pub enum RenameError {
     #[error("no claim with id {0:?} in this corpus")]
     UnknownSourceId(String),
+    #[error(
+        "{old_id:?} is named by {count} `@docket:` evaluator marker(s) — rename refuses to orphan them (a marker lives outside the corpus `check` resolves, so `docket check` would still exit 0 after the break):\n{sites}\nUpdate each site's `@docket: {old_id}` to `@docket: {new_id}` by hand, then rename again."
+    )]
+    MarkerSitesRemain {
+        old_id: String,
+        new_id: String,
+        count: usize,
+        sites: String,
+    },
     #[error(
         "{new_id:?} is not a well-formed claim id (lowercase kebab-case, e.g. \"lock-groundness\")"
     )]
@@ -117,6 +135,19 @@ impl RenamePlan {
     pub fn total_edits(&self) -> usize {
         self.changes.values().map(|c| c.edit_count).sum()
     }
+}
+
+/// Every `@docket:` marker (marker.rs) naming `old_id`, as `file:line` —
+/// `scan_markers` already returns markers sorted by `(file, line)`, so
+/// this preserves that order rather than re-sorting. Named exhaustively,
+/// not just the first: a refusal that under-reports sites would be the
+/// same silent-partiality defect the refusal exists to prevent.
+fn marker_sites_naming(markers: &[Marker], old_id: &str) -> Vec<String> {
+    markers
+        .iter()
+        .filter(|m| m.id == old_id)
+        .map(|m| format!("{}:{}", m.file, m.line))
+        .collect()
 }
 
 /// Apply every `sites` edit to `source`, replacing each with `new_id`'s
@@ -400,6 +431,30 @@ pub fn plan_rename(
 
     if loaded.corpus.claims.iter().all(|c| c.id != old_id) {
         return Err(RenameError::UnknownSourceId(old_id.to_string()));
+    }
+
+    // A marker is not one of the reference kinds §1.2/§1.3 define — it
+    // lives outside the corpus, resolved by a wholly separate scan
+    // (marker.rs), and `apply_edits`' only primitive is a byte-exact
+    // rewrite of a corpus-recognized reference span. So this cannot be
+    // fixed by teaching rename to also edit markers (MVP.md §4.5's own
+    // ruling on the point): a renamed claim whose marker still names
+    // `old_id` would evidence-drop silently — `docket check` sees no
+    // citation graph over markers at all, so it stays green while
+    // `docket run <new_id>` reports `absent`. Refuse instead, and name
+    // every site so the fix is two steps, not a search.
+    let marker_sites = marker_sites_naming(markers, old_id);
+    if !marker_sites.is_empty() {
+        return Err(RenameError::MarkerSitesRemain {
+            old_id: old_id.to_string(),
+            new_id: new_id.to_string(),
+            count: marker_sites.len(),
+            sites: marker_sites
+                .iter()
+                .map(|s| format!("  {s}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        });
     }
 
     if !model::is_valid_claim_id(new_id) {
@@ -790,7 +845,9 @@ mod tests {
             "old-id",
             "new-id",
         )
-        .expect("rename plan succeeds; the orphaned-because warning must not look like a divergence");
+        .expect(
+            "rename plan succeeds; the orphaned-because warning must not look like a divergence",
+        );
         write_changes(dir.path(), &plan).unwrap();
         assert!(dir.read("docs/a.md").contains("### [new-id]"));
     }

@@ -1434,24 +1434,42 @@ never carries, and the anchor form's prose scope depends on `prose_code`
 that isn't in the index either). Disk is touched only if that comparison
 finds no divergence; a divergence is reported and nothing is written.
 
-**`rename` never touches an `@docket:` evaluator marker (§4.3).** A
-marker is not one of the reference kinds §1.2/§1.3 define — it lives
-outside the documentation corpus entirely (any file in the tree, source
-code included) and is resolved by a wholly separate scan. Renaming a
-claim id whose evaluator marker names it by that same string will leave
-the marker pointing at the old id; the corpus-side rename itself stays
-correct (the register's citation graph never includes markers), but
-`docket run <new-id>` will report `absent` until the marker is updated by
-hand. Out of this command's scope, not an oversight — the same boundary
-`git checkout .`-as-undo already draws between "documents `rename` may
-edit" and "everything else."
+**`rename` refuses rather than orphan an `@docket:` evaluator marker
+(§4.3).** A marker is not one of the reference kinds §1.2/§1.3 define —
+it lives outside the documentation corpus entirely (any file in the
+tree, source code included) and is resolved by a wholly separate scan.
+Renaming a claim id whose evaluator marker names it by that same string
+would leave the marker pointing at the old id: the corpus-side rename
+itself would stay correct (the register's citation graph never includes
+markers, so `docket check` would still exit 0), but `docket run
+<new-id>` would silently start reporting `absent` — indistinguishable
+from "nobody ever wrote the marker" — until the marker was found and
+updated by hand. That was tried as an accepted boundary and rejected: a
+break `docket check` cannot see is not an acceptable cost of a corpus
+rename, so `rename` instead refuses whenever `<old-id>` is still named
+by at least one marker anywhere in the corpus, naming every site
+(`file:line`) in the refusal so the fix is a two-step workflow rather
+than a search — `rename` refuses, the human updates each named marker to
+the new id by hand, `rename` succeeds. Teaching `rename` to update
+markers itself was considered and rejected too: a marker's resolution is
+a separate scan over arbitrary source, outside the byte-exact corpus
+edits `rename`'s writer primitive can express ("Closed by construction,"
+above), and widening the tool's first write path to reach outside the
+corpus is exactly the exposure this command's one-id blast radius was
+sequenced to avoid. **This generalizes beyond `rename`:** any future
+write path that changes a claim id (a bulk `docket migrate`, most
+obviously) inherits the same gap and the same rule — refuse on a marker
+match, name every site, never guess — rather than re-deciding it.
 
-**Refuses rather than guesses**, in four cases:
+**Refuses rather than guesses**, in five cases:
 
 - `<old-id>` does not resolve to a claim anywhere in the corpus — most
   likely a typo; silently succeeding on a no-op would be this project's
   own dominant failure mode again ("References are typed," above), so
   this is a usage error, not a legitimate empty rename.
+- `<old-id>` is still named by at least one `@docket:` evaluator marker
+  anywhere in the corpus — see above. The refusal names every marker
+  site, not just the first.
 - `<new-id>` is not well-formed (§1.1's kebab-case grammar) — never
   normalized, only reported; `rename` places and renames ids, it does
   not invent or reshape one (this document's own writing convention,
@@ -1477,9 +1495,10 @@ to it — the same [reference syntax](reference-syntax) every other check
 in this document resolves against — computed and verified against an
 in-memory copy of the register before anything is written; `--write` is
 required to apply the plan to disk, and a dirty working tree, an unknown
-`old-id`, a malformed `new-id`, an already-taken `new-id`, or a post-edit
-divergence from the verified plan each refuse rather than write a partial
-or guessed result.
+`old-id`, an `old-id` still named by an `@docket:` evaluator marker, a
+malformed `new-id`, an already-taken `new-id`, or a post-edit divergence
+from the verified plan each refuse rather than write a partial or
+guessed result.
 
 ```claim
 kind: constraint

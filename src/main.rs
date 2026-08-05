@@ -86,7 +86,11 @@ enum Command {
     /// Prints the plan and makes no changes unless `--write` is given.
     /// Every edit is computed, applied to in-memory copies, and verified
     /// against the register before anything reaches disk; a verification
-    /// failure writes nothing and reports the divergence.
+    /// failure writes nothing and reports the divergence. Refuses (with
+    /// every marker site named) if the id is still named by an
+    /// `@docket:` evaluator marker anywhere in the corpus — a marker
+    /// lives outside the reference kinds `rename` can edit, and leaving
+    /// one pointing at the old id would break `docket run` silently.
     Rename {
         /// The claim id to rename.
         old_id: String,
