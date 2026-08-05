@@ -51,6 +51,7 @@ called out below.
 | `c2-duplicate-across-forms/` | `C2` | `docs/specs/a.md` declares `[dup-across-forms]` in heading form, `docs/specs/b.md` declares the same id in bold form. Proves a duplicate arising from two *different* recognizers is still one C2 finding pair, each naming the other's site. |
 | `unregistered-definition/` | `unregistered-definition` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition with no `claim` block, plus one registered heading-form definition for contrast. Exits **0** — `Warn` severity, the coverage count. |
 | `malformed-id/` | `malformed-id` (`Warn`) | See below. `docs/specs/a.md` carries one bold-form and one heading-form definition whose id fails the kebab-case grammar (both the real-corpus shape: an otherwise-kebab id with one stray uppercase segment), a bracketed-but-multi-word false positive that must not fire, and one registered heading-form definition for contrast. Exits **0** — `Warn` severity, never blocking. |
+| `unreachable-reference/` | `unreachable-reference` (`Fail`) | See below. `docs/specs/a.md`'s claim `[unreachable-target]` links `../../.scratch/notes.md` in prose; the fixture's own `.gitignore` marks `.scratch/` ignored. Exits **1**. |
 
 **`duplicate-stem/` is retired**, not just its row here. MVP.md §1.3 was
 amended once a real corpus produced three `README.md` files under one
@@ -451,6 +452,68 @@ offending id of each — never touching the index (`registered-claim` is
 the only entry) and never producing `unregistered-definition` for the
 two malformed sites, since a malformed id was never a recognized
 definition to begin with.
+
+## `unreachable-reference/`
+
+`.ledger/2026-08-05-references-that-leave-the-register.md`, O4: a
+reference whose target *exists* but sits somewhere the reader cannot go
+— a gitignored working directory, distinct from a dangling reference
+(`C4`, target absent entirely). `Fail` severity, unlike
+`unregistered-definition`/`malformed-id`: an unreachable reference has no
+grace period the way an unregistered definition does (a real corpus is
+not expected to carry any on the day this check ships), and the head's
+own ruling calls the underlying rule "not legal," the same weight C4's
+"this claim is broken" carries.
+
+`docs/specs/a.md`'s claim `[unreachable-target]` links
+`../../.scratch/notes.md` in its prose, resolving (relative to the citing
+file's own directory) to `.scratch/notes.md`; the fixture's own
+`.gitignore` marks `.scratch/` ignored, so `git check-ignore` reports it.
+The claim declares neither `depends` nor `because`, so nothing else in
+the corpus is capable of firing — `docket check --corpus
+fixtures/unreachable-reference` exits **1** with exactly one
+`unreachable-reference` failure naming the file, the line, the link as
+written, and the corpus-relative path it resolved to.
+
+**Scope boundary: "path-shaped."** Not every link is checked — a bare
+word with no `/`, no `.`, and no `#anchor` (e.g. `[see also](sibling-claim)`)
+reads as a claim-id citation, the same distinction `register.ncl`'s own
+`normalize_prose_link` already draws for C5, and is never resolved
+against `git` at all. A claim id is lowercase-kebab by grammar and can
+therefore never contain a `.`, which makes that split exact rather than
+a guess: `gitignore::tests::a_claim_id_shaped_bare_word_is_never_checked_even_if_it_would_match`
+pins a case where the bare word *is* a real, gitignored directory name
+and the check still stays silent, proving the boundary is applied before
+`git` is ever asked rather than merely never triggering it by
+coincidence. An href carrying a `#anchor` is always path-shaped
+regardless of slashes or dots — `model.rs`'s own `CiteRef` grammar never
+gives a claim id an anchor, so the presence of one is unambiguous.
+
+**Directional, not merely filtered.** The reverse — an ignored file
+linking into the repository — is legitimate ("only the author has
+that," per the head's ruling) and is not merely unchecked by a
+condition in `gitignore.rs`; it is structurally unreachable to this
+check, because `corpus::load_corpus`'s walk never visits a dotdir at
+all (`corpus::tests::skips_dotfiles_and_dotdirs`, unchanged by this
+feature). `checks::tests::a_reference_into_the_repository_from_outside_it_is_never_this_checks_concern`
+pins this directly: a gitignored document linking back into the corpus
+produces no diagnostic of any kind, because it is never scanned to
+begin with, not because its link happens to resolve to a tracked path.
+
+**Determining ignored-ness: `git check-ignore --stdin`, batched once per
+corpus.** Chosen over reimplementing `.gitignore` pattern matching for
+the same reason MVP.md §7 gives Nickel authority over its own contract
+language: git's own ignore semantics (nested `.gitignore` files, global
+excludes, `.git/info/exclude`) are exactly what determines whether a
+fresh clone would contain a path, and this check's whole point is
+answering that question, not approximating it. Degrades to **silence** —
+never a crash, never a false positive — when `corpus_root` is not inside
+a git working tree (exit 128) or `git` itself is not on `PATH` (a spawn
+error): a corpus with no git history to ask has no reader-reachability
+question this check can answer at all
+(`gitignore::tests::a_corpus_root_that_is_not_a_git_repository_degrades_to_silence`,
+`gitignore::tests::a_missing_git_binary_degrades_to_silence_rather_than_a_crash`,
+`checks::tests::a_corpus_that_is_not_a_git_repository_never_fires_unreachable_reference`).
 
 ## Judgment calls made while writing these fixtures
 

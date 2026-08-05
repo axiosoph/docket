@@ -64,6 +64,27 @@ pub struct MalformedId {
     pub id: String,
 }
 
+/// A markdown link found anywhere in a scanned document — the whole
+/// document's link surface, independent of any claim's prose scope.
+/// Deliberately a second, document-level collection alongside
+/// `Claim::prose_links`, not a repurposing of it:
+/// `.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`
+/// names moving `prose_links` itself to document scope as a larger,
+/// separate change (C5's claim-scoping stays load-bearing for C5); this
+/// struct exists so `unreachable-reference` (a check with no claim in
+/// view at all — a document with zero claims still has links) can see
+/// every link without touching that.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentLink {
+    pub file: String,
+    pub line: Line,
+    /// The raw href exactly as written. External URLs are already
+    /// excluded ([`is_external`]), the same filter `prose_links` applies —
+    /// a scheme-qualified target is never corpus-relative, so it is never
+    /// path-shaped for any consumer of this list.
+    pub dest: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ExtractResult {
     pub headings: Vec<Heading>,
@@ -72,6 +93,7 @@ pub struct ExtractResult {
     pub normative_occurrences: Vec<NormativeOccurrence>,
     pub unregistered_definitions: Vec<UnregisteredDefinition>,
     pub malformed_ids: Vec<MalformedId>,
+    pub links: Vec<DocumentLink>,
 }
 
 /// Byte-offset -> 1-indexed line number, built once per document.
@@ -825,6 +847,20 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
     malformed_ids.sort_by_key(|(start, _)| *start);
     let malformed_ids = malformed_ids.into_iter().map(|(_, m)| m).collect();
 
+    // The whole document's link surface (`unreachable-reference`), not
+    // scoped to any claim — a document with no claims at all still has
+    // links, and `prose_links` above only ever sees the ones inside a
+    // claim's own C5 window.
+    let links: Vec<DocumentLink> = raw_links
+        .iter()
+        .filter(|l| !is_external(&l.dest))
+        .map(|l| DocumentLink {
+            file: file.to_string(),
+            line: line_index.line_of(l.start),
+            dest: l.dest.clone(),
+        })
+        .collect();
+
     ExtractResult {
         headings,
         claims,
@@ -832,6 +868,7 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
         normative_occurrences,
         unregistered_definitions,
         malformed_ids,
+        links,
     }
 }
 

@@ -4,6 +4,7 @@
 
 use crate::config::{AmbiguousGenre, Config};
 use crate::extract::{self, MalformedId, NormativeOccurrence, OrphanClaim, UnregisteredDefinition};
+use crate::gitignore::{self, IgnoredReference};
 use crate::model::{Corpus, Document};
 use std::path::{Path, PathBuf};
 
@@ -42,6 +43,14 @@ pub struct LoadedCorpus {
     /// fails the id grammar — the `malformed-id` diagnostic. Collected
     /// corpus-wide the same way `orphan_claims` is.
     pub malformed_ids: Vec<MalformedId>,
+    /// Every tracked-document link that resolves to a path `git` would
+    /// not track — the `unreachable-reference` diagnostic
+    /// (`.ledger/2026-08-05-references-that-leave-the-register.md`, O4).
+    /// Computed here rather than in `checks.rs`/`register.ncl`: unlike
+    /// every other field on this struct, deciding this one is impure (it
+    /// asks `git`), so it belongs beside the rest of this module's I/O,
+    /// not downstream of it.
+    pub unreachable_references: Vec<IgnoredReference>,
 }
 
 /// Load every genre-matched file under `corpus_root`.
@@ -51,6 +60,7 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
     let mut normative_occurrences = Vec::new();
     let mut unregistered_definitions = Vec::new();
     let mut malformed_ids = Vec::new();
+    let mut links = Vec::new();
 
     for path in walk_files(corpus_root)? {
         let relative = path
@@ -103,7 +113,14 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
         normative_occurrences.extend(result.normative_occurrences);
         unregistered_definitions.extend(result.unregistered_definitions);
         malformed_ids.extend(result.malformed_ids);
+        links.extend(result.links);
     }
+
+    // One batched `git check-ignore` for the whole corpus's link surface
+    // — `gitignore::find_unreachable_references` is the only I/O this
+    // function performs beyond reading files and `git`'s own filesystem
+    // walk, and it needs every document's links gathered first.
+    let unreachable_references = gitignore::find_unreachable_references(corpus_root, &links);
 
     Ok(LoadedCorpus {
         corpus,
@@ -111,6 +128,7 @@ pub fn load_corpus(corpus_root: &Path, config: &Config) -> Result<LoadedCorpus, 
         normative_occurrences,
         unregistered_definitions,
         malformed_ids,
+        unreachable_references,
     })
 }
 
@@ -185,6 +203,22 @@ mod tests {
     impl Drop for TempDir {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    impl TempDir {
+        /// `git init` this directory so `gitignore::find_unreachable_references`
+        /// has a real repository to ask `check-ignore` against — only the
+        /// wiring test below needs this; every other fixture here is
+        /// deliberately not a git repository at all, exercising the
+        /// degrade-to-silence path implicitly.
+        fn git_init(&self) {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&self.0)
+                .args(["init", "--quiet"])
+                .status()
+                .expect("git must be on PATH to run this test");
+            assert!(status.success());
         }
     }
     fn tempdir() -> TempDir {
@@ -341,6 +375,34 @@ mod tests {
         assert_eq!(loaded.malformed_ids.len(), 1);
         assert_eq!(loaded.malformed_ids[0].file, "docs/a.md");
         assert_eq!(loaded.malformed_ids[0].id, "boundary-L1-concerns");
+    }
+
+    #[test]
+    fn collects_unreachable_references_across_the_corpus() {
+        // The wiring layer between extract.rs's document-level link scan
+        // and gitignore.rs's git query, mirroring
+        // `collects_malformed_ids_across_the_corpus` above for this field.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", ".scratch/\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/a.md",
+            "### [x]\n\nSee [notes](../.scratch/notes.md).\n\n```claim\nkind: constraint\n```\n",
+        );
+
+        let config = load_config(dir.path()).unwrap();
+        let loaded = load_corpus(dir.path(), &config).unwrap();
+
+        assert_eq!(loaded.unreachable_references.len(), 1);
+        assert_eq!(loaded.unreachable_references[0].file, "docs/a.md");
+        assert_eq!(
+            loaded.unreachable_references[0].resolved,
+            ".scratch/notes.md"
+        );
     }
 
     #[test]
