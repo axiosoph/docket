@@ -1,5 +1,7 @@
 //! Evaluator markers: `@docket: <claim-id> :: <command>` lines, found
-//! anywhere in the corpus tree.
+//! anywhere in the corpus tree. A marker may also be **bare** —
+//! `@docket: <claim-id>` with no `:: <command>` at all — see "The bare
+//! form" below.
 //!
 //! MVP.md's claim block names only an evaluator *kind* (`test`,
 //! `proof`, …) — never a location, and the runner (`run.rs`) must not
@@ -13,17 +15,14 @@
 //! field on the claim block, which would be exactly the kind of
 //! evaluator-in-the-document coupling the churn argument rejects).
 //!
-//! **This marker grammar is a considered extension of, not identical
-//! to, README.md's illustrative example** (`// @docket: lock-groundness`
-//! with nothing after it). That example locates an evaluator for
-//! *coverage counting* — "does something discharge this claim" — which
-//! only needs existence. Running an evaluator needs more: proof,
-//! model-check, type, property-test, test and example evaluators are
-//! invoked five different ways in three different languages (Rust
-//! tests, TLA+ model checking, Alloy analysis, at minimum — see the
-//! runner dispatch), and only the marker's own author — the person who
-//! wrote the Lean theorem, the TLA+ module, or the Rust test — actually
-//! knows the right invocation. So the marker carries it explicitly:
+//! **The commanded form carries its invocation explicitly.** Running an
+//! evaluator needs more than locating it: proof, model-check,
+//! property-test, test and example evaluators are invoked five different
+//! ways in three different languages (Rust tests, TLA+ model checking,
+//! Alloy analysis, at minimum — see the runner dispatch), and only the
+//! marker's own author — the person who wrote the Lean theorem, the TLA+
+//! module, or the Rust test — actually knows the right invocation. So the
+//! marker carries it explicitly:
 //!
 //! ```text
 //! // @docket: lock-groundness :: cargo test ground_values_only -- --exact
@@ -49,7 +48,47 @@
 //! recognizer to clear it, no way to say "trust me." A **deliberate**
 //! per-marker assertion the author writes once, not a default any
 //! marker gets silently — see run.rs's module docs for why that
-//! distinction is load-bearing rather than cosmetic.
+//! distinction is load-bearing rather than cosmetic. The bang is a
+//! property of a *command* — it makes no sense on a bare marker, and the
+//! grammar below does not accept one there.
+//!
+//! # The bare form
+//!
+//! A marker may also carry no command at all — `@docket: <id>` and
+//! nothing else on the line:
+//!
+//! ```text
+//! // @docket: czd-oid-disjoint
+//! pub struct Czd<T>(…);
+//! ```
+//!
+//! This is README.md's own illustrative form for the load-bearing-type
+//! case ("Mechanically this is the same marker in the same place... one
+//! mechanism, two capabilities") — a `type`-graded claim is discharged by
+//! the type's *existence*, not by running anything, so there is nothing
+//! for a command to name. `run.rs` reports a bare marker `Pass` on sight,
+//! the same honesty limit README.md states for `type` generally: the
+//! machine confirms the marked item is there (and, transitively, that the
+//! corpus containing it builds at all — a precondition of any other
+//! marker too); it never confirms the type genuinely enforces what the
+//! claim says. That faithfulness half stays review-established.
+//!
+//! **The bare form is coherent only where there is nothing to run.**
+//! `run.rs` gates it on the claim's declared evaluator: a bare marker
+//! counts as evidence exactly when that evaluator is `type`. For every
+//! other mechanical grade (`proof`, `model-check`, `property-test`,
+//! `test`, `example`) the claim promises evidence a command produces, and
+//! a bare marker cannot produce it — so `run.rs` does not accept one
+//! there. It does not report a distinguishable diagnostic for this
+//! either: a bare marker on the wrong grade is filtered out before the
+//! "does any marker name this claim" check, so the claim reports
+//! `absent` exactly as if nothing had been written — the same
+//! consequence-not-cause precedent the sigil migration already settled
+//! for "a marker exists in some form this grammar does not accept here"
+//! (`.ledger/2026-08-05-the-marker-sigil-and-what-the-check-misses.md`):
+//! `absent` already means "write the marker," and adding a command to an
+//! existing bare one is exactly that fix, so a second diagnostic would
+//! say nothing `absent` does not already say.
 //!
 //! **Alternatives weighed and rejected** (see the runner dispatch,
 //! "Weigh at least..."):
@@ -78,11 +117,15 @@ use crate::corpus::{CorpusError, walk_files};
 use crate::model::{ClaimId, Line};
 use std::path::Path;
 
-/// One `@docket: <id> :: <command>` marker, located.
+/// One `@docket: <id> :: <command>` marker, located — or, when `command`
+/// is `None`, one bare `@docket: <id>` marker (see the module docs' "The
+/// bare form"). Locating a bare marker is `marker.rs`'s whole job; whether
+/// one counts as evidence for a given claim is `run.rs`'s, since that
+/// requires the claim's declared grade.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Marker {
     pub id: ClaimId,
-    pub command: String,
+    pub command: Option<String>,
     pub file: String,
     pub line: Line,
     /// `@docket: <id>! :: <command>` — a deliberate, per-marker assertion
@@ -92,7 +135,10 @@ pub struct Marker {
     /// cannot cover (no recognized signal in its output) but the author
     /// knows is conclusive; see run.rs's module docs for why this has to
     /// be opt-out rather than a silent default, and why it must be
-    /// spelled explicitly rather than inferred.
+    /// spelled explicitly rather than inferred. Always `false` when
+    /// `command` is `None` — the grammar does not accept a bang on a bare
+    /// marker (module docs), so `parse_marker_line` never produces the
+    /// combination.
     pub exempt: bool,
 }
 
@@ -133,19 +179,28 @@ fn find_keyword(line: &str) -> Option<usize> {
     None
 }
 
-/// Parse one line for a marker. `None` covers both "no `@docket:` on this
-/// line at all" and "`@docket:` is present but not followed by
-/// `<kebab-id> :: <command>`" — including a bare `// @docket: <id>` with
-/// no `::` suffix (README.md's illustrative form for the separate
-/// coverage-index feature, or just not a marker). Both are equally
-/// invisible to the runner: a marker this parser cannot execute is
+/// Parse one line for a marker. `None` means "no `@docket:` on this line
+/// at all," or "`@docket:` is present but followed by something this
+/// grammar does not recognize" — neither a bare id-and-nothing-else nor a
+/// well-formed `:: <command>` tail. Both are equally invisible to the
+/// runner: a line this parser cannot turn into a `Marker` is
 /// indistinguishable, to the runner, from no marker at all.
 ///
-/// The id may carry a trailing `!` (no intervening whitespace) marking
-/// it vacuity-exempt — `@docket: <id>! :: <command>` — the author's
-/// explicit assertion that this command's exit status alone is
-/// conclusive (run.rs).
-fn parse_marker_line(line: &str) -> Option<(ClaimId, bool, String)> {
+/// Two shapes succeed:
+///
+/// - **Bare**: `<kebab-id>` and nothing else on the line (trailing
+///   whitespace only) — returns `command: None`. This is the load-bearing
+///   half of the module docs' "The bare form"; `run.rs` alone decides
+///   whether a bare marker counts for a given claim.
+/// - **Commanded**: `<kebab-id> :: <command>`, optionally with the id
+///   carrying a trailing `!` (no intervening whitespace) marking it
+///   vacuity-exempt — `@docket: <id>! :: <command>` — the author's
+///   explicit assertion that this command's exit status alone is
+///   conclusive (run.rs). The bang requires a command to attach its
+///   exemption to; `@docket: <id>!` alone, with nothing after it, is
+///   neither shape and does not parse — same as any other stray trailing
+///   token.
+fn parse_marker_line(line: &str) -> Option<(ClaimId, bool, Option<String>)> {
     let pos = find_keyword(line)?;
     let after = line[pos + KEYWORD.len()..].trim_start();
 
@@ -157,9 +212,14 @@ fn parse_marker_line(line: &str) -> Option<(ClaimId, bool, String)> {
         return None;
     }
 
-    let (exempt, rest) = match after[id_len..].strip_prefix('!') {
+    let tail = &after[id_len..];
+    if tail.trim().is_empty() {
+        return Some((id.to_string(), false, None));
+    }
+
+    let (exempt, rest) = match tail.strip_prefix('!') {
         Some(rest) => (true, rest),
-        None => (false, &after[id_len..]),
+        None => (false, tail),
     };
 
     let command = rest.trim_start().strip_prefix("::")?.trim();
@@ -167,7 +227,7 @@ fn parse_marker_line(line: &str) -> Option<(ClaimId, bool, String)> {
         return None;
     }
 
-    Some((id.to_string(), exempt, command.to_string()))
+    Some((id.to_string(), exempt, Some(command.to_string())))
 }
 
 /// Scan every file under `root` (the same walk `corpus::load_corpus`
@@ -220,7 +280,7 @@ mod tests {
             Some((
                 "lock-groundness".to_string(),
                 false,
-                "cargo test ground_values_only".to_string()
+                Some("cargo test ground_values_only".to_string())
             ))
         );
     }
@@ -232,7 +292,7 @@ mod tests {
             Some((
                 "spine-chain-complete".to_string(),
                 false,
-                "tlc Model.tla".to_string()
+                Some("tlc Model.tla".to_string())
             ))
         );
     }
@@ -244,7 +304,7 @@ mod tests {
             Some((
                 "no-double-spend".to_string(),
                 false,
-                "alloy exec Model.als".to_string()
+                Some("alloy exec Model.als".to_string())
             ))
         );
     }
@@ -256,7 +316,7 @@ mod tests {
             Some((
                 "no-double-spend".to_string(),
                 true,
-                "alloy exec Model.als".to_string()
+                Some("alloy exec Model.als".to_string())
             ))
         );
     }
@@ -274,13 +334,33 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_marker_with_no_command_does_not_parse() {
-        // README.md's own illustrative form — deliberately not this
-        // runner's grammar (module docs). Confirms it is silently
-        // invisible rather than a malformed-marker error: a claim
-        // backed only by this form reports `absent`, not a parse
-        // failure.
-        assert_eq!(parse_marker_line("// @docket: lock-groundness"), None);
+    fn a_bare_marker_with_no_command_parses_as_bare() {
+        // README.md's own illustrative form for the load-bearing-type
+        // case — now real grammar (module docs' "The bare form"), not
+        // merely illustrative. Whether it counts as evidence for a given
+        // claim is `run.rs`'s call (it needs the claim's grade); this
+        // parser's job stops at recognizing the shape.
+        assert_eq!(
+            parse_marker_line("// @docket: lock-groundness"),
+            Some(("lock-groundness".to_string(), false, None))
+        );
+    }
+
+    #[test]
+    fn a_bare_marker_tolerates_trailing_whitespace() {
+        assert_eq!(
+            parse_marker_line("// @docket: lock-groundness   "),
+            Some(("lock-groundness".to_string(), false, None))
+        );
+    }
+
+    #[test]
+    fn a_lone_trailing_bang_with_no_command_does_not_parse_as_bare_or_commanded() {
+        // The bang exempts a *command* from vacuity detection; with no
+        // command to attach to, it is neither the bare shape (something
+        // other than whitespace follows the id) nor the commanded shape
+        // (no `::` follows) — same as any other stray trailing token.
+        assert_eq!(parse_marker_line("// @docket: lock-groundness!"), None);
     }
 
     #[test]
@@ -316,7 +396,7 @@ mod tests {
             Some((
                 "x".to_string(),
                 false,
-                "cargo test mod::test_name -- --exact".to_string()
+                Some("cargo test mod::test_name -- --exact".to_string())
             ))
         );
     }
@@ -331,9 +411,24 @@ mod tests {
         let markers = scan_markers(dir.path()).unwrap();
         assert_eq!(markers.len(), 1);
         assert_eq!(markers[0].id, "x");
-        assert_eq!(markers[0].command, "true");
+        assert_eq!(markers[0].command, Some("true".to_string()));
         assert_eq!(markers[0].file, "src/lib.rs");
         assert_eq!(markers[0].line, Line(2));
+    }
+
+    #[test]
+    fn scans_a_bare_marker_and_reports_no_command() {
+        let dir = tempdir();
+        dir.write(
+            "src/lib.rs",
+            "// @docket: czd-oid-disjoint\npub struct Czd;\n",
+        );
+
+        let markers = scan_markers(dir.path()).unwrap();
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].id, "czd-oid-disjoint");
+        assert_eq!(markers[0].command, None);
+        assert!(!markers[0].exempt);
     }
 
     #[test]

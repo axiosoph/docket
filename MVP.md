@@ -771,7 +771,27 @@ detection: its exit status alone is trusted, unconditionally. This
 exists for an evaluator kind the runner has no output recognizer for, so
 that evaluator can still report a genuine `pass`. It is a deliberate,
 once-written assertion an author makes explicitly, never a default any
-marker gets silently.
+marker gets silently. The bang attaches to a command; it has no meaning
+on a bare marker (below), and the grammar does not accept it there.
+
+**The bare form.** A marker may also carry no command at all —
+`@docket: <id>` and nothing else on the line:
+
+```
+// @docket: czd-oid-disjoint
+pub struct Czd<T>(…);
+```
+
+This is coherent only for a `type`-graded claim: `type` is discharged
+by the marked item's existence, not by running anything, so there is
+nothing for a command to name — the marker's presence in the scan is
+the whole check. `docket run` reports a bare marker `pass` on sight, no
+command spawned. For every other evaluator (`proof`, `model-check`,
+`property-test`, `test`, `example`) the claim promises evidence a
+command produces, so a bare marker there does not count as a match — the
+claim reports `absent`, exactly as if nothing had been written, and gets
+no separate diagnostic: `absent` already means "write the marker," and
+adding a command to an existing bare one is that fix.
 
 **Vacuity detection today recognizes `cargo test`'s output shape**: a
 `test result: …` summary line reading `0 passed; 0 failed` — the exact
@@ -790,7 +810,10 @@ corpus), `none` (the claim declares `evaluator: none`), `review` (the
 claim declares `evaluator: review`), or `vacuous` (every matching
 command exited zero but at least one is recognized as having checked
 nothing). A marker's id may carry a trailing `!` to opt that marker out
-of vacuity detection.
+of vacuity detection. A bare marker (no command) counts as a match only
+when the claim is `type`-graded, where it passes on sight; for every
+other evaluator it does not count as naming the claim at all, and the
+claim reports `absent`.
 
 ```claim
 kind: constraint
