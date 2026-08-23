@@ -1693,6 +1693,39 @@ mod tests {
     }
 
     #[test]
+    fn a_code_span_citing_a_gitignored_md_path_absent_from_this_checkout_still_fires() {
+        // The determinism defect this fix closes (consumer corpus:
+        // `docket check` on axios reported 120 findings in the author's
+        // checkout and 118 in a clean worktree at the identical commit —
+        // the two missing were both `unreachable-reference` code-span
+        // citations to real `.ledger`/`.scratch` notes the author has
+        // locally and a fresh clone does not). `foo/bar.md` is `.md`-shaped
+        // and gitignored, exactly like the true positive above, but is
+        // NEVER written to disk here — modeling the fresh-clone/CI reader
+        // for whom the citation is unreachable. The `.md` extension filter
+        // already tells a citation apart from a prose example naming a
+        // real non-document artifact (see the `build/out.txt` test below);
+        // existence must not additionally gate this branch, or the check's
+        // verdict depends on which checkout happens to be asking.
+        let dir = tempdir();
+        dir.git_init();
+        dir.write(".gitignore", "bar.md\n");
+        dir.write(
+            "docket.ncl",
+            r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#,
+        );
+        dir.write(
+            "docs/specs/a.md",
+            "### [x]\n\nSee `foo/bar.md` for the working notes.\n\n```claim\nkind: constraint\nevaluator: test\n```\n",
+        );
+        let report = run(&dir);
+        let failures = only(&report, "unreachable-reference");
+        assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(failures[0].severity, Severity::Fail);
+        assert!(failures[0].message.contains("foo/bar.md"));
+    }
+
+    #[test]
     fn a_code_span_naming_a_real_gitignored_non_markdown_artifact_never_fires() {
         // The defect existence alone cannot close: `build/out.txt` is a
         // genuinely gitignored path that genuinely EXISTS — an author who
