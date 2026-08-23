@@ -150,6 +150,29 @@ fn bracket_kebab_id(text: &str) -> Option<String> {
     is_kebab_case(inner).then(|| inner.to_string())
 }
 
+/// A heading's id: a bracketed kebab-case token at the very START of the
+/// heading text, tolerating whatever follows the closing bracket.
+///
+/// Deliberately looser than [`bracket_kebab_id`] (which the bold- and
+/// html-form definitions still use, and requires the *whole* text to be
+/// the bracket): a heading is not the id, it CARRIES an id, and MVP.md
+/// §1.1 never reserved the rest of the heading line for nothing else. A
+/// real-corpus retirement convention writes `#### [my-id] — RETIRED
+/// 2026-08-23`, and requiring an exact match made that suffix invisible
+/// to id resolution — the heading fell out of `id_anchors` entirely, so
+/// its OWN claim block was misattributed to the nearest PRECEDING
+/// anchor, silently clobbering that claim in the final index (a
+/// `BTreeMap` keyed by id — last write wins). Anchoring on the *leading*
+/// bracket instead of the whole string fixes that without changing what
+/// a claim id may contain: `[my-id]` still must satisfy
+/// [`is_kebab_case`], and a heading not starting with `[` is still not a
+/// definition at all.
+fn heading_bracket_kebab_id(text: &str) -> Option<String> {
+    let rest = text.strip_prefix('[')?;
+    let inner = &rest[..rest.find(']')?];
+    is_kebab_case(inner).then(|| inner.to_string())
+}
+
 /// Whether `text` is a bracketed token in definition position that FAILS
 /// the id grammar — the `malformed-id` diagnostic's predicate
 /// (`.ledger/2026-08-04-malformed-ids-are-silently-invisible.md`).
@@ -1101,7 +1124,7 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
         .iter()
         .enumerate()
         .filter_map(|(i, h)| {
-            bracket_kebab_id(&h.text).map(|id| IdAnchor {
+            heading_bracket_kebab_id(&h.text).map(|id| IdAnchor {
                 start: h.start,
                 id,
                 kind: AnchorKind::Heading(i),
@@ -1420,7 +1443,7 @@ pub fn find_rename_sites(source: &str, target_id: &str) -> Vec<RenameSite> {
     for h in scanned
         .raw_headings
         .iter()
-        .filter(|h| bracket_kebab_id(&h.text).as_deref() == Some(target_id))
+        .filter(|h| heading_bracket_kebab_id(&h.text).as_deref() == Some(target_id))
     {
         if let Some((start, end)) = find_bracket_span(source, h.start, h.end, target_id) {
             sites.push(RenameSite {
@@ -1720,6 +1743,25 @@ mod tests {
         let src = "## [outer-id]\n\nsome prose\n\n#### Notes\n\n```claim\nkind: requirement\n```\n";
         let res = extract_document("docs/architecture/a.md", src);
         assert_eq!(ids(&res), vec!["outer-id"]);
+    }
+
+    #[test]
+    fn a_suffixed_retired_heading_registers_as_its_own_claim() {
+        // MVP.md §1.1's heading-form id is the bracket itself; a trailing
+        // annotation like "— RETIRED <date>" is not part of the id and
+        // must not blind the resolver to it. Before the fix,
+        // `bracket_kebab_id` required the WHOLE heading text to be
+        // exactly `[id]`, so `[b] — RETIRED 2026-08-23` was invisible to
+        // id_anchors — its own claim block then attributed to the
+        // nearest PRECEDING anchor `[a]`, producing a second Claim with
+        // id "a" whose `evaluator: none` clobbers the live claim's
+        // `evaluator: test` in the final index (checks.rs builds the
+        // index with `BTreeMap::insert`, last write wins).
+        let src = "### [a]\n\n```claim\nkind: requirement\nevaluator: test\n```\n\n### [b] — RETIRED 2026-08-23\n\n```claim\nkind: requirement\nevaluator: none\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(ids(&res), vec!["a", "b"]);
+        assert_eq!(res.claims[0].raw.evaluator.as_deref(), Some("test"));
+        assert_eq!(res.claims[1].raw.evaluator.as_deref(), Some("none"));
     }
 
     #[test]
