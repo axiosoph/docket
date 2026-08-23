@@ -137,10 +137,51 @@ fn bracket_token(text: &str) -> Option<&str> {
     (!inner.is_empty()).then_some(inner)
 }
 
+/// The bracketed token at the very START of `text`, tolerating whatever
+/// follows the closing bracket — the heading-form counterpart to
+/// [`bracket_token`], which requires the *whole* string to be the
+/// bracket. Returns the inner text, without brackets. Shared by
+/// [`heading_bracket_kebab_id`] (a real heading id) and
+/// [`heading_malformed_bracket_id`] (one that fails the id grammar) for
+/// the same reason [`bracket_token`] is shared between their bold-form
+/// counterparts: two functions that resolve "what id does this heading
+/// carry" must agree structurally, or the agreement is only by
+/// convention — which is how the heading-form gap
+/// (`.ledger/2026-08-04-malformed-ids-are-silently-invisible.md`)
+/// reopened for the suffixed-heading case appeared in the first place.
+fn leading_bracket_token(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix('[')?;
+    let inner = &rest[..rest.find(']')?];
+    (!inner.is_empty()).then_some(inner)
+}
+
 /// MVP.md §1.1's id grammar — delegates to [`crate::model::is_valid_claim_id`],
 /// the single source of truth `rename.rs`'s new-id validation shares.
 fn is_kebab_case(inner: &str) -> bool {
     crate::model::is_valid_claim_id(inner)
+}
+
+/// Whether an already bracket-stripped `inner` reads as an ATTEMPTED id
+/// that fails the id grammar, as opposed to ordinary bracketed prose —
+/// the `malformed-id` diagnostic's grammar predicate
+/// (`.ledger/2026-08-04-malformed-ids-are-silently-invisible.md`), shared
+/// by [`malformed_bracket_id`] (bold-form) and
+/// [`heading_malformed_bracket_id`] (heading-form) so the grammar check
+/// itself never has to be written twice.
+///
+/// Fails the id grammar (`!is_kebab_case`) plus one further filter: the
+/// inner text must carry **no whitespace**. That filter is what keeps
+/// this from crying wolf on ordinary bracketed prose — `**[Note to
+/// reader]**: ...` reads as a sentence, not an attempted id, and the
+/// real-corpus defect this exists to catch (`[boundary-L1-concerns]`,
+/// `[daemon-discovery-vN]`) never has a space in it: an id-shaped token
+/// with a stray uppercase letter, underscore, or dot still reads as one
+/// *word*. A multi-word bracket is prose; a one-word bracket that isn't
+/// lowercase-kebab is far more likely a typo'd id than a coincidence
+/// (MVP.md §1.1's own reasoning for the diagnostic: "prose rarely opens a
+/// line with a bolded bracketed kebab-ish token followed by a colon").
+fn is_malformed_id_token(inner: &str) -> bool {
+    !is_kebab_case(inner) && !inner.contains(char::is_whitespace)
 }
 
 /// Whether `text` is exactly a bracketed kebab-case token, e.g. `[my-id]`.
@@ -168,36 +209,30 @@ fn bracket_kebab_id(text: &str) -> Option<String> {
 /// [`is_kebab_case`], and a heading not starting with `[` is still not a
 /// definition at all.
 fn heading_bracket_kebab_id(text: &str) -> Option<String> {
-    let rest = text.strip_prefix('[')?;
-    let inner = &rest[..rest.find(']')?];
+    let inner = leading_bracket_token(text)?;
     is_kebab_case(inner).then(|| inner.to_string())
 }
 
 /// Whether `text` is a bracketed token in definition position that FAILS
-/// the id grammar — the `malformed-id` diagnostic's predicate
-/// (`.ledger/2026-08-04-malformed-ids-are-silently-invisible.md`).
-///
-/// Structurally identical to [`bracket_kebab_id`] (bracket-wrapped,
-/// non-empty) but for the grammar check itself, plus one further filter:
-/// the inner text must carry **no whitespace**. That filter is what keeps
-/// this from crying wolf on ordinary bracketed prose — `**[Note to
-/// reader]**: ...` reads as a sentence, not an attempted id, and the
-/// real-corpus defect this exists to catch (`[boundary-L1-concerns]`,
-/// `[daemon-discovery-vN]`) never has a space in it: an id-shaped token
-/// with a stray uppercase letter, underscore, or dot still reads as one
-/// *word*. A multi-word bracket is prose; a one-word bracket that isn't
-/// lowercase-kebab is far more likely a typo'd id than a coincidence
-/// (MVP.md §1.1's own reasoning for the diagnostic: "prose rarely opens a
-/// line with a bolded bracketed kebab-ish token followed by a colon").
-/// Returns the offending inner text — not a [`ClaimId`], since by
-/// definition it isn't one.
+/// the id grammar — the `malformed-id` diagnostic's predicate for the
+/// bold-form call site, which (like [`bracket_kebab_id`]) requires the
+/// *whole* text to be the bracket. See [`is_malformed_id_token`] for the
+/// grammar check itself. Returns the offending inner text — not a
+/// [`ClaimId`], since by definition it isn't one.
 fn malformed_bracket_id(text: &str) -> Option<&str> {
     let inner = bracket_token(text)?;
-    if is_kebab_case(inner) || inner.contains(char::is_whitespace) {
-        None
-    } else {
-        Some(inner)
-    }
+    is_malformed_id_token(inner).then_some(inner)
+}
+
+/// The heading-form counterpart to [`malformed_bracket_id`]: a bracketed
+/// token at the very START of the heading text that FAILS the id
+/// grammar, tolerating whatever follows the closing bracket — the same
+/// leading-position tolerance [`heading_bracket_kebab_id`] gives the
+/// valid-id case, so a malformed id on a suffixed heading (e.g. `[b] —
+/// RETIRED 2026-08-23`) is caught rather than silently invisible.
+fn heading_malformed_bracket_id(text: &str) -> Option<&str> {
+    let inner = leading_bracket_token(text)?;
+    is_malformed_id_token(inner).then_some(inner)
 }
 
 /// The tag name of an HTML open tag's raw text (`` `<a id="x">` `` ->
@@ -1295,7 +1330,7 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
     let mut malformed_ids: Vec<(usize, MalformedId)> = raw_headings
         .iter()
         .filter_map(|h| {
-            malformed_bracket_id(&h.text).map(|inner| {
+            heading_malformed_bracket_id(&h.text).map(|inner| {
                 (
                     h.start,
                     MalformedId {
@@ -2634,6 +2669,24 @@ mod tests {
     }
 
     #[test]
+    fn a_malformed_heading_form_id_with_a_suffix_is_still_reported() {
+        // The asymmetry this closes: `heading_bracket_kebab_id` already
+        // tolerates a trailing suffix like "— RETIRED <date>" for a VALID
+        // id (see `a_suffixed_retired_heading_registers_as_its_own_claim`).
+        // Before this fix, the heading-form `malformed-id` check still
+        // required the WHOLE heading text to be the bracket, so a
+        // malformed id on a suffixed heading vanished silently — the
+        // exact failure class `malformed-id` exists to close, reopened
+        // for this one shape (and doubly dangerous: the real-corpus
+        // malformed ids this diagnostic already knows about are exactly
+        // the kind that would get a RETIRED suffix).
+        let src = "### [Boundary-L1] — RETIRED 2026-08-23\n\nSome prose.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(malformed_ids(&res), vec!["Boundary-L1"]);
+        assert!(res.claims.is_empty());
+    }
+
+    #[test]
     fn a_malformed_id_leaves_its_claim_block_orphaned_not_silently_owned() {
         // The defect's real cost: a claim block after a malformed
         // definition, with no other real anchor preceding it, still
@@ -2713,11 +2766,13 @@ mod tests {
 
     #[test]
     fn a_heading_with_prose_around_a_malformed_bracket_is_not_reported() {
-        // Heading-form's own structural floor: the check applies only
-        // when the ENTIRE heading text is the bracketed token, exactly
-        // like `bracket_kebab_id` already requires for a real
-        // definition — a heading that merely mentions a bracket in
-        // passing is not a definition attempt.
+        // Heading-form's own structural floor: the bracket must be at the
+        // very START of the heading text, exactly like
+        // `heading_bracket_kebab_id` already requires for a real
+        // definition (a trailing suffix IS tolerated — see
+        // `a_malformed_heading_form_id_with_a_suffix_is_still_reported` —
+        // but a bracket with prose BEFORE it is never a definition
+        // attempt at all).
         let src = "## About [Boundary-L1] and other things\n";
         let res = extract_document("docs/specs/x.md", src);
         assert!(malformed_ids(&res).is_empty(), "{:#?}", res.malformed_ids);
