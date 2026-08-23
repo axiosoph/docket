@@ -149,7 +149,22 @@ fn bracket_token(text: &str) -> Option<&str> {
 /// convention — which is how the heading-form gap
 /// (`.ledger/2026-08-04-malformed-ids-are-silently-invisible.md`)
 /// reopened for the suffixed-heading case appeared in the first place.
-fn leading_bracket_token(text: &str) -> Option<&str> {
+///
+/// `leading_bracket_is_code` (from [`RawHeading`], carried up from the
+/// scan that already knows whether that bracket came from an inline code
+/// span) refuses the match outright when set: `` `[sets]` `` is TOML/code
+/// notation describing a table name, not an attempted id, independent of
+/// whether its content happens to satisfy the id grammar. This is the
+/// single choke point both heading-form resolvers extract a bracket
+/// through, so neither can forget to ask — the code-span fact reaches
+/// both by construction rather than by each caller remembering to check
+/// it separately (the shape that let this exact defect double as
+/// `unregistered-definition` on the valid-id side and `malformed-id` on
+/// this one, from the same root cause).
+fn leading_bracket_token(text: &str, leading_bracket_is_code: bool) -> Option<&str> {
+    if leading_bracket_is_code {
+        return None;
+    }
     let rest = text.strip_prefix('[')?;
     let inner = &rest[..rest.find(']')?];
     (!inner.is_empty()).then_some(inner)
@@ -207,9 +222,11 @@ fn bracket_kebab_id(text: &str) -> Option<String> {
 /// bracket instead of the whole string fixes that without changing what
 /// a claim id may contain: `[my-id]` still must satisfy
 /// [`is_kebab_case`], and a heading not starting with `[` is still not a
-/// definition at all.
-fn heading_bracket_kebab_id(text: &str) -> Option<String> {
-    let inner = leading_bracket_token(text)?;
+/// definition at all. `leading_bracket_is_code` — see
+/// [`leading_bracket_token`] — rules out a code-span-sourced bracket the
+/// same way regardless of whether its content would otherwise pass.
+fn heading_bracket_kebab_id(text: &str, leading_bracket_is_code: bool) -> Option<String> {
+    let inner = leading_bracket_token(text, leading_bracket_is_code)?;
     is_kebab_case(inner).then(|| inner.to_string())
 }
 
@@ -230,8 +247,12 @@ fn malformed_bracket_id(text: &str) -> Option<&str> {
 /// leading-position tolerance [`heading_bracket_kebab_id`] gives the
 /// valid-id case, so a malformed id on a suffixed heading (e.g. `[b] —
 /// RETIRED 2026-08-23`) is caught rather than silently invisible.
-fn heading_malformed_bracket_id(text: &str) -> Option<&str> {
-    let inner = leading_bracket_token(text)?;
+/// `leading_bracket_is_code` — see [`leading_bracket_token`] — excludes
+/// code-span TOML/syntax notation (e.g. `` `[deps.<set>.<label>]` ``)
+/// the same way it does for the valid-id resolver: it is not an attempted
+/// id, so it is not a *malformed* one either.
+fn heading_malformed_bracket_id(text: &str, leading_bracket_is_code: bool) -> Option<&str> {
+    let inner = leading_bracket_token(text, leading_bracket_is_code)?;
     is_malformed_id_token(inner).then_some(inner)
 }
 
@@ -495,6 +516,17 @@ struct RawHeading {
     start: usize,
     end: usize,
     text: String,
+    /// Whether the bracket at the very START of `text` (if any) came
+    /// from an inline code span rather than literal heading text — e.g.
+    /// `` `[sets]` `` describing a TOML table, as opposed to `[my-id]`
+    /// written directly. `Event::Code`'s existing heading-text handling
+    /// folds a code span's content into `text` with no trace of where it
+    /// came from (the same flattening `RawCode`'s own doc comment
+    /// mentions in passing); this bit is what lets
+    /// [`leading_bracket_token`] recover the fact before it's lost, so
+    /// neither heading-form resolver mistakes code/TOML notation for an
+    /// attempted id.
+    leading_bracket_is_code: bool,
 }
 
 struct RawLink {
@@ -837,8 +869,14 @@ fn scan(file: &str, source: &str) -> Scan {
 
     // pulldown-cmark's offset iterator gives Start and End the same full
     // element range, so we capture level/start/end at Start and only
-    // accumulate text until End closes it.
-    let mut cur_heading: Option<(u8, usize, usize, String)> = None;
+    // accumulate text until End closes it. The trailing `usize` is the
+    // byte length of `text`'s leading run IF it came from a single
+    // `Event::Code` push (0 otherwise) — the raw material
+    // `RawHeading::leading_bracket_is_code` is computed from at End, kept
+    // here rather than as a separate map because it must stay in lock
+    // step with exactly one heading's accumulation, the same way `text`
+    // itself does.
+    let mut cur_heading: Option<(u8, usize, usize, String, usize)> = None;
     let mut cur_block: Option<(usize, usize, bool, String)> = None;
     // A `**…**` span that opened at line start (byte immediately before
     // `**` is `\n` or file-start) — the first of the bold form's four
@@ -951,15 +989,35 @@ fn scan(file: &str, source: &str) -> Scan {
                     range.start,
                     range.end,
                     String::new(),
+                    0,
                 ));
             }
             Event::End(TagEnd::Heading(_)) => {
-                if let Some((level, start, end, text)) = cur_heading.take() {
+                if let Some((level, start, end, text, leading_code_len)) = cur_heading.take() {
+                    // Trimming can shift the leading-code run's start;
+                    // reconcile against however many bytes `trim_start`
+                    // actually dropped rather than assuming it dropped
+                    // none (headings rarely carry leading whitespace, but
+                    // "rarely" is not "never" — see `SoftBreak`/
+                    // `HardBreak` below, which can push one before any
+                    // real content if a heading somehow opens with one).
+                    let trimmed_from_start = text.len() - text.trim_start().len();
+                    let leading_code_len = leading_code_len.saturating_sub(trimmed_from_start);
+                    let text = text.trim().to_string();
+                    // The leading bracket is code-sourced only if BOTH
+                    // brackets of that run sit inside the leading code
+                    // span: a `]` past its end means a later, plain-text
+                    // event supplied at least part of the bracket, which
+                    // is no longer "this came from a code span" in the
+                    // sense `leading_bracket_token` cares about.
+                    let leading_bracket_is_code = text.starts_with('[')
+                        && text.find(']').is_some_and(|close| close < leading_code_len);
                     raw_headings.push(RawHeading {
                         level,
                         start,
                         end,
-                        text: text.trim().to_string(),
+                        text,
+                        leading_bracket_is_code,
                     });
                 }
             }
@@ -1033,7 +1091,7 @@ fn scan(file: &str, source: &str) -> Scan {
                 }
             }
             Event::Text(t) => {
-                if let Some((_, _, _, ref mut text)) = cur_heading {
+                if let Some((_, _, _, ref mut text, _)) = cur_heading {
                     text.push_str(&t);
                 }
                 if let Some((_, _, ref mut text)) = cur_strong {
@@ -1084,7 +1142,15 @@ fn scan(file: &str, source: &str) -> Scan {
                 // literal that appears solely inside a sub-heading within
                 // a claim's scope is not prose mentioning it, so it must
                 // not silence `absent-marker-stale` for that literal.
-                if let Some((_, _, _, ref mut text)) = cur_heading {
+                if let Some((_, _, _, ref mut text, ref mut leading_code_len)) = cur_heading {
+                    // Only the FIRST push establishes the leading run —
+                    // record its length exactly when `text` is still
+                    // empty, so a code span anywhere else in the heading
+                    // (see `a_non_leading_code_span_bracket_in_a_heading_still_resolves_normally`)
+                    // never overwrites it.
+                    if text.is_empty() {
+                        *leading_code_len = t.len();
+                    }
                     text.push_str(&t);
                 } else {
                     raw_codes.push(RawCode {
@@ -1094,7 +1160,7 @@ fn scan(file: &str, source: &str) -> Scan {
                 }
             }
             Event::SoftBreak | Event::HardBreak => {
-                if let Some((_, _, _, ref mut text)) = cur_heading {
+                if let Some((_, _, _, ref mut text, _)) = cur_heading {
                     text.push(' ');
                 }
             }
@@ -1159,7 +1225,7 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
         .iter()
         .enumerate()
         .filter_map(|(i, h)| {
-            heading_bracket_kebab_id(&h.text).map(|id| IdAnchor {
+            heading_bracket_kebab_id(&h.text, h.leading_bracket_is_code).map(|id| IdAnchor {
                 start: h.start,
                 id,
                 kind: AnchorKind::Heading(i),
@@ -1330,7 +1396,7 @@ pub fn extract_document(file: &str, source: &str) -> ExtractResult {
     let mut malformed_ids: Vec<(usize, MalformedId)> = raw_headings
         .iter()
         .filter_map(|h| {
-            heading_malformed_bracket_id(&h.text).map(|inner| {
+            heading_malformed_bracket_id(&h.text, h.leading_bracket_is_code).map(|inner| {
                 (
                     h.start,
                     MalformedId {
@@ -1478,7 +1544,7 @@ pub fn find_rename_sites(source: &str, target_id: &str) -> Vec<RenameSite> {
     for h in scanned
         .raw_headings
         .iter()
-        .filter(|h| heading_bracket_kebab_id(&h.text).as_deref() == Some(target_id))
+        .filter(|h| heading_bracket_kebab_id(&h.text, h.leading_bracket_is_code).as_deref() == Some(target_id))
     {
         if let Some((start, end)) = find_bracket_span(source, h.start, h.end, target_id) {
             sites.push(RenameSite {
@@ -2511,6 +2577,48 @@ mod tests {
             "**[registered]**: has a block.\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
         let res = extract_document("docs/specs/x.md", src);
         assert!(res.unregistered_definitions.is_empty(), "{:#?}", res);
+    }
+
+    #[test]
+    fn a_code_span_bracket_leading_a_heading_is_not_a_definition() {
+        // The real-corpus shape (lock-file-schema.md) that motivated
+        // this: a heading naming a TOML table via a backticked bracket,
+        // "## `[sets]` -- set anchors and discovery snapshots". "sets"
+        // happens to satisfy the id grammar, so the leading-bracket
+        // heading resolver silently registered it as a claim id anchor
+        // with no claim block -- a false `unregistered-definition` for
+        // TOML notation, not an attempted docket id. A leading bracket
+        // sourced from an inline code span is never a definition
+        // attempt, independent of whether its content is valid
+        // kebab-case.
+        let src = "## `[sets]` -- set anchors and discovery snapshots\n\nSome prose.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(res.claims.is_empty());
+        assert!(res.unregistered_definitions.is_empty(), "{:#?}", res);
+    }
+
+    #[test]
+    fn a_code_span_bracket_leading_a_heading_is_not_reported_as_malformed() {
+        // The malformed-id-side twin of the case above (also real
+        // corpus, lock-file-schema.md): "## `[deps.<set>.<label>]` --
+        // the ground pins". The angle-bracket placeholders fail the id
+        // grammar, but the token is TOML notation inside a code span,
+        // not a typo'd id -- the same false-positive floor as ordinary
+        // multi-word prose, for a different reason.
+        let src = "## `[deps.<set>.<label>]` -- the ground pins\n\nSome prose.\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert!(malformed_ids(&res).is_empty(), "{:#?}", res.malformed_ids);
+    }
+
+    #[test]
+    fn a_non_leading_code_span_bracket_in_a_heading_still_resolves_normally() {
+        // The negative control: a code span AFTER the real leading
+        // bracket must not disturb resolution -- only the LEADING
+        // bracket's own source matters, not the mere presence of a code
+        // span anywhere in the heading.
+        let src = "### [real-id] see `[sets]` for context\n\n```claim\nkind: constraint\nevaluator: test\n```\n";
+        let res = extract_document("docs/specs/x.md", src);
+        assert_eq!(ids(&res), vec!["real-id"]);
     }
 
     #[test]
