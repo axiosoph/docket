@@ -259,14 +259,37 @@ pub fn find_unreachable_references(
     // `unreachable-reference` means "resolves, but a reader can't follow
     // it" — this module's own doc comment already draws that line against
     // `dangling-reference` ("distinct from... the target does not exist",
-    // top of file). A candidate that names nothing on disk is not a
-    // treacherous local-only reference at all; it's a typo or a prose
-    // example that happens to be path-shaped (`` `foo/bar` `` in running
-    // text matching an unrelated `.gitignore` pattern), and that is
-    // `dangling-reference`'s question for a markdown link, or simply not a
-    // citation at all for a code span — never this check's business.
-    // Filtered here, before the `git` batch, so a nonexistent candidate
-    // costs nothing beyond a `Path::exists` stat.
+    // top of file). The two candidate branches below discriminate "this is
+    // a real citation" from "this merely looks like one" DIFFERENTLY, and
+    // deliberately — the same `Path::exists` test would answer the
+    // question wrong on one branch and right on the other.
+    //
+    // For a markdown link, existence is the right test: explicit link
+    // syntax an author wrote to be followed either names something real
+    // (this check's business) or names nothing at all — a typo or a
+    // dead link, which is `dangling-reference`'s question, pinned by
+    // `a_markdown_link_matching_a_gitignore_pattern_but_naming_nothing_
+    // that_exists_is_dangling_not_unreachable` in checks.rs. That test
+    // must keep passing unchanged; this filter is why it does.
+    //
+    // For a code span, existence answers a DIFFERENT question than the one
+    // this check needs — and the wrong one, because it is a fact about the
+    // *reader running the check*, not about the citation itself: a
+    // gitignored path that genuinely exists on the author's own disk
+    // (`.ledger/2026-08-05-notes.md`, once written) exists there and
+    // nowhere else, so testing existence measures whichever checkout is
+    // asking, not whether the reference is reachable. Confirmed against a
+    // real corpus (`docket check` on axios): 120 findings in the author's
+    // checkout, 118 in a clean worktree at the identical commit — the two
+    // dropped were exactly this, a citation to a real local note that a
+    // fresh clone or CI can never see. `unreachable-reference` exists
+    // *for* the fresh-clone/CI reader (this module's own top-of-file doc:
+    // "unresolvable for every reader ... which is everyone the document
+    // was written for"); gating on the author's own disk state silences
+    // the check for the one reader it does not need protecting from and
+    // stays silent for every reader it does. The `.md` extension filter
+    // below already does the discrimination existence was standing in
+    // for — see its own comment — so this branch drops existence entirely.
     let exists_on_disk = |resolved: &str| corpus_root.join(resolved).exists();
 
     let mut candidates: Vec<(&DocumentLink, String)> = links
@@ -290,26 +313,24 @@ pub fn find_unreachable_references(
         // `` `/docs/...` ``, is what surfaced this). Strip it before
         // resolving, same meaning either way.
         let resolved = path.strip_prefix('/').unwrap_or(path).to_string();
-        // Document-shaped only, `.md` exactly — existence alone cannot
-        // tell a citation from a prose example that happens to name a
-        // real gitignored ARTIFACT: `` `build/out.txt` `` in running
-        // text genuinely exists once an author has run a build locally,
-        // same as `.ledger/2026-08-05-foo.md` genuinely exists once an
-        // author has written a note. Existence stops telling them apart
-        // right there; extension does not. Every real citation this
-        // check exists for is `.ledger/…md` (this module's own top-of-
-        // file doc example), so this costs nothing real: 18 citations on
-        // the consumer corpus this dispatch measured against, 13 on
-        // docket's own, all still fire. Markdown-link candidates are
-        // deliberately NOT filtered this way: a markdown href is
-        // explicit link syntax an author wrote to be followed, not
-        // incidental prose a backtick span merely happens to look like —
-        // the same asymmetry `path_shaped`'s own doc comment already
-        // draws between an authored link and a bare mention.
-        (!too_degenerate_for_git(&resolved)
-            && resolved.ends_with(".md")
-            && exists_on_disk(&resolved))
-        .then_some((r, resolved))
+        // Document-shaped only, `.md` exactly — deliberately NOT gated on
+        // existence (see this function's opening comment for why: on this
+        // branch existence measures the checkout asking, not the
+        // citation). Extension alone tells a citation apart from a prose
+        // example that happens to name a real gitignored ARTIFACT:
+        // `` `build/out.txt` `` in running text genuinely exists once an
+        // author has run a build locally, same as
+        // `.ledger/2026-08-05-foo.md` genuinely exists once an author has
+        // written a note — existence cannot distinguish them, but every
+        // real citation this check exists for is `.ledger/…md` (this
+        // module's own top-of-file doc example), so `.md` does. Markdown-
+        // link candidates are deliberately NOT filtered this way: a
+        // markdown href is explicit link syntax an author wrote to be
+        // followed, not incidental prose a backtick span merely happens
+        // to look like — the same asymmetry `path_shaped`'s own doc
+        // comment already draws between an authored link and a bare
+        // mention.
+        (!too_degenerate_for_git(&resolved) && resolved.ends_with(".md")).then_some((r, resolved))
     }));
 
     let paths: Vec<String> = candidates.iter().map(|(_, r)| r.clone()).collect();
