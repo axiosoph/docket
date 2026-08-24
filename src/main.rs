@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use docket::model::{CiteRef, anchor_matches};
 use docket::rename;
 use docket::run::{Outcome, RunError, RunResult};
-use docket::signals::GraphSignals;
+use docket::signals::{GraphSignals, LegacyTargetAmbiguous};
 use docket::{blast, checks, config, contracts, corpus, marker, run, signals};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -437,12 +437,33 @@ fn run_signals(corpus_root: &Path) -> ExitCode {
     };
 
     print_signals(&signals::compute(&loaded.corpus));
+    print_legacy_target_ambiguous(&signals::legacy_target_ambiguous(&loaded.corpus));
 
     // Every signal here is a candidate for a reader to weigh, never a
     // check result — nothing in this report can fail a run the way
     // `check`'s diagnostics do (this command's whole non-negotiable is
     // that it changes no existing exit code or diagnostic).
     ExitCode::SUCCESS
+}
+
+fn print_legacy_target_ambiguous(claims: &[LegacyTargetAmbiguous]) {
+    if claims.is_empty() {
+        return;
+    }
+    println!();
+    println!(
+        "Target-ambiguous legacy grade: {} claim(s) graded `review` or `proof`.\n\
+         Both straddle the design/implementation axis (`verification:` in\n\
+         `contracts/claim.ncl`) — only the claim's own prose says which. Not a\n\
+         defect: each claim is unmigrated, not wrong. Migrate by rewriting\n\
+         `evaluator: {{review,proof}}` as `verification: {{design: ..., implementation: ...}}`\n\
+         once you've read the claim and decided which axis (or both) it names.",
+        claims.len()
+    );
+    println!();
+    for c in claims {
+        println!("  {}\t{}:{}\t{}", c.id, c.file, c.line, c.evaluator);
+    }
 }
 
 fn print_signals(signals: &GraphSignals) {

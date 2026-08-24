@@ -738,7 +738,25 @@ pub struct IndexClaim {
     pub file: String,
     pub line: usize,
     pub kind: String,
+    /// The claim's legacy `evaluator` field, verbatim (`""` if the claim
+    /// never declared one — including every claim written in the new
+    /// `verification:` shape). Preserved for downstream compatibility;
+    /// `design`/`implementation` below are the resolved truth a consumer
+    /// should read for coverage, whichever shape the source claim used
+    /// (`contracts/register.ncl`'s `resolve_targets`/`legacy_target`).
     pub evaluator: String,
+    /// This claim's resolved design-verification target: `None` if the
+    /// claim has no design target at all (never declared, or a legacy
+    /// `evaluator` value that resolves to the implementation axis or is
+    /// target-ambiguous — `review`/`proof`); `Some("none")` if the
+    /// target EXISTS but nothing checks it yet; `Some(<evaluator>)`
+    /// otherwise. Absent-versus-`none` is the distinction a single
+    /// `evaluator` field could not carry — see `contracts/claim.ncl`'s
+    /// `verification` doc comment.
+    pub design: Option<String>,
+    /// This claim's resolved implementation-verification target — same
+    /// three-state shape as `design`, over the other axis.
+    pub implementation: Option<String>,
     pub depends: Vec<String>,
     pub because: Vec<String>,
 }

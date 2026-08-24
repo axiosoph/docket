@@ -1,12 +1,14 @@
-//! Derived properties of the reference graph the register already carries
-//! — no new declaration, nothing an author writes (MVP.md §R4:
+//! Derived properties the register already carries — no new declaration,
+//! nothing an author writes (MVP.md §R4:
 //! `.ledger/2026-07-30-reference-kinds-and-document-resolution.md`,
 //! "anything derivable from the reference graph is computed, never
-//! declared"). Every signal here is a pure read of `Claim::refs()` and
+//! declared"). Most signals here are a pure read of `Claim::refs()` and
 //! `blast::blast_radius`, over the same graph `blast` already walks — no
-//! new traversal.
+//! new traversal; [`legacy_target_ambiguous`] is a pure read of a single
+//! claim's own `evaluator` field instead, a different axis of the same
+//! "candidate for a reader to weigh, not a verdict" framing.
 //!
-//! The headline signal is in-degree zero, the backward read
+//! The headline graph signal is in-degree zero, the backward read
 //! `.ledger/2026-08-05-links-are-document-facts-not-claim-attributes.md`
 //! ("the head's extension") names directly: **a claim nothing points at is
 //! a candidate for superseded-and-unnoticed** — nothing depends on it and
@@ -84,6 +86,51 @@ pub fn compute(corpus: &Corpus) -> GraphSignals {
         })
         .collect();
     GraphSignals { claims }
+}
+
+/// A claim whose legacy `evaluator` grade cannot be mechanically resolved
+/// to a verification target — `review` and `proof` straddle the
+/// design/implementation axis (`contracts/register.ncl`'s
+/// `legacy_target`: every other legacy value maps to exactly one axis,
+/// these two don't), so only the claim's own prose can say which. This is
+/// not a defect: the claim is not wrong, merely unmigrated to the
+/// two-key `verification:` shape (`contracts/claim.ncl`) that resolves
+/// the ambiguity by construction. A candidate for a reader to weigh when
+/// migrating a claim, never a `check` finding — deliberately mirrored
+/// here in Rust rather than read back from the register's index: this
+/// needs only `Claim::raw.evaluator`, already in hand, and a claim
+/// written in the new shape can never trigger it (a `review`/`proof`
+/// placed explicitly under `design`/`implementation` is resolved by the
+/// author, not ambiguous).
+pub struct LegacyTargetAmbiguous {
+    pub id: String,
+    pub file: String,
+    pub line: usize,
+    /// `"review"` or `"proof"` — the only two legacy values this fires
+    /// for.
+    pub evaluator: String,
+}
+
+/// Every claim in the corpus still carrying a target-ambiguous legacy
+/// `evaluator` value, in corpus order.
+pub fn legacy_target_ambiguous(corpus: &Corpus) -> Vec<LegacyTargetAmbiguous> {
+    corpus
+        .claims
+        .iter()
+        .filter_map(|c| {
+            let evaluator = c.raw.evaluator.as_deref()?;
+            if evaluator == "review" || evaluator == "proof" {
+                Some(LegacyTargetAmbiguous {
+                    id: c.id.clone(),
+                    file: c.file.clone(),
+                    line: c.block_line.0,
+                    evaluator: evaluator.to_string(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -223,5 +270,39 @@ mod tests {
         let signals = compute(&corpus);
         assert!(signals.claims.is_empty());
         assert_eq!(signals.zero_inbound().count(), 0);
+    }
+
+    // --- legacy_target_ambiguous ---------------------------------------
+
+    #[test]
+    fn legacy_review_and_proof_are_target_ambiguous() {
+        let a = "### [a]\n\n```claim\nkind: constraint\nevaluator: review\n```\n";
+        let b = "### [b]\n\n```claim\nkind: constraint\nevaluator: proof\n```\n";
+        let corpus = corpus_with_claims(claims_from(&[("f-a.md", a), ("f-b.md", b)]));
+        let ambiguous = legacy_target_ambiguous(&corpus);
+        let ids: Vec<&str> = ambiguous.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b"]);
+        assert_eq!(ambiguous[0].evaluator, "review");
+        assert_eq!(ambiguous[1].evaluator, "proof");
+    }
+
+    #[test]
+    fn an_ordinary_legacy_evaluator_is_never_target_ambiguous() {
+        let a = claim_src("a", &[]);
+        let corpus = corpus_with_claims(claims_from(&[("f-a.md", &a)]));
+        assert!(legacy_target_ambiguous(&corpus).is_empty());
+    }
+
+    #[test]
+    fn a_new_shape_claim_naming_review_under_an_axis_is_never_target_ambiguous() {
+        // The whole point of the second axis: once an author places
+        // `review` explicitly under `design` or `implementation`, the
+        // ambiguity this signal exists to flag is already resolved — by
+        // construction, not by a rule this function has to apply. This
+        // claim has no top-level `evaluator` field at all, so
+        // `Claim::raw.evaluator` is `None` and the filter never matches.
+        let src = "### [a]\n\n```claim\nkind: constraint\nverification:\n  design: review\n```\n";
+        let corpus = corpus_with_claims(claims_from(&[("f-a.md", src)]));
+        assert!(legacy_target_ambiguous(&corpus).is_empty());
     }
 }

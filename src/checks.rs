@@ -399,6 +399,8 @@ struct OutputIndexClaim {
     line: usize,
     kind: String,
     evaluator: String,
+    design: Option<String>,
+    implementation: Option<String>,
     depends: Vec<String>,
     because: Vec<String>,
 }
@@ -461,6 +463,8 @@ pub fn run_checks(
                 line: c.line,
                 kind: c.kind,
                 evaluator: c.evaluator,
+                design: c.design,
+                implementation: c.implementation,
                 depends: c.depends,
                 because: c.because,
             },
@@ -564,13 +568,15 @@ mod tests {
         std::path::PathBuf::from(DEFAULT_REGISTER_RELATIVE_PATH)
     }
 
-    fn run(dir: &TempDir) -> CheckReport {
+    fn run_full(dir: &TempDir) -> RegisterResult {
         let config = load_config(dir.path()).unwrap();
         let loaded = load_corpus(dir.path(), &config).unwrap();
         let markers = crate::marker::scan_markers(dir.path()).unwrap();
-        run_checks(&loaded, &config, &register_path(), &markers)
-            .unwrap()
-            .report
+        run_checks(&loaded, &config, &register_path(), &markers).unwrap()
+    }
+
+    fn run(dir: &TempDir) -> CheckReport {
+        run_full(dir).report
     }
 
     fn only<'a>(report: &'a CheckReport, check: &str) -> Vec<&'a Diagnostic> {
@@ -2394,5 +2400,194 @@ mod tests {
             .expect("document indexed");
         assert_eq!(doc.file, "docs/specs/lock-file-schema.md");
         assert_eq!(doc.genre, "docs/specs/**");
+    }
+
+    // --- verification targets: the two-axis shape (2026-08-23 dispatch) ---
+
+    fn genre_dir() -> &'static str {
+        r#"{ genres = [ { path = "docs/specs/**", kinds = ["constraint"], quadrant = "reference" } ] }"#
+    }
+
+    #[test]
+    fn the_new_verification_shape_parses_and_indexes_both_axes() {
+        let dir = tempdir();
+        dir.write("docket.ncl", genre_dir());
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\n```claim\nkind: constraint\nverification:\n  design: model-check\n  implementation: test\n```\n",
+        );
+        let result = run_full(&dir);
+        assert!(result.report.passed(), "{:#?}", result.report.diagnostics);
+        let claim = result.index.claims.get("x").expect("claim indexed");
+        assert_eq!(claim.design.as_deref(), Some("model-check"));
+        assert_eq!(claim.implementation.as_deref(), Some("test"));
+    }
+
+    #[test]
+    fn a_design_terminal_claim_omits_implementation() {
+        let dir = tempdir();
+        dir.write("docket.ncl", genre_dir());
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\n```claim\nkind: constraint\nverification:\n  design: model-check\n```\n",
+        );
+        let result = run_full(&dir);
+        assert!(result.report.passed(), "{:#?}", result.report.diagnostics);
+        let claim = result.index.claims.get("x").expect("claim indexed");
+        assert_eq!(claim.design.as_deref(), Some("model-check"));
+        assert_eq!(
+            claim.implementation, None,
+            "no `implementation` key was declared — the index must say so, not guess a value"
+        );
+    }
+
+    #[test]
+    fn absent_versus_none_is_distinguishable_in_the_index() {
+        // The whole point of the axis: a target that EXISTS but is
+        // undischarged (`implementation: none`) must read differently
+        // from a target that was never declared at all (no `depends`...
+        // no, no `implementation` key) — collapsing the two back into one
+        // representation (e.g. both empty string, or both null) would
+        // silently reproduce the exact ambiguity this migration exists to
+        // remove.
+        let dir = tempdir();
+        dir.write("docket.ncl", genre_dir());
+        dir.write(
+            "docs/specs/exists-but-none.md",
+            "### [exists-but-none]\n\n```claim\nkind: constraint\nverification:\n  design: model-check\n  implementation: none\n```\n",
+        );
+        dir.write(
+            "docs/specs/absent-entirely.md",
+            "### [absent-entirely]\n\n```claim\nkind: constraint\nverification:\n  design: model-check\n```\n",
+        );
+        let result = run_full(&dir);
+        assert!(result.report.passed(), "{:#?}", result.report.diagnostics);
+        assert_eq!(
+            result.index.claims["exists-but-none"]
+                .implementation
+                .as_deref(),
+            Some("none"),
+            "the target exists and is undischarged — `none`, not absent"
+        );
+        assert_eq!(
+            result.index.claims["absent-entirely"].implementation, None,
+            "no target was ever declared for this axis — absent, not `none`"
+        );
+    }
+
+    #[test]
+    fn an_empty_verification_mapping_is_a_c1_schema_error() {
+        let dir = tempdir();
+        dir.write("docket.ncl", genre_dir());
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\n```claim\nkind: constraint\nverification: {}\n```\n",
+        );
+        let report = run(&dir);
+        let failures = only(&report, "C1");
+        assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
+        assert!(
+            failures[0].message.contains("at least one"),
+            "{:?}",
+            failures[0].message
+        );
+    }
+
+    #[test]
+    fn evaluator_and_verification_together_is_a_c1_schema_error() {
+        let dir = tempdir();
+        dir.write("docket.ncl", genre_dir());
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\n```claim\nkind: constraint\nevaluator: test\nverification:\n  design: model-check\n```\n",
+        );
+        let report = run(&dir);
+        let failures = only(&report, "C1");
+        assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
+        assert!(
+            failures[0].message.contains("mutually exclusive"),
+            "{:?}",
+            failures[0].message
+        );
+    }
+
+    #[test]
+    fn a_claim_with_neither_evaluator_nor_verification_is_a_c1_schema_error() {
+        let dir = tempdir();
+        dir.write("docket.ncl", genre_dir());
+        dir.write(
+            "docs/specs/x.md",
+            "### [x]\n\n```claim\nkind: constraint\n```\n",
+        );
+        let report = run(&dir);
+        let failures = only(&report, "C1");
+        assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
+        assert!(
+            failures[0].message.contains("evaluator or verification"),
+            "{:?}",
+            failures[0].message
+        );
+    }
+
+    /// The mechanical legacy-mapping table the dispatch specified,
+    /// exercised one legacy `evaluator` value at a time against the real
+    /// register evaluator — not re-derived by hand in the test, but
+    /// pinned against the actual resolved axis so a drift in
+    /// `register.ncl`'s `legacy_target` is caught here.
+    #[test]
+    fn legacy_evaluator_values_auto_map_to_the_right_axis() {
+        let cases: &[(&str, Option<&str>, Option<&str>)] = &[
+            ("model-check", Some("model-check"), None),
+            ("type", None, Some("type")),
+            ("property-test", None, Some("property-test")),
+            ("test", None, Some("test")),
+            ("example", None, Some("example")),
+            ("none", None, Some("none")),
+            ("absent", None, Some("absent")),
+        ];
+        for (evaluator, expected_design, expected_implementation) in cases {
+            let dir = tempdir();
+            dir.write("docket.ncl", genre_dir());
+            dir.write(
+                "docs/specs/x.md",
+                &format!("### [x]\n\n```claim\nkind: constraint\nevaluator: {evaluator}\n```\n"),
+            );
+            let result = run_full(&dir);
+            let claim = result.index.claims.get("x").expect("claim indexed");
+            assert_eq!(
+                claim.design.as_deref(),
+                *expected_design,
+                "evaluator: {evaluator} — design"
+            );
+            assert_eq!(
+                claim.implementation.as_deref(),
+                *expected_implementation,
+                "evaluator: {evaluator} — implementation"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_review_and_proof_resolve_to_neither_axis_target_ambiguous() {
+        // `review`/`proof` straddle both axes (the dispatch's own
+        // finding: 5/9 sampled `review` claims were design-terminal, 4/9
+        // implementation-pending) — only the claim's own prose can say
+        // which, so the index must never guess. This is not a C1
+        // violation (the legacy value is perfectly well-formed); the
+        // migration nudge lives in `signals`, not here (see
+        // `signals::tests::legacy_review_and_proof_are_target_ambiguous`).
+        for evaluator in ["review", "proof"] {
+            let dir = tempdir();
+            dir.write("docket.ncl", genre_dir());
+            dir.write(
+                "docs/specs/x.md",
+                &format!("### [x]\n\n```claim\nkind: constraint\nevaluator: {evaluator}\n```\n"),
+            );
+            let result = run_full(&dir);
+            assert!(result.report.passed(), "{:#?}", result.report.diagnostics);
+            let claim = result.index.claims.get("x").expect("claim indexed");
+            assert_eq!(claim.design, None, "evaluator: {evaluator}");
+            assert_eq!(claim.implementation, None, "evaluator: {evaluator}");
+        }
     }
 }

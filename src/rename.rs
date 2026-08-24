@@ -286,6 +286,8 @@ fn substitute_snapshot(snap: &Snapshot, old_id: &str, new_id: &str) -> Snapshot 
                 line: c.line,
                 kind: c.kind.clone(),
                 evaluator: c.evaluator.clone(),
+                design: c.design.clone(),
+                implementation: c.implementation.clone(),
                 depends: c
                     .depends
                     .iter()
