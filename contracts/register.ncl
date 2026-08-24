@@ -211,14 +211,50 @@ let claim_field_violations = fun c =>
     let missing = std.array.filter (fun f => !std.array.elem f fields) claim.RequiredClaimFields in
     let has_kind = std.array.elem "kind" fields in
     let has_evaluator = std.array.elem "evaluator" fields in
+    let has_verification = std.array.elem "verification" fields in
     let has_depends = std.array.elem "depends" fields in
     let has_because = std.array.elem "because" fields in
+    # A claim states its verification target exactly once (`claim.ncl`'s
+    # `claim_target_ok`, re-derived here rather than called for the same
+    # reason every other rule in this function is: a contract applied to
+    # an array of claims aborts at the first violation, so the batch
+    # validator can't just call `claim.Claim` — see this section's own
+    # header comment).
+    let verification_violations =
+      if !has_verification then
+        []
+      else if !std.is_record c.raw_value.verification then
+        [ "`verification` must be a mapping of `design`/`implementation` to an evaluator value" ]
+      else
+        let vfields = std.record.fields c.raw_value.verification in
+        if std.array.length vfields == 0 then
+          [ "`verification` must declare at least one of `design`, `implementation` — an empty mapping is a schema error, not a gap" ]
+        else
+          let unknown_v = std.array.filter (fun f => !std.array.elem f claim.KnownVerificationFields) vfields in
+          if std.array.length unknown_v > 0 then
+            [ "verification field(s) not permitted: %{std.string.join ", " unknown_v} (only `design`/`implementation`)" ]
+          else
+            (if std.array.elem "design" vfields && !claim.EvaluatorPred c.raw_value.verification.design then
+              [ "field `verification.design` has an invalid value" ]
+            else
+              [])
+            @ (if std.array.elem "implementation" vfields && !claim.EvaluatorPred c.raw_value.verification.implementation then
+              [ "field `verification.implementation` has an invalid value" ]
+            else
+              [])
+    in
     (if std.array.length unknown > 0 then
       [ "unknown field(s): %{std.string.join ", " unknown}" ]
     else
       [])
     @ (if std.array.length missing > 0 then
       [ "missing required field(s): %{std.string.join ", " missing}" ]
+    else
+      [])
+    @ (if has_evaluator && has_verification then
+      [ "fields `evaluator` and `verification` are mutually exclusive — one statement, one place" ]
+    else if !has_evaluator && !has_verification then
+      [ "missing required field(s): evaluator or verification" ]
     else
       [])
     @ (if has_kind && !claim.KindPred c.raw_value.kind then
@@ -229,6 +265,7 @@ let claim_field_violations = fun c =>
       [ "field `evaluator` has an invalid value" ]
     else
       [])
+    @ verification_violations
     @ (if has_depends
       && !(
         std.is_array c.raw_value.depends
@@ -763,12 +800,120 @@ let dangling_reference_diagnostics = fun claim_ids documents declared unreachabl
     links
 in
 
+# --- verification targets: resolve `evaluator`/`verification` to two -----
+# axes, `design` and `implementation`, per claim (2026-08-23 dispatch,
+# ".ledger/state/verification-targets.md" in the consumer project this
+# migration serves — the finding that `model-check`/`review` read as
+# implementation coverage when 15/22 sampled claims graded that way were
+# still implementation-pending).
+#
+# A legacy `evaluator` value is auto-mapped by a fixed table (the
+# dispatch's own mechanical rule, restated here rather than only in
+# prose so drift between the two would be visible in review):
+#
+#   model-check                          -> design
+#   type, property-test, test, example   -> implementation
+#   none                                 -> implementation (nothing checks
+#                                          it yet, but "nothing" is at
+#                                          minimum an implementation gap)
+#   absent                               -> implementation (`absence.rs`
+#                                          corroborates a fact about the
+#                                          corpus's own real, non-doc
+#                                          source — the same species of
+#                                          check as `test`/`example`, not
+#                                          a property of the design)
+#   review, proof                        -> AMBIGUOUS: both species name
+#                                          either a design law or an
+#                                          implementation fact depending
+#                                          on the claim's own prose (the
+#                                          dispatch's finding: 5/9 review
+#                                          claims sampled were
+#                                          design-terminal, 4/9
+#                                          implementation-pending-as-
+#                                          placeholder) — resolved to
+#                                          neither axis here; `null` on
+#                                          both, the same representation
+#                                          an unresolvable/malformed
+#                                          claim already gets, so a
+#                                          coverage ratio never silently
+#                                          credits a guess. Surfaced
+#                                          separately as a migration
+#                                          nudge (`signals::
+#                                          legacy_target_ambiguous`,
+#                                          Rust — a pure read of
+#                                          `claim.raw.evaluator`, the
+#                                          same two values, deliberately
+#                                          not re-derived through this
+#                                          index): a legacy claim graded
+#                                          this way is not wrong, merely
+#                                          unmigrated, which is a
+#                                          candidate for a reader to
+#                                          weigh (signals), not a check
+#                                          finding (a defect).
+#
+# `null` on an axis means "this claim has no resolved target here" —
+# absent from the claim entirely, ambiguous, or the raw value didn't
+# parse/validate (C1 already reports the latter). The string `"none"`
+# means the target EXISTS and nothing checks it — the distinction the
+# single `evaluator` field could not carry, preserved through
+# resolution rather than collapsed by it.
+let legacy_target = fun ev =>
+  if ev == "model-check" then
+    { design = ev, implementation = null }
+  else if ev == "type" || ev == "property-test" || ev == "test" || ev == "example" then
+    { design = null, implementation = ev }
+  else if ev == "none" then
+    { design = null, implementation = ev }
+  else if ev == "absent" then
+    { design = null, implementation = ev }
+  else
+    # `review`/`proof` (target-ambiguous) and any unrecognized value
+    # (C1's own finding, not this function's) both resolve to nothing on
+    # either axis.
+    { design = null, implementation = null }
+in
+
+let resolve_targets = fun c =>
+  let raw_ok = c.raw_error == null && std.is_record c.raw_value in
+  if !raw_ok then
+    { design = null, implementation = null }
+  else
+    let fields = std.record.fields c.raw_value in
+    let has_verification = std.array.elem "verification" fields && std.is_record c.raw_value.verification in
+    if has_verification then
+      let v = c.raw_value.verification in
+      let vfields = std.record.fields v in
+      {
+        design =
+          if std.array.elem "design" vfields && std.is_string v.design && claim.EvaluatorPred v.design then
+            v.design
+          else
+            null,
+        implementation =
+          if
+            std.array.elem "implementation" vfields
+            && std.is_string v.implementation
+            && claim.EvaluatorPred v.implementation
+          then
+            v.implementation
+          else
+            null,
+      }
+    else
+      let has_evaluator = std.array.elem "evaluator" fields && std.is_string c.raw_value.evaluator in
+      if has_evaluator && claim.EvaluatorPred c.raw_value.evaluator then
+        legacy_target c.raw_value.evaluator
+      else
+        { design = null, implementation = null }
+in
+
 # --- the index (MVP.md §4.1): a pure projection. ------------------------
 
 let index_claims = fun claims =>
   std.array.map
     (fun c =>
       let raw_ok = c.raw_error == null && std.is_record c.raw_value in
+      let targets = resolve_targets c in
       {
         id = c.id,
         file = c.file,
@@ -787,6 +932,8 @@ let index_claims = fun claims =>
             c.raw_value.evaluator
           else
             "",
+        design = targets.design,
+        implementation = targets.implementation,
         depends = c.depends,
         because = c.because,
       }
